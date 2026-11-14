@@ -1,0 +1,7078 @@
+{
+  "version": 1,
+  "id": 1794670002167346,
+  "name": "Midnight Dub",
+  "bpm": 96.0,
+  "swing": 0.15,
+  "bars": 16,
+  "master_volume": 0.74,
+  "tracks": [
+    {
+      "id": 1794670002166897,
+      "name": "808 kick",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.85,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 20000.0,
+        "reverb": 0.1,
+        "delay": 0.0,
+        "drive": 0.15
+      },
+      "patterns": [
+        {
+          "id": 1794670002166899,
+          "name": "808 kick",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166420,
+              "pitch": 36,
+              "start": 0.0,
+              "duration": 2.0,
+              "velocity": 0.9
+            },
+            {
+              "id": 1794670002166421,
+              "pitch": 36,
+              "start": 8.0,
+              "duration": 1.5,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166447,
+              "pitch": 36,
+              "start": 16.0,
+              "duration": 2.0,
+              "velocity": 0.9
+            },
+            {
+              "id": 1794670002166448,
+              "pitch": 36,
+              "start": 24.0,
+              "duration": 1.5,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166473,
+              "pitch": 36,
+              "start": 32.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166474,
+              "pitch": 36,
+              "start": 42.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166503,
+              "pitch": 36,
+              "start": 48.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166505,
+              "pitch": 36,
+              "start": 55.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166504,
+              "pitch": 36,
+              "start": 58.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166534,
+              "pitch": 36,
+              "start": 64.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166535,
+              "pitch": 36,
+              "start": 74.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166564,
+              "pitch": 36,
+              "start": 80.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166566,
+              "pitch": 36,
+              "start": 87.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166565,
+              "pitch": 36,
+              "start": 90.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166595,
+              "pitch": 36,
+              "start": 96.0,
+              "duration": 2.0,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166596,
+              "pitch": 36,
+              "start": 107.0,
+              "duration": 1.2,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166623,
+              "pitch": 36,
+              "start": 112.0,
+              "duration": 2.0,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166624,
+              "pitch": 36,
+              "start": 123.0,
+              "duration": 1.2,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166651,
+              "pitch": 36,
+              "start": 128.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166652,
+              "pitch": 36,
+              "start": 138.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166682,
+              "pitch": 36,
+              "start": 144.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166684,
+              "pitch": 36,
+              "start": 151.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166683,
+              "pitch": 36,
+              "start": 154.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166713,
+              "pitch": 36,
+              "start": 160.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166714,
+              "pitch": 36,
+              "start": 170.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166743,
+              "pitch": 36,
+              "start": 176.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166745,
+              "pitch": 36,
+              "start": 183.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166744,
+              "pitch": 36,
+              "start": 186.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166774,
+              "pitch": 36,
+              "start": 192.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166775,
+              "pitch": 36,
+              "start": 202.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166804,
+              "pitch": 36,
+              "start": 208.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166806,
+              "pitch": 36,
+              "start": 215.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166805,
+              "pitch": 36,
+              "start": 218.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166835,
+              "pitch": 36,
+              "start": 224.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166836,
+              "pitch": 36,
+              "start": 234.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166865,
+              "pitch": 36,
+              "start": 240.0,
+              "duration": 2.0,
+              "velocity": 0.95
+            },
+            {
+              "id": 1794670002166867,
+              "pitch": 36,
+              "start": 247.0,
+              "duration": 1.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166866,
+              "pitch": 36,
+              "start": 250.0,
+              "duration": 1.4,
+              "velocity": 0.7
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166900,
+          "pattern_id": 1794670002166899,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.kick-808",
+        "name": "808-style Kick",
+        "description": "Longer 808-style tail: sine body, moderate pitch drop and a click transient. Play C2 (MIDI 36) or C1 (MIDI 24). Synthesized, not a sample.",
+        "oscillators": [
+          {
+            "waveform": "sine",
+            "level": 0.95,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "sine",
+            "level": 0.15,
+            "frequency_ratio": 2.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.05
+          },
+          {
+            "waveform": "noise",
+            "level": 0.2,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.015
+          }
+        ],
+        "envelope": {
+          "attack": 0.001,
+          "decay": 0.55,
+          "sustain": 0.05,
+          "release": 0.08
+        },
+        "pitch_envelope": {
+          "amount_semitones": 18.0,
+          "decay": 0.16
+        },
+        "filter_cutoff": 5000.0,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.8,
+        "monophonic": true,
+        "audition_note": 36,
+        "audition_duration": 1.0
+      }
+    },
+    {
+      "id": 1794670002166902,
+      "name": "Snare",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.68,
+      "pan": 0.05,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 6000.0,
+        "reverb": 0.3,
+        "delay": 0.1,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002166904,
+          "name": "Snare",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166475,
+              "pitch": 40,
+              "start": 40.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166476,
+              "pitch": 40,
+              "start": 47.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166506,
+              "pitch": 40,
+              "start": 56.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166507,
+              "pitch": 40,
+              "start": 63.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166536,
+              "pitch": 40,
+              "start": 72.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166537,
+              "pitch": 40,
+              "start": 79.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166567,
+              "pitch": 40,
+              "start": 88.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166568,
+              "pitch": 40,
+              "start": 95.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166597,
+              "pitch": 40,
+              "start": 104.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166625,
+              "pitch": 40,
+              "start": 120.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166653,
+              "pitch": 40,
+              "start": 136.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166654,
+              "pitch": 40,
+              "start": 143.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166685,
+              "pitch": 40,
+              "start": 152.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166686,
+              "pitch": 40,
+              "start": 159.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166715,
+              "pitch": 40,
+              "start": 168.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166716,
+              "pitch": 40,
+              "start": 175.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166746,
+              "pitch": 40,
+              "start": 184.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166747,
+              "pitch": 40,
+              "start": 191.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166776,
+              "pitch": 40,
+              "start": 200.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166777,
+              "pitch": 40,
+              "start": 207.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166807,
+              "pitch": 40,
+              "start": 216.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166808,
+              "pitch": 40,
+              "start": 223.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166837,
+              "pitch": 40,
+              "start": 232.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166838,
+              "pitch": 40,
+              "start": 239.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            },
+            {
+              "id": 1794670002166868,
+              "pitch": 40,
+              "start": 248.0,
+              "duration": 1.5,
+              "velocity": 0.85
+            },
+            {
+              "id": 1794670002166869,
+              "pitch": 40,
+              "start": 255.0,
+              "duration": 0.5,
+              "velocity": 0.22
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166905,
+          "pattern_id": 1794670002166904,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.snare-long",
+        "name": "Psy Snare Tail",
+        "description": "Longer snare with an evolving resonant tail; a filter LFO keeps the ring moving. Still one hit per note. E2 (MIDI 40).",
+        "oscillators": [
+          {
+            "waveform": "noise",
+            "level": 0.75,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.5
+          },
+          {
+            "waveform": "saw",
+            "level": 0.3,
+            "frequency_ratio": 1.5,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "triangle",
+            "level": 0.3,
+            "frequency_ratio": 2.5,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.001,
+          "decay": 0.6,
+          "sustain": 0.0,
+          "release": 0.15
+        },
+        "filter_cutoff": 3200.0,
+        "filter_resonance": 0.45,
+        "lfo": {
+          "waveform": "sine",
+          "rate_hz": 5.0,
+          "pitch_semitones": 0.0,
+          "filter_octaves": 1.0,
+          "amplitude": 0.0
+        },
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.75,
+        "monophonic": true,
+        "audition_note": 40,
+        "audition_duration": 1.0
+      }
+    },
+    {
+      "id": 1794670002166907,
+      "name": "Rim ghosts",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.4,
+      "pan": -0.1,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 20000.0,
+        "reverb": 0.15,
+        "delay": 0.0,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002166909,
+          "name": "Rim ghosts",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166477,
+              "pitch": 38,
+              "start": 36.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166478,
+              "pitch": 38,
+              "start": 44.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166508,
+              "pitch": 38,
+              "start": 52.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166509,
+              "pitch": 38,
+              "start": 60.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166538,
+              "pitch": 38,
+              "start": 68.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166539,
+              "pitch": 38,
+              "start": 76.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166569,
+              "pitch": 38,
+              "start": 84.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166570,
+              "pitch": 38,
+              "start": 92.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166598,
+              "pitch": 38,
+              "start": 100.0,
+              "duration": 0.5,
+              "velocity": 0.25
+            },
+            {
+              "id": 1794670002166626,
+              "pitch": 38,
+              "start": 116.0,
+              "duration": 0.5,
+              "velocity": 0.25
+            },
+            {
+              "id": 1794670002166655,
+              "pitch": 38,
+              "start": 132.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166656,
+              "pitch": 38,
+              "start": 140.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166687,
+              "pitch": 38,
+              "start": 148.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166688,
+              "pitch": 38,
+              "start": 156.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166717,
+              "pitch": 38,
+              "start": 164.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166718,
+              "pitch": 38,
+              "start": 172.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166748,
+              "pitch": 38,
+              "start": 180.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166749,
+              "pitch": 38,
+              "start": 188.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166778,
+              "pitch": 38,
+              "start": 196.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166779,
+              "pitch": 38,
+              "start": 204.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166809,
+              "pitch": 38,
+              "start": 212.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166810,
+              "pitch": 38,
+              "start": 220.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166839,
+              "pitch": 38,
+              "start": 228.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166840,
+              "pitch": 38,
+              "start": 236.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002166870,
+              "pitch": 38,
+              "start": 244.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166871,
+              "pitch": 38,
+              "start": 252.0,
+              "duration": 0.5,
+              "velocity": 0.28
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166910,
+          "pattern_id": 1794670002166909,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.rim",
+        "name": "Rim Shot",
+        "description": "Dry rimshot-style click: high square partials plus a ~25 ms noise tick. Play D2 (MIDI 38). Very short and dry.",
+        "oscillators": [
+          {
+            "waveform": "square",
+            "level": 0.5,
+            "frequency_ratio": 4.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "noise",
+            "level": 0.5,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.025
+          }
+        ],
+        "envelope": {
+          "attack": 0.001,
+          "decay": 0.07,
+          "sustain": 0.0,
+          "release": 0.02
+        },
+        "filter_cutoff": 12000.0,
+        "filter_resonance": 0.3,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.7,
+        "monophonic": true,
+        "audition_note": 38,
+        "audition_duration": 0.5
+      }
+    },
+    {
+      "id": 1794670002166912,
+      "name": "Hat",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.45,
+      "pan": 0.1,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 20000.0,
+        "reverb": 0.08,
+        "delay": 0.0,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002166914,
+          "name": "Hat",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166422,
+              "pitch": 64,
+              "start": 0.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166423,
+              "pitch": 64,
+              "start": 2.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166424,
+              "pitch": 64,
+              "start": 4.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166425,
+              "pitch": 64,
+              "start": 6.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166426,
+              "pitch": 64,
+              "start": 8.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166427,
+              "pitch": 64,
+              "start": 10.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166428,
+              "pitch": 64,
+              "start": 12.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166429,
+              "pitch": 64,
+              "start": 14.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166449,
+              "pitch": 64,
+              "start": 16.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166450,
+              "pitch": 64,
+              "start": 18.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166451,
+              "pitch": 64,
+              "start": 20.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166452,
+              "pitch": 64,
+              "start": 22.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166453,
+              "pitch": 64,
+              "start": 24.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166454,
+              "pitch": 64,
+              "start": 26.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166455,
+              "pitch": 64,
+              "start": 28.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166456,
+              "pitch": 64,
+              "start": 30.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166479,
+              "pitch": 64,
+              "start": 32.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166480,
+              "pitch": 64,
+              "start": 34.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166481,
+              "pitch": 64,
+              "start": 36.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166482,
+              "pitch": 64,
+              "start": 38.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166483,
+              "pitch": 64,
+              "start": 40.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166484,
+              "pitch": 64,
+              "start": 42.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166485,
+              "pitch": 64,
+              "start": 44.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166486,
+              "pitch": 64,
+              "start": 46.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166510,
+              "pitch": 64,
+              "start": 48.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166511,
+              "pitch": 64,
+              "start": 50.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166512,
+              "pitch": 64,
+              "start": 52.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166513,
+              "pitch": 64,
+              "start": 54.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166514,
+              "pitch": 64,
+              "start": 56.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166515,
+              "pitch": 64,
+              "start": 58.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166516,
+              "pitch": 64,
+              "start": 60.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166517,
+              "pitch": 64,
+              "start": 62.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166540,
+              "pitch": 64,
+              "start": 64.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166541,
+              "pitch": 64,
+              "start": 66.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166542,
+              "pitch": 64,
+              "start": 68.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166543,
+              "pitch": 64,
+              "start": 70.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166544,
+              "pitch": 64,
+              "start": 72.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166545,
+              "pitch": 64,
+              "start": 74.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166546,
+              "pitch": 64,
+              "start": 76.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166547,
+              "pitch": 64,
+              "start": 78.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166571,
+              "pitch": 64,
+              "start": 80.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166572,
+              "pitch": 64,
+              "start": 82.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166573,
+              "pitch": 64,
+              "start": 84.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166574,
+              "pitch": 64,
+              "start": 86.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166575,
+              "pitch": 64,
+              "start": 88.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166576,
+              "pitch": 64,
+              "start": 90.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166577,
+              "pitch": 64,
+              "start": 92.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166578,
+              "pitch": 64,
+              "start": 94.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166599,
+              "pitch": 64,
+              "start": 96.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166600,
+              "pitch": 64,
+              "start": 98.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166601,
+              "pitch": 64,
+              "start": 100.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166602,
+              "pitch": 64,
+              "start": 102.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166603,
+              "pitch": 64,
+              "start": 104.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166604,
+              "pitch": 64,
+              "start": 106.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166605,
+              "pitch": 64,
+              "start": 108.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166606,
+              "pitch": 64,
+              "start": 110.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166627,
+              "pitch": 64,
+              "start": 112.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166628,
+              "pitch": 64,
+              "start": 114.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166629,
+              "pitch": 64,
+              "start": 116.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166630,
+              "pitch": 64,
+              "start": 118.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166631,
+              "pitch": 64,
+              "start": 120.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166632,
+              "pitch": 64,
+              "start": 122.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166633,
+              "pitch": 64,
+              "start": 124.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166634,
+              "pitch": 64,
+              "start": 126.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166657,
+              "pitch": 64,
+              "start": 128.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166658,
+              "pitch": 64,
+              "start": 130.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166659,
+              "pitch": 64,
+              "start": 132.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166660,
+              "pitch": 64,
+              "start": 134.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166661,
+              "pitch": 64,
+              "start": 136.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166662,
+              "pitch": 64,
+              "start": 138.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166663,
+              "pitch": 64,
+              "start": 140.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166664,
+              "pitch": 64,
+              "start": 142.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166689,
+              "pitch": 64,
+              "start": 144.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166690,
+              "pitch": 64,
+              "start": 146.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166691,
+              "pitch": 64,
+              "start": 148.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166692,
+              "pitch": 64,
+              "start": 150.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166693,
+              "pitch": 64,
+              "start": 152.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166694,
+              "pitch": 64,
+              "start": 154.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166695,
+              "pitch": 64,
+              "start": 156.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166696,
+              "pitch": 64,
+              "start": 158.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166719,
+              "pitch": 64,
+              "start": 160.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166720,
+              "pitch": 64,
+              "start": 162.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166721,
+              "pitch": 64,
+              "start": 164.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166722,
+              "pitch": 64,
+              "start": 166.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166723,
+              "pitch": 64,
+              "start": 168.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166724,
+              "pitch": 64,
+              "start": 170.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166725,
+              "pitch": 64,
+              "start": 172.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166726,
+              "pitch": 64,
+              "start": 174.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166750,
+              "pitch": 64,
+              "start": 176.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166751,
+              "pitch": 64,
+              "start": 178.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166752,
+              "pitch": 64,
+              "start": 180.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166753,
+              "pitch": 64,
+              "start": 182.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166754,
+              "pitch": 64,
+              "start": 184.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166755,
+              "pitch": 64,
+              "start": 186.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166756,
+              "pitch": 64,
+              "start": 188.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166757,
+              "pitch": 64,
+              "start": 190.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166780,
+              "pitch": 64,
+              "start": 192.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166781,
+              "pitch": 64,
+              "start": 194.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166782,
+              "pitch": 64,
+              "start": 196.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166783,
+              "pitch": 64,
+              "start": 198.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166784,
+              "pitch": 64,
+              "start": 200.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166785,
+              "pitch": 64,
+              "start": 202.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166786,
+              "pitch": 64,
+              "start": 204.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166787,
+              "pitch": 64,
+              "start": 206.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166811,
+              "pitch": 64,
+              "start": 208.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166812,
+              "pitch": 64,
+              "start": 210.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166813,
+              "pitch": 64,
+              "start": 212.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166814,
+              "pitch": 64,
+              "start": 214.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166815,
+              "pitch": 64,
+              "start": 216.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166816,
+              "pitch": 64,
+              "start": 218.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166817,
+              "pitch": 64,
+              "start": 220.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166818,
+              "pitch": 64,
+              "start": 222.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166841,
+              "pitch": 64,
+              "start": 224.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166842,
+              "pitch": 64,
+              "start": 226.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166843,
+              "pitch": 64,
+              "start": 228.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166844,
+              "pitch": 64,
+              "start": 230.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166845,
+              "pitch": 64,
+              "start": 232.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166846,
+              "pitch": 64,
+              "start": 234.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166847,
+              "pitch": 64,
+              "start": 236.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166848,
+              "pitch": 64,
+              "start": 238.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166872,
+              "pitch": 64,
+              "start": 240.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166873,
+              "pitch": 64,
+              "start": 242.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166874,
+              "pitch": 64,
+              "start": 244.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166875,
+              "pitch": 64,
+              "start": 246.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166876,
+              "pitch": 64,
+              "start": 248.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166877,
+              "pitch": 64,
+              "start": 250.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            },
+            {
+              "id": 1794670002166878,
+              "pitch": 64,
+              "start": 252.0,
+              "duration": 0.6,
+              "velocity": 0.34
+            },
+            {
+              "id": 1794670002166879,
+              "pitch": 64,
+              "start": 254.0,
+              "duration": 0.6,
+              "velocity": 0.24
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166915,
+          "pattern_id": 1794670002166914,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.hat-closed",
+        "name": "Closed Hat",
+        "description": "Short synthesized hat tick: bright noise with a ~45 ms decay. Any MIDI works; velocity shapes level.",
+        "oscillators": [
+          {
+            "waveform": "noise",
+            "level": 1.0,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.001,
+          "decay": 0.045,
+          "sustain": 0.0,
+          "release": 0.015
+        },
+        "filter_cutoff": 13000.0,
+        "filter_resonance": 0.15,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.55,
+        "monophonic": true,
+        "audition_duration": 0.3
+      }
+    },
+    {
+      "id": 1794670002166917,
+      "name": "Shaker",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.4,
+      "pan": -0.15,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 20000.0,
+        "reverb": 0.1,
+        "delay": 0.0,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002166919,
+          "name": "Shaker",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166430,
+              "pitch": 60,
+              "start": 0.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166431,
+              "pitch": 60,
+              "start": 1.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166432,
+              "pitch": 60,
+              "start": 2.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166433,
+              "pitch": 60,
+              "start": 3.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166434,
+              "pitch": 60,
+              "start": 4.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166435,
+              "pitch": 60,
+              "start": 5.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166436,
+              "pitch": 60,
+              "start": 6.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166437,
+              "pitch": 60,
+              "start": 7.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166438,
+              "pitch": 60,
+              "start": 8.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166439,
+              "pitch": 60,
+              "start": 9.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166440,
+              "pitch": 60,
+              "start": 10.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166441,
+              "pitch": 60,
+              "start": 11.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166442,
+              "pitch": 60,
+              "start": 12.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166443,
+              "pitch": 60,
+              "start": 13.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166444,
+              "pitch": 60,
+              "start": 14.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166445,
+              "pitch": 60,
+              "start": 15.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166457,
+              "pitch": 60,
+              "start": 16.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166458,
+              "pitch": 60,
+              "start": 17.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166459,
+              "pitch": 60,
+              "start": 18.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166460,
+              "pitch": 60,
+              "start": 19.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166461,
+              "pitch": 60,
+              "start": 20.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166462,
+              "pitch": 60,
+              "start": 21.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166463,
+              "pitch": 60,
+              "start": 22.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166464,
+              "pitch": 60,
+              "start": 23.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166465,
+              "pitch": 60,
+              "start": 24.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166466,
+              "pitch": 60,
+              "start": 25.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166467,
+              "pitch": 60,
+              "start": 26.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166468,
+              "pitch": 60,
+              "start": 27.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166469,
+              "pitch": 60,
+              "start": 28.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166470,
+              "pitch": 60,
+              "start": 29.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166471,
+              "pitch": 60,
+              "start": 30.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166472,
+              "pitch": 60,
+              "start": 31.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166487,
+              "pitch": 60,
+              "start": 32.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166488,
+              "pitch": 60,
+              "start": 33.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166489,
+              "pitch": 60,
+              "start": 34.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166490,
+              "pitch": 60,
+              "start": 35.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166491,
+              "pitch": 60,
+              "start": 36.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166492,
+              "pitch": 60,
+              "start": 37.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166493,
+              "pitch": 60,
+              "start": 38.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166494,
+              "pitch": 60,
+              "start": 39.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166495,
+              "pitch": 60,
+              "start": 40.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166496,
+              "pitch": 60,
+              "start": 41.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166497,
+              "pitch": 60,
+              "start": 42.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166498,
+              "pitch": 60,
+              "start": 43.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166499,
+              "pitch": 60,
+              "start": 44.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166500,
+              "pitch": 60,
+              "start": 45.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166501,
+              "pitch": 60,
+              "start": 46.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166502,
+              "pitch": 60,
+              "start": 47.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166518,
+              "pitch": 60,
+              "start": 48.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166519,
+              "pitch": 60,
+              "start": 49.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166520,
+              "pitch": 60,
+              "start": 50.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166521,
+              "pitch": 60,
+              "start": 51.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166522,
+              "pitch": 60,
+              "start": 52.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166523,
+              "pitch": 60,
+              "start": 53.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166524,
+              "pitch": 60,
+              "start": 54.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166525,
+              "pitch": 60,
+              "start": 55.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166526,
+              "pitch": 60,
+              "start": 56.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166527,
+              "pitch": 60,
+              "start": 57.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166528,
+              "pitch": 60,
+              "start": 58.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166529,
+              "pitch": 60,
+              "start": 59.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166530,
+              "pitch": 60,
+              "start": 60.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166531,
+              "pitch": 60,
+              "start": 61.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166532,
+              "pitch": 60,
+              "start": 62.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166533,
+              "pitch": 60,
+              "start": 63.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166548,
+              "pitch": 60,
+              "start": 64.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166549,
+              "pitch": 60,
+              "start": 65.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166550,
+              "pitch": 60,
+              "start": 66.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166551,
+              "pitch": 60,
+              "start": 67.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166552,
+              "pitch": 60,
+              "start": 68.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166553,
+              "pitch": 60,
+              "start": 69.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166554,
+              "pitch": 60,
+              "start": 70.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166555,
+              "pitch": 60,
+              "start": 71.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166556,
+              "pitch": 60,
+              "start": 72.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166557,
+              "pitch": 60,
+              "start": 73.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166558,
+              "pitch": 60,
+              "start": 74.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166559,
+              "pitch": 60,
+              "start": 75.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166560,
+              "pitch": 60,
+              "start": 76.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166561,
+              "pitch": 60,
+              "start": 77.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166562,
+              "pitch": 60,
+              "start": 78.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166563,
+              "pitch": 60,
+              "start": 79.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166579,
+              "pitch": 60,
+              "start": 80.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166580,
+              "pitch": 60,
+              "start": 81.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166581,
+              "pitch": 60,
+              "start": 82.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166582,
+              "pitch": 60,
+              "start": 83.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166583,
+              "pitch": 60,
+              "start": 84.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166584,
+              "pitch": 60,
+              "start": 85.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166585,
+              "pitch": 60,
+              "start": 86.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166586,
+              "pitch": 60,
+              "start": 87.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166587,
+              "pitch": 60,
+              "start": 88.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166588,
+              "pitch": 60,
+              "start": 89.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166589,
+              "pitch": 60,
+              "start": 90.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166590,
+              "pitch": 60,
+              "start": 91.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166591,
+              "pitch": 60,
+              "start": 92.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166592,
+              "pitch": 60,
+              "start": 93.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166593,
+              "pitch": 60,
+              "start": 94.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166594,
+              "pitch": 60,
+              "start": 95.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166607,
+              "pitch": 60,
+              "start": 96.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166608,
+              "pitch": 60,
+              "start": 97.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166609,
+              "pitch": 60,
+              "start": 98.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166610,
+              "pitch": 60,
+              "start": 99.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166611,
+              "pitch": 60,
+              "start": 100.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166612,
+              "pitch": 60,
+              "start": 101.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166613,
+              "pitch": 60,
+              "start": 102.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166614,
+              "pitch": 60,
+              "start": 103.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166615,
+              "pitch": 60,
+              "start": 104.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166616,
+              "pitch": 60,
+              "start": 105.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166617,
+              "pitch": 60,
+              "start": 106.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166618,
+              "pitch": 60,
+              "start": 107.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166619,
+              "pitch": 60,
+              "start": 108.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166620,
+              "pitch": 60,
+              "start": 109.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166621,
+              "pitch": 60,
+              "start": 110.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166622,
+              "pitch": 60,
+              "start": 111.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166635,
+              "pitch": 60,
+              "start": 112.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166636,
+              "pitch": 60,
+              "start": 113.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166637,
+              "pitch": 60,
+              "start": 114.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166638,
+              "pitch": 60,
+              "start": 115.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166639,
+              "pitch": 60,
+              "start": 116.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166640,
+              "pitch": 60,
+              "start": 117.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166641,
+              "pitch": 60,
+              "start": 118.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166642,
+              "pitch": 60,
+              "start": 119.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166643,
+              "pitch": 60,
+              "start": 120.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166644,
+              "pitch": 60,
+              "start": 121.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166645,
+              "pitch": 60,
+              "start": 122.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166646,
+              "pitch": 60,
+              "start": 123.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166647,
+              "pitch": 60,
+              "start": 124.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166648,
+              "pitch": 60,
+              "start": 125.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166649,
+              "pitch": 60,
+              "start": 126.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166650,
+              "pitch": 60,
+              "start": 127.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166665,
+              "pitch": 60,
+              "start": 128.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166666,
+              "pitch": 60,
+              "start": 129.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166667,
+              "pitch": 60,
+              "start": 130.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166668,
+              "pitch": 60,
+              "start": 131.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166669,
+              "pitch": 60,
+              "start": 132.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166670,
+              "pitch": 60,
+              "start": 133.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166671,
+              "pitch": 60,
+              "start": 134.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166672,
+              "pitch": 60,
+              "start": 135.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166673,
+              "pitch": 60,
+              "start": 136.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166674,
+              "pitch": 60,
+              "start": 137.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166675,
+              "pitch": 60,
+              "start": 138.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166676,
+              "pitch": 60,
+              "start": 139.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166677,
+              "pitch": 60,
+              "start": 140.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166678,
+              "pitch": 60,
+              "start": 141.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166679,
+              "pitch": 60,
+              "start": 142.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166680,
+              "pitch": 60,
+              "start": 143.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166697,
+              "pitch": 60,
+              "start": 144.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166698,
+              "pitch": 60,
+              "start": 145.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166699,
+              "pitch": 60,
+              "start": 146.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166700,
+              "pitch": 60,
+              "start": 147.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166701,
+              "pitch": 60,
+              "start": 148.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166702,
+              "pitch": 60,
+              "start": 149.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166703,
+              "pitch": 60,
+              "start": 150.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166704,
+              "pitch": 60,
+              "start": 151.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166705,
+              "pitch": 60,
+              "start": 152.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166706,
+              "pitch": 60,
+              "start": 153.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166707,
+              "pitch": 60,
+              "start": 154.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166708,
+              "pitch": 60,
+              "start": 155.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166709,
+              "pitch": 60,
+              "start": 156.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166710,
+              "pitch": 60,
+              "start": 157.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166711,
+              "pitch": 60,
+              "start": 158.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166712,
+              "pitch": 60,
+              "start": 159.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166727,
+              "pitch": 60,
+              "start": 160.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166728,
+              "pitch": 60,
+              "start": 161.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166729,
+              "pitch": 60,
+              "start": 162.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166730,
+              "pitch": 60,
+              "start": 163.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166731,
+              "pitch": 60,
+              "start": 164.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166732,
+              "pitch": 60,
+              "start": 165.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166733,
+              "pitch": 60,
+              "start": 166.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166734,
+              "pitch": 60,
+              "start": 167.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166735,
+              "pitch": 60,
+              "start": 168.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166736,
+              "pitch": 60,
+              "start": 169.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166737,
+              "pitch": 60,
+              "start": 170.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166738,
+              "pitch": 60,
+              "start": 171.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166739,
+              "pitch": 60,
+              "start": 172.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166740,
+              "pitch": 60,
+              "start": 173.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166741,
+              "pitch": 60,
+              "start": 174.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166742,
+              "pitch": 60,
+              "start": 175.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166758,
+              "pitch": 60,
+              "start": 176.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166759,
+              "pitch": 60,
+              "start": 177.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166760,
+              "pitch": 60,
+              "start": 178.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166761,
+              "pitch": 60,
+              "start": 179.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166762,
+              "pitch": 60,
+              "start": 180.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166763,
+              "pitch": 60,
+              "start": 181.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166764,
+              "pitch": 60,
+              "start": 182.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166765,
+              "pitch": 60,
+              "start": 183.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166766,
+              "pitch": 60,
+              "start": 184.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166767,
+              "pitch": 60,
+              "start": 185.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166768,
+              "pitch": 60,
+              "start": 186.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166769,
+              "pitch": 60,
+              "start": 187.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166770,
+              "pitch": 60,
+              "start": 188.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166771,
+              "pitch": 60,
+              "start": 189.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166772,
+              "pitch": 60,
+              "start": 190.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166773,
+              "pitch": 60,
+              "start": 191.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166788,
+              "pitch": 60,
+              "start": 192.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166789,
+              "pitch": 60,
+              "start": 193.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166790,
+              "pitch": 60,
+              "start": 194.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166791,
+              "pitch": 60,
+              "start": 195.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166792,
+              "pitch": 60,
+              "start": 196.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166793,
+              "pitch": 60,
+              "start": 197.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166794,
+              "pitch": 60,
+              "start": 198.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166795,
+              "pitch": 60,
+              "start": 199.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166796,
+              "pitch": 60,
+              "start": 200.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166797,
+              "pitch": 60,
+              "start": 201.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166798,
+              "pitch": 60,
+              "start": 202.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166799,
+              "pitch": 60,
+              "start": 203.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166800,
+              "pitch": 60,
+              "start": 204.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166801,
+              "pitch": 60,
+              "start": 205.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166802,
+              "pitch": 60,
+              "start": 206.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166803,
+              "pitch": 60,
+              "start": 207.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166819,
+              "pitch": 60,
+              "start": 208.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166820,
+              "pitch": 60,
+              "start": 209.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166821,
+              "pitch": 60,
+              "start": 210.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166822,
+              "pitch": 60,
+              "start": 211.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166823,
+              "pitch": 60,
+              "start": 212.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166824,
+              "pitch": 60,
+              "start": 213.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166825,
+              "pitch": 60,
+              "start": 214.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166826,
+              "pitch": 60,
+              "start": 215.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166827,
+              "pitch": 60,
+              "start": 216.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166828,
+              "pitch": 60,
+              "start": 217.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166829,
+              "pitch": 60,
+              "start": 218.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166830,
+              "pitch": 60,
+              "start": 219.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166831,
+              "pitch": 60,
+              "start": 220.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166832,
+              "pitch": 60,
+              "start": 221.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166833,
+              "pitch": 60,
+              "start": 222.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166834,
+              "pitch": 60,
+              "start": 223.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166849,
+              "pitch": 60,
+              "start": 224.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166850,
+              "pitch": 60,
+              "start": 225.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166851,
+              "pitch": 60,
+              "start": 226.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166852,
+              "pitch": 60,
+              "start": 227.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166853,
+              "pitch": 60,
+              "start": 228.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166854,
+              "pitch": 60,
+              "start": 229.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166855,
+              "pitch": 60,
+              "start": 230.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166856,
+              "pitch": 60,
+              "start": 231.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166857,
+              "pitch": 60,
+              "start": 232.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166858,
+              "pitch": 60,
+              "start": 233.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166859,
+              "pitch": 60,
+              "start": 234.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166860,
+              "pitch": 60,
+              "start": 235.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166861,
+              "pitch": 60,
+              "start": 236.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166862,
+              "pitch": 60,
+              "start": 237.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166863,
+              "pitch": 60,
+              "start": 238.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166864,
+              "pitch": 60,
+              "start": 239.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166880,
+              "pitch": 60,
+              "start": 240.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166881,
+              "pitch": 60,
+              "start": 241.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166882,
+              "pitch": 60,
+              "start": 242.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166883,
+              "pitch": 60,
+              "start": 243.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166884,
+              "pitch": 60,
+              "start": 244.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166885,
+              "pitch": 60,
+              "start": 245.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166886,
+              "pitch": 60,
+              "start": 246.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166887,
+              "pitch": 60,
+              "start": 247.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166888,
+              "pitch": 60,
+              "start": 248.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166889,
+              "pitch": 60,
+              "start": 249.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166890,
+              "pitch": 60,
+              "start": 250.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166891,
+              "pitch": 60,
+              "start": 251.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166892,
+              "pitch": 60,
+              "start": 252.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166893,
+              "pitch": 60,
+              "start": 253.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            },
+            {
+              "id": 1794670002166894,
+              "pitch": 60,
+              "start": 254.0,
+              "duration": 0.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002166895,
+              "pitch": 60,
+              "start": 255.0,
+              "duration": 0.5,
+              "velocity": 0.18
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166920,
+          "pattern_id": 1794670002166919,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.shaker",
+        "name": "Shaker",
+        "description": "Tremolo-gated noise shaker: an ~11 Hz amplitude LFO chops the noise into shakes. Single hit per note. Any MIDI.",
+        "oscillators": [
+          {
+            "waveform": "noise",
+            "level": 1.0,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.004,
+          "decay": 0.16,
+          "sustain": 0.0,
+          "release": 0.04
+        },
+        "filter_cutoff": 7000.0,
+        "filter_resonance": 0.5,
+        "lfo": {
+          "waveform": "triangle",
+          "rate_hz": 11.0,
+          "pitch_semitones": 0.0,
+          "filter_octaves": 0.0,
+          "amplitude": 0.55
+        },
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.6,
+        "monophonic": true,
+        "audition_duration": 0.5
+      }
+    },
+    {
+      "id": 1794670002166922,
+      "name": "Cymbal",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.4,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 20000.0,
+        "reverb": 0.3,
+        "delay": 0.0,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002166924,
+          "name": "Cymbal",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166446,
+              "pitch": 60,
+              "start": 0.0,
+              "duration": 4.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166681,
+              "pitch": 60,
+              "start": 128.0,
+              "duration": 4.0,
+              "velocity": 0.55
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002166925,
+          "pattern_id": 1794670002166924,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-rhythm.cymbal",
+        "name": "Cymbal Wash",
+        "description": "Long synthesized cymbal wash; the filter starts darker and swells open across the decay. Layer quietly under kicks. Any MIDI.",
+        "oscillators": [
+          {
+            "waveform": "noise",
+            "level": 0.7,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.9
+          },
+          {
+            "waveform": "noise",
+            "level": 0.5,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.3
+          }
+        ],
+        "envelope": {
+          "attack": 0.002,
+          "decay": 1.2,
+          "sustain": 0.0,
+          "release": 0.3
+        },
+        "filter_envelope": {
+          "amount_octaves": -2.0,
+          "decay": 0.8
+        },
+        "filter_cutoff": 16000.0,
+        "filter_resonance": 0.5,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.55,
+        "monophonic": true,
+        "audition_duration": 1.5
+      }
+    },
+    {
+      "id": 1794670002167077,
+      "name": "Dub bass",
+      "color": [
+        242,
+        192,
+        110
+      ],
+      "instrument": "bass",
+      "volume": 0.8,
+      "pan": -0.05,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 1400.0,
+        "reverb": 0.08,
+        "delay": 0.15,
+        "drive": 0.1
+      },
+      "patterns": [
+        {
+          "id": 1794670002167079,
+          "name": "Dub bass",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166926,
+              "pitch": 38,
+              "start": 0.0,
+              "duration": 14.0,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166927,
+              "pitch": 38,
+              "start": 16.0,
+              "duration": 14.0,
+              "velocity": 0.7
+            },
+            {
+              "id": 1794670002166928,
+              "pitch": 34,
+              "start": 32.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166929,
+              "pitch": 41,
+              "start": 39.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166930,
+              "pitch": 34,
+              "start": 43.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166931,
+              "pitch": 46,
+              "start": 46.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166940,
+              "pitch": 34,
+              "start": 48.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166941,
+              "pitch": 41,
+              "start": 55.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166942,
+              "pitch": 34,
+              "start": 59.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166943,
+              "pitch": 46,
+              "start": 62.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166952,
+              "pitch": 29,
+              "start": 64.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166953,
+              "pitch": 36,
+              "start": 71.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166954,
+              "pitch": 29,
+              "start": 75.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166955,
+              "pitch": 41,
+              "start": 78.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166964,
+              "pitch": 29,
+              "start": 80.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166965,
+              "pitch": 36,
+              "start": 87.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166966,
+              "pitch": 29,
+              "start": 91.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166967,
+              "pitch": 41,
+              "start": 94.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166976,
+              "pitch": 36,
+              "start": 96.0,
+              "duration": 7.0,
+              "velocity": 0.65
+            },
+            {
+              "id": 1794670002166977,
+              "pitch": 43,
+              "start": 104.0,
+              "duration": 7.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166978,
+              "pitch": 36,
+              "start": 112.0,
+              "duration": 7.0,
+              "velocity": 0.65
+            },
+            {
+              "id": 1794670002166979,
+              "pitch": 43,
+              "start": 120.0,
+              "duration": 7.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166980,
+              "pitch": 38,
+              "start": 128.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166981,
+              "pitch": 45,
+              "start": 135.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166982,
+              "pitch": 38,
+              "start": 139.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166983,
+              "pitch": 50,
+              "start": 142.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002166992,
+              "pitch": 38,
+              "start": 144.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002166993,
+              "pitch": 45,
+              "start": 151.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002166994,
+              "pitch": 38,
+              "start": 155.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002166995,
+              "pitch": 50,
+              "start": 158.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167004,
+              "pitch": 34,
+              "start": 160.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167005,
+              "pitch": 41,
+              "start": 167.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167006,
+              "pitch": 34,
+              "start": 171.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167007,
+              "pitch": 46,
+              "start": 174.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167016,
+              "pitch": 34,
+              "start": 176.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167017,
+              "pitch": 41,
+              "start": 183.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167018,
+              "pitch": 34,
+              "start": 187.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167019,
+              "pitch": 46,
+              "start": 190.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167028,
+              "pitch": 29,
+              "start": 192.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167029,
+              "pitch": 36,
+              "start": 199.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167030,
+              "pitch": 29,
+              "start": 203.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167031,
+              "pitch": 41,
+              "start": 206.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167040,
+              "pitch": 29,
+              "start": 208.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167041,
+              "pitch": 36,
+              "start": 215.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167042,
+              "pitch": 29,
+              "start": 219.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167043,
+              "pitch": 41,
+              "start": 222.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167052,
+              "pitch": 36,
+              "start": 224.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167053,
+              "pitch": 43,
+              "start": 231.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167054,
+              "pitch": 36,
+              "start": 235.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167055,
+              "pitch": 48,
+              "start": 238.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167064,
+              "pitch": 36,
+              "start": 240.0,
+              "duration": 6.0,
+              "velocity": 0.8
+            },
+            {
+              "id": 1794670002167065,
+              "pitch": 43,
+              "start": 247.0,
+              "duration": 3.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167066,
+              "pitch": 36,
+              "start": 251.0,
+              "duration": 4.0,
+              "velocity": 0.6
+            },
+            {
+              "id": 1794670002167067,
+              "pitch": 48,
+              "start": 254.0,
+              "duration": 1.5,
+              "velocity": 0.5
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167080,
+          "pattern_id": 1794670002167079,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-bass.dub",
+        "name": "Dub Bass",
+        "description": "Dubby bass: the filter slowly opens after note-on and the long release leaves space for echoes. C1-F2 (MIDI 24-41).",
+        "oscillators": [
+          {
+            "waveform": "saw",
+            "level": 0.6,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "triangle",
+            "level": 0.3,
+            "frequency_ratio": 0.5,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.02,
+          "decay": 0.6,
+          "sustain": 0.6,
+          "release": 0.5
+        },
+        "filter_envelope": {
+          "amount_octaves": -2.5,
+          "decay": 1.2
+        },
+        "filter_cutoff": 1100.0,
+        "filter_resonance": 0.35,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.75,
+        "monophonic": true,
+        "audition_note": 36,
+        "audition_duration": 1.6
+      }
+    },
+    {
+      "id": 1794670002167082,
+      "name": "Bass chords",
+      "color": [
+        242,
+        192,
+        110
+      ],
+      "instrument": "bass",
+      "volume": 0.45,
+      "pan": 0.15,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 2000.0,
+        "reverb": 0.2,
+        "delay": 0.3,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002167084,
+          "name": "Bass chords",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002166932,
+              "pitch": 46,
+              "start": 38.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166933,
+              "pitch": 50,
+              "start": 38.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166934,
+              "pitch": 53,
+              "start": 38.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166935,
+              "pitch": 58,
+              "start": 38.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166936,
+              "pitch": 46,
+              "start": 46.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166937,
+              "pitch": 50,
+              "start": 46.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166938,
+              "pitch": 53,
+              "start": 46.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166939,
+              "pitch": 58,
+              "start": 46.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166944,
+              "pitch": 46,
+              "start": 54.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166945,
+              "pitch": 50,
+              "start": 54.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166946,
+              "pitch": 53,
+              "start": 54.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166947,
+              "pitch": 58,
+              "start": 54.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166948,
+              "pitch": 46,
+              "start": 62.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166949,
+              "pitch": 50,
+              "start": 62.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166950,
+              "pitch": 53,
+              "start": 62.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166951,
+              "pitch": 58,
+              "start": 62.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166956,
+              "pitch": 53,
+              "start": 70.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166957,
+              "pitch": 57,
+              "start": 70.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166958,
+              "pitch": 60,
+              "start": 70.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166959,
+              "pitch": 65,
+              "start": 70.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166960,
+              "pitch": 53,
+              "start": 78.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166961,
+              "pitch": 57,
+              "start": 78.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166962,
+              "pitch": 60,
+              "start": 78.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166963,
+              "pitch": 65,
+              "start": 78.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166968,
+              "pitch": 53,
+              "start": 86.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166969,
+              "pitch": 57,
+              "start": 86.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166970,
+              "pitch": 60,
+              "start": 86.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166971,
+              "pitch": 65,
+              "start": 86.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166972,
+              "pitch": 53,
+              "start": 94.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166973,
+              "pitch": 57,
+              "start": 94.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166974,
+              "pitch": 60,
+              "start": 94.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166975,
+              "pitch": 65,
+              "start": 94.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166984,
+              "pitch": 50,
+              "start": 134.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166985,
+              "pitch": 53,
+              "start": 134.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166986,
+              "pitch": 57,
+              "start": 134.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166987,
+              "pitch": 60,
+              "start": 134.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166988,
+              "pitch": 50,
+              "start": 142.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166989,
+              "pitch": 53,
+              "start": 142.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166990,
+              "pitch": 57,
+              "start": 142.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166991,
+              "pitch": 60,
+              "start": 142.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002166996,
+              "pitch": 50,
+              "start": 150.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002166997,
+              "pitch": 53,
+              "start": 150.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002166998,
+              "pitch": 57,
+              "start": 150.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002166999,
+              "pitch": 60,
+              "start": 150.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167000,
+              "pitch": 50,
+              "start": 158.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167001,
+              "pitch": 53,
+              "start": 158.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167002,
+              "pitch": 57,
+              "start": 158.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167003,
+              "pitch": 60,
+              "start": 158.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167008,
+              "pitch": 46,
+              "start": 166.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167009,
+              "pitch": 50,
+              "start": 166.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167010,
+              "pitch": 53,
+              "start": 166.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167011,
+              "pitch": 58,
+              "start": 166.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167012,
+              "pitch": 46,
+              "start": 174.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167013,
+              "pitch": 50,
+              "start": 174.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167014,
+              "pitch": 53,
+              "start": 174.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167015,
+              "pitch": 58,
+              "start": 174.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167020,
+              "pitch": 46,
+              "start": 182.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167021,
+              "pitch": 50,
+              "start": 182.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167022,
+              "pitch": 53,
+              "start": 182.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167023,
+              "pitch": 58,
+              "start": 182.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167024,
+              "pitch": 46,
+              "start": 190.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167025,
+              "pitch": 50,
+              "start": 190.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167026,
+              "pitch": 53,
+              "start": 190.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167027,
+              "pitch": 58,
+              "start": 190.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167032,
+              "pitch": 53,
+              "start": 198.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167033,
+              "pitch": 57,
+              "start": 198.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167034,
+              "pitch": 60,
+              "start": 198.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167035,
+              "pitch": 65,
+              "start": 198.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167036,
+              "pitch": 53,
+              "start": 206.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167037,
+              "pitch": 57,
+              "start": 206.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167038,
+              "pitch": 60,
+              "start": 206.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167039,
+              "pitch": 65,
+              "start": 206.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167044,
+              "pitch": 53,
+              "start": 214.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167045,
+              "pitch": 57,
+              "start": 214.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167046,
+              "pitch": 60,
+              "start": 214.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167047,
+              "pitch": 65,
+              "start": 214.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167048,
+              "pitch": 53,
+              "start": 222.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167049,
+              "pitch": 57,
+              "start": 222.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167050,
+              "pitch": 60,
+              "start": 222.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167051,
+              "pitch": 65,
+              "start": 222.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167056,
+              "pitch": 48,
+              "start": 230.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167057,
+              "pitch": 52,
+              "start": 230.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167058,
+              "pitch": 55,
+              "start": 230.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167059,
+              "pitch": 60,
+              "start": 230.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167060,
+              "pitch": 48,
+              "start": 238.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167061,
+              "pitch": 52,
+              "start": 238.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167062,
+              "pitch": 55,
+              "start": 238.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167063,
+              "pitch": 60,
+              "start": 238.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167068,
+              "pitch": 48,
+              "start": 246.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167069,
+              "pitch": 52,
+              "start": 246.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167070,
+              "pitch": 55,
+              "start": 246.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167071,
+              "pitch": 60,
+              "start": 246.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            },
+            {
+              "id": 1794670002167072,
+              "pitch": 48,
+              "start": 254.0,
+              "duration": 1.6,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167073,
+              "pitch": 52,
+              "start": 254.0,
+              "duration": 1.6,
+              "velocity": 0.39000002
+            },
+            {
+              "id": 1794670002167074,
+              "pitch": 55,
+              "start": 254.0,
+              "duration": 1.6,
+              "velocity": 0.42000002
+            },
+            {
+              "id": 1794670002167075,
+              "pitch": 60,
+              "start": 254.0,
+              "duration": 1.6,
+              "velocity": 0.45000002
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167085,
+          "pattern_id": 1794670002167084,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-bass.dub-space",
+        "name": "Dub Space",
+        "description": "Spacious poly dub bass: slow filter swell, drift LFO and a long release. Deliberately polyphonic for dub chords; C2-G2 (MIDI 36-43).",
+        "oscillators": [
+          {
+            "waveform": "sine",
+            "level": 0.6,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "saw",
+            "level": 0.35,
+            "frequency_ratio": 1.0,
+            "detune_cents": 4.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.03,
+          "decay": 0.8,
+          "sustain": 0.65,
+          "release": 0.8
+        },
+        "filter_envelope": {
+          "amount_octaves": -3.0,
+          "decay": 1.5
+        },
+        "filter_cutoff": 1500.0,
+        "filter_resonance": 0.4,
+        "lfo": {
+          "waveform": "sine",
+          "rate_hz": 0.6,
+          "pitch_semitones": 0.0,
+          "filter_octaves": 0.8,
+          "amplitude": 0.0
+        },
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.7,
+        "monophonic": false,
+        "audition_note": 40,
+        "audition_duration": 2.0
+      }
+    },
+    {
+      "id": 1794670002167199,
+      "name": "Dub organ",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.5,
+      "pan": 0.1,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 2400.0,
+        "reverb": 0.4,
+        "delay": 0.5,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002167201,
+          "name": "Dub organ",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002167086,
+              "pitch": 50,
+              "start": 0.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167087,
+              "pitch": 53,
+              "start": 0.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167088,
+              "pitch": 57,
+              "start": 0.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167089,
+              "pitch": 60,
+              "start": 0.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167090,
+              "pitch": 50,
+              "start": 16.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167091,
+              "pitch": 53,
+              "start": 16.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167092,
+              "pitch": 57,
+              "start": 16.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167093,
+              "pitch": 60,
+              "start": 16.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167094,
+              "pitch": 46,
+              "start": 38.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167095,
+              "pitch": 50,
+              "start": 38.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167096,
+              "pitch": 53,
+              "start": 38.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167097,
+              "pitch": 58,
+              "start": 38.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167098,
+              "pitch": 46,
+              "start": 46.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167099,
+              "pitch": 50,
+              "start": 46.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167100,
+              "pitch": 53,
+              "start": 46.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167101,
+              "pitch": 58,
+              "start": 46.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167102,
+              "pitch": 46,
+              "start": 54.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167103,
+              "pitch": 50,
+              "start": 54.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167104,
+              "pitch": 53,
+              "start": 54.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167105,
+              "pitch": 58,
+              "start": 54.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167106,
+              "pitch": 46,
+              "start": 62.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167107,
+              "pitch": 50,
+              "start": 62.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167108,
+              "pitch": 53,
+              "start": 62.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167109,
+              "pitch": 58,
+              "start": 62.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167110,
+              "pitch": 53,
+              "start": 70.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167111,
+              "pitch": 57,
+              "start": 70.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167112,
+              "pitch": 60,
+              "start": 70.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167113,
+              "pitch": 65,
+              "start": 70.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167114,
+              "pitch": 53,
+              "start": 78.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167115,
+              "pitch": 57,
+              "start": 78.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167116,
+              "pitch": 60,
+              "start": 78.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167117,
+              "pitch": 65,
+              "start": 78.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167118,
+              "pitch": 53,
+              "start": 86.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167119,
+              "pitch": 57,
+              "start": 86.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167120,
+              "pitch": 60,
+              "start": 86.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167121,
+              "pitch": 65,
+              "start": 86.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167122,
+              "pitch": 53,
+              "start": 94.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167123,
+              "pitch": 57,
+              "start": 94.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167124,
+              "pitch": 60,
+              "start": 94.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167125,
+              "pitch": 65,
+              "start": 94.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167126,
+              "pitch": 48,
+              "start": 96.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167127,
+              "pitch": 52,
+              "start": 96.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167128,
+              "pitch": 55,
+              "start": 96.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167129,
+              "pitch": 60,
+              "start": 96.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167130,
+              "pitch": 48,
+              "start": 112.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167131,
+              "pitch": 52,
+              "start": 112.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167132,
+              "pitch": 55,
+              "start": 112.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167133,
+              "pitch": 60,
+              "start": 112.0,
+              "duration": 15.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167134,
+              "pitch": 50,
+              "start": 134.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167135,
+              "pitch": 53,
+              "start": 134.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167136,
+              "pitch": 57,
+              "start": 134.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167137,
+              "pitch": 60,
+              "start": 134.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167138,
+              "pitch": 50,
+              "start": 142.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167139,
+              "pitch": 53,
+              "start": 142.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167140,
+              "pitch": 57,
+              "start": 142.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167141,
+              "pitch": 60,
+              "start": 142.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167142,
+              "pitch": 50,
+              "start": 150.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167143,
+              "pitch": 53,
+              "start": 150.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167144,
+              "pitch": 57,
+              "start": 150.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167145,
+              "pitch": 60,
+              "start": 150.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167146,
+              "pitch": 50,
+              "start": 158.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167147,
+              "pitch": 53,
+              "start": 158.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167148,
+              "pitch": 57,
+              "start": 158.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167149,
+              "pitch": 60,
+              "start": 158.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167150,
+              "pitch": 46,
+              "start": 166.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167151,
+              "pitch": 50,
+              "start": 166.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167152,
+              "pitch": 53,
+              "start": 166.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167153,
+              "pitch": 58,
+              "start": 166.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167154,
+              "pitch": 46,
+              "start": 174.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167155,
+              "pitch": 50,
+              "start": 174.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167156,
+              "pitch": 53,
+              "start": 174.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167157,
+              "pitch": 58,
+              "start": 174.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167158,
+              "pitch": 46,
+              "start": 182.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167159,
+              "pitch": 50,
+              "start": 182.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167160,
+              "pitch": 53,
+              "start": 182.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167161,
+              "pitch": 58,
+              "start": 182.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167162,
+              "pitch": 46,
+              "start": 190.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167163,
+              "pitch": 50,
+              "start": 190.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167164,
+              "pitch": 53,
+              "start": 190.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167165,
+              "pitch": 58,
+              "start": 190.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167166,
+              "pitch": 53,
+              "start": 198.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167167,
+              "pitch": 57,
+              "start": 198.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167168,
+              "pitch": 60,
+              "start": 198.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167169,
+              "pitch": 65,
+              "start": 198.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167170,
+              "pitch": 53,
+              "start": 206.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167171,
+              "pitch": 57,
+              "start": 206.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167172,
+              "pitch": 60,
+              "start": 206.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167173,
+              "pitch": 65,
+              "start": 206.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167174,
+              "pitch": 53,
+              "start": 214.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167175,
+              "pitch": 57,
+              "start": 214.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167176,
+              "pitch": 60,
+              "start": 214.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167177,
+              "pitch": 65,
+              "start": 214.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167178,
+              "pitch": 53,
+              "start": 222.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167179,
+              "pitch": 57,
+              "start": 222.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167180,
+              "pitch": 60,
+              "start": 222.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167181,
+              "pitch": 65,
+              "start": 222.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167182,
+              "pitch": 48,
+              "start": 230.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167183,
+              "pitch": 52,
+              "start": 230.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167184,
+              "pitch": 55,
+              "start": 230.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167185,
+              "pitch": 60,
+              "start": 230.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167186,
+              "pitch": 48,
+              "start": 238.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167187,
+              "pitch": 52,
+              "start": 238.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167188,
+              "pitch": 55,
+              "start": 238.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167189,
+              "pitch": 60,
+              "start": 238.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167190,
+              "pitch": 48,
+              "start": 246.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167191,
+              "pitch": 52,
+              "start": 246.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167192,
+              "pitch": 55,
+              "start": 246.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167193,
+              "pitch": 60,
+              "start": 246.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            },
+            {
+              "id": 1794670002167194,
+              "pitch": 48,
+              "start": 254.0,
+              "duration": 1.8,
+              "velocity": 0.4
+            },
+            {
+              "id": 1794670002167195,
+              "pitch": 52,
+              "start": 254.0,
+              "duration": 1.8,
+              "velocity": 0.43
+            },
+            {
+              "id": 1794670002167196,
+              "pitch": 55,
+              "start": 254.0,
+              "duration": 1.8,
+              "velocity": 0.46
+            },
+            {
+              "id": 1794670002167197,
+              "pitch": 60,
+              "start": 254.0,
+              "duration": 1.8,
+              "velocity": 0.49
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167202,
+          "pattern_id": 1794670002167201,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-keys.dub-organ",
+        "name": "Dub Organ",
+        "description": "Deep dub-style organ: sub-heavy voicing that starts dark and slowly opens via a negative filter envelope — a filter sweep baked into every note. Pair with delay and reverb for full dub weight.",
+        "oscillators": [
+          {
+            "waveform": "sine",
+            "level": 0.4,
+            "frequency_ratio": 0.5,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "triangle",
+            "level": 0.3,
+            "frequency_ratio": 0.5,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "saw",
+            "level": 0.3,
+            "frequency_ratio": 1.0,
+            "detune_cents": 5.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "sine",
+            "level": 0.2,
+            "frequency_ratio": 3.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.05,
+          "decay": 1.0,
+          "sustain": 0.8,
+          "release": 3.0
+        },
+        "filter_envelope": {
+          "amount_octaves": -2.5,
+          "decay": 3.5
+        },
+        "filter_cutoff": 800.0,
+        "filter_resonance": 0.4,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.6,
+        "monophonic": false,
+        "audition_note": 48,
+        "audition_duration": 3.0
+      }
+    },
+    {
+      "id": 1794670002167260,
+      "name": "Soul keys",
+      "color": [
+        186,
+        230,
+        94
+      ],
+      "instrument": "piano",
+      "volume": 0.45,
+      "pan": -0.15,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 4200.0,
+        "reverb": 0.35,
+        "delay": 0.4,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002167262,
+          "name": "Soul keys",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002167203,
+              "pitch": 58,
+              "start": 42.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167204,
+              "pitch": 62,
+              "start": 42.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167205,
+              "pitch": 65,
+              "start": 42.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167206,
+              "pitch": 70,
+              "start": 42.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167207,
+              "pitch": 58,
+              "start": 58.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167208,
+              "pitch": 62,
+              "start": 58.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167209,
+              "pitch": 65,
+              "start": 58.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167210,
+              "pitch": 70,
+              "start": 58.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167211,
+              "pitch": 65,
+              "start": 74.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167212,
+              "pitch": 69,
+              "start": 74.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167213,
+              "pitch": 72,
+              "start": 74.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167214,
+              "pitch": 77,
+              "start": 74.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167215,
+              "pitch": 65,
+              "start": 90.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167216,
+              "pitch": 69,
+              "start": 90.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167217,
+              "pitch": 72,
+              "start": 90.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167218,
+              "pitch": 77,
+              "start": 90.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167219,
+              "pitch": 48,
+              "start": 100.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167220,
+              "pitch": 52,
+              "start": 100.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167221,
+              "pitch": 55,
+              "start": 100.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167222,
+              "pitch": 60,
+              "start": 100.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167223,
+              "pitch": 48,
+              "start": 116.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167224,
+              "pitch": 52,
+              "start": 116.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167225,
+              "pitch": 55,
+              "start": 116.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167226,
+              "pitch": 60,
+              "start": 116.0,
+              "duration": 10.0,
+              "velocity": 0.28
+            },
+            {
+              "id": 1794670002167227,
+              "pitch": 62,
+              "start": 138.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167228,
+              "pitch": 65,
+              "start": 138.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167229,
+              "pitch": 69,
+              "start": 138.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167230,
+              "pitch": 72,
+              "start": 138.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167231,
+              "pitch": 62,
+              "start": 154.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167232,
+              "pitch": 65,
+              "start": 154.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167233,
+              "pitch": 69,
+              "start": 154.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167234,
+              "pitch": 72,
+              "start": 154.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167235,
+              "pitch": 58,
+              "start": 170.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167236,
+              "pitch": 62,
+              "start": 170.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167237,
+              "pitch": 65,
+              "start": 170.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167238,
+              "pitch": 70,
+              "start": 170.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167239,
+              "pitch": 58,
+              "start": 186.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167240,
+              "pitch": 62,
+              "start": 186.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167241,
+              "pitch": 65,
+              "start": 186.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167242,
+              "pitch": 70,
+              "start": 186.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167243,
+              "pitch": 65,
+              "start": 202.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167244,
+              "pitch": 69,
+              "start": 202.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167245,
+              "pitch": 72,
+              "start": 202.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167246,
+              "pitch": 77,
+              "start": 202.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167247,
+              "pitch": 65,
+              "start": 218.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167248,
+              "pitch": 69,
+              "start": 218.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167249,
+              "pitch": 72,
+              "start": 218.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167250,
+              "pitch": 77,
+              "start": 218.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167251,
+              "pitch": 60,
+              "start": 234.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167252,
+              "pitch": 64,
+              "start": 234.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167253,
+              "pitch": 67,
+              "start": 234.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167254,
+              "pitch": 72,
+              "start": 234.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167255,
+              "pitch": 60,
+              "start": 250.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167256,
+              "pitch": 64,
+              "start": 250.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167257,
+              "pitch": 67,
+              "start": 250.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            },
+            {
+              "id": 1794670002167258,
+              "pitch": 72,
+              "start": 250.0,
+              "duration": 2.5,
+              "velocity": 0.3
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167263,
+          "pattern_id": 1794670002167262,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-keys.soul-keys",
+        "name": "Soul Keys",
+        "description": "Warm chord-friendly electric keys for soul and jazz voicings (synthesized EP, not a sample). Detuned triangle body, fast-decaying tine partials and light tremolo. Keep gain moderate on big chords; MIDI 48-72.",
+        "oscillators": [
+          {
+            "waveform": "triangle",
+            "level": 0.35,
+            "frequency_ratio": 1.0,
+            "detune_cents": -5.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "triangle",
+            "level": 0.35,
+            "frequency_ratio": 1.0,
+            "detune_cents": 5.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "sine",
+            "level": 0.18,
+            "frequency_ratio": 3.92,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.5
+          },
+          {
+            "waveform": "sine",
+            "level": 0.08,
+            "frequency_ratio": 9.4,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5,
+            "decay": 0.2
+          }
+        ],
+        "envelope": {
+          "attack": 0.01,
+          "decay": 0.9,
+          "sustain": 0.45,
+          "release": 1.0
+        },
+        "filter_envelope": {
+          "amount_octaves": 1.2,
+          "decay": 0.6
+        },
+        "filter_cutoff": 4000.0,
+        "filter_resonance": 0.45,
+        "lfo": {
+          "waveform": "sine",
+          "rate_hz": 4.0,
+          "pitch_semitones": 0.2,
+          "filter_octaves": 0.0,
+          "amplitude": 0.22
+        },
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.7,
+        "monophonic": false,
+        "audition_note": 55,
+        "audition_duration": 1.5
+      }
+    },
+    {
+      "id": 1794670002167329,
+      "name": "Dark nebula",
+      "color": [
+        152,
+        162,
+        255
+      ],
+      "instrument": "pad",
+      "volume": 0.48,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 2400.0,
+        "reverb": 0.5,
+        "delay": 0.2,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002167331,
+          "name": "Dark nebula",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002167264,
+              "pitch": 50,
+              "start": 0.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167265,
+              "pitch": 53,
+              "start": 0.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167266,
+              "pitch": 57,
+              "start": 0.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167267,
+              "pitch": 62,
+              "start": 0.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167268,
+              "pitch": 50,
+              "start": 16.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167269,
+              "pitch": 53,
+              "start": 16.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167270,
+              "pitch": 57,
+              "start": 16.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167271,
+              "pitch": 62,
+              "start": 16.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167272,
+              "pitch": 46,
+              "start": 32.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167273,
+              "pitch": 50,
+              "start": 32.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167274,
+              "pitch": 53,
+              "start": 32.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167275,
+              "pitch": 58,
+              "start": 32.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167276,
+              "pitch": 46,
+              "start": 48.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167277,
+              "pitch": 50,
+              "start": 48.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167278,
+              "pitch": 53,
+              "start": 48.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167279,
+              "pitch": 58,
+              "start": 48.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167280,
+              "pitch": 53,
+              "start": 64.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167281,
+              "pitch": 57,
+              "start": 64.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167282,
+              "pitch": 60,
+              "start": 64.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167283,
+              "pitch": 65,
+              "start": 64.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167284,
+              "pitch": 53,
+              "start": 80.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167285,
+              "pitch": 57,
+              "start": 80.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167286,
+              "pitch": 60,
+              "start": 80.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167287,
+              "pitch": 65,
+              "start": 80.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167288,
+              "pitch": 48,
+              "start": 96.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167289,
+              "pitch": 52,
+              "start": 96.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167290,
+              "pitch": 55,
+              "start": 96.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167291,
+              "pitch": 60,
+              "start": 96.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167292,
+              "pitch": 48,
+              "start": 112.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167293,
+              "pitch": 52,
+              "start": 112.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167294,
+              "pitch": 55,
+              "start": 112.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167295,
+              "pitch": 60,
+              "start": 112.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167296,
+              "pitch": 50,
+              "start": 128.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167297,
+              "pitch": 53,
+              "start": 128.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167298,
+              "pitch": 57,
+              "start": 128.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167299,
+              "pitch": 62,
+              "start": 128.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167300,
+              "pitch": 50,
+              "start": 144.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167301,
+              "pitch": 53,
+              "start": 144.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167302,
+              "pitch": 57,
+              "start": 144.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167303,
+              "pitch": 62,
+              "start": 144.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167304,
+              "pitch": 46,
+              "start": 160.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167305,
+              "pitch": 50,
+              "start": 160.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167306,
+              "pitch": 53,
+              "start": 160.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167307,
+              "pitch": 58,
+              "start": 160.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167308,
+              "pitch": 46,
+              "start": 176.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167309,
+              "pitch": 50,
+              "start": 176.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167310,
+              "pitch": 53,
+              "start": 176.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167311,
+              "pitch": 58,
+              "start": 176.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167312,
+              "pitch": 53,
+              "start": 192.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167313,
+              "pitch": 57,
+              "start": 192.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167314,
+              "pitch": 60,
+              "start": 192.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167315,
+              "pitch": 65,
+              "start": 192.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167316,
+              "pitch": 53,
+              "start": 208.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167317,
+              "pitch": 57,
+              "start": 208.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167318,
+              "pitch": 60,
+              "start": 208.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167319,
+              "pitch": 65,
+              "start": 208.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167320,
+              "pitch": 48,
+              "start": 224.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167321,
+              "pitch": 52,
+              "start": 224.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167322,
+              "pitch": 55,
+              "start": 224.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167323,
+              "pitch": 60,
+              "start": 224.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167324,
+              "pitch": 48,
+              "start": 240.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167325,
+              "pitch": 52,
+              "start": 240.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167326,
+              "pitch": 55,
+              "start": 240.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            },
+            {
+              "id": 1794670002167327,
+              "pitch": 60,
+              "start": 240.0,
+              "duration": 31.0,
+              "velocity": 0.36
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167332,
+          "pattern_id": 1794670002167331,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-space.dark-nebula",
+        "name": "Dark Nebula",
+        "description": "Dark, heavy pad that opens slowly from a muffled start - the negative filter envelope gives a long bloom. Low-mid chords work best.",
+        "oscillators": [
+          {
+            "waveform": "saw",
+            "level": 0.5,
+            "frequency_ratio": 1.0,
+            "detune_cents": -9.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "saw",
+            "level": 0.5,
+            "frequency_ratio": 1.0,
+            "detune_cents": 11.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "triangle",
+            "level": 0.4,
+            "frequency_ratio": 0.5,
+            "detune_cents": 3.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 1.5,
+          "decay": 1.2,
+          "sustain": 0.75,
+          "release": 5.0
+        },
+        "filter_envelope": {
+          "amount_octaves": -2.5,
+          "decay": 4.0
+        },
+        "filter_cutoff": 850.0,
+        "filter_resonance": 0.6,
+        "lfo": {
+          "waveform": "sine",
+          "rate_hz": 0.18,
+          "pitch_semitones": 0.0,
+          "filter_octaves": 1.2,
+          "amplitude": 0.5
+        },
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.7,
+        "monophonic": false,
+        "audition_note": 50,
+        "audition_duration": 4.0
+      }
+    },
+    {
+      "id": 1794670002167342,
+      "name": "Dark lead",
+      "color": [
+        239,
+        145,
+        181
+      ],
+      "instrument": "lead",
+      "volume": 0.55,
+      "pan": 0.1,
+      "mute": false,
+      "solo": false,
+      "effects": {
+        "cutoff_hz": 3200.0,
+        "reverb": 0.4,
+        "delay": 0.55,
+        "drive": 0.0
+      },
+      "patterns": [
+        {
+          "id": 1794670002167344,
+          "name": "Dark lead",
+          "length": 256,
+          "notes": [
+            {
+              "id": 1794670002167333,
+              "pitch": 62,
+              "start": 32.0,
+              "duration": 4.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167334,
+              "pitch": 65,
+              "start": 38.0,
+              "duration": 3.0,
+              "velocity": 0.48
+            },
+            {
+              "id": 1794670002167335,
+              "pitch": 67,
+              "start": 42.0,
+              "duration": 5.0,
+              "velocity": 0.52
+            },
+            {
+              "id": 1794670002167336,
+              "pitch": 69,
+              "start": 128.0,
+              "duration": 4.0,
+              "velocity": 0.56
+            },
+            {
+              "id": 1794670002167337,
+              "pitch": 67,
+              "start": 134.0,
+              "duration": 3.0,
+              "velocity": 0.5
+            },
+            {
+              "id": 1794670002167338,
+              "pitch": 65,
+              "start": 138.0,
+              "duration": 5.0,
+              "velocity": 0.52
+            },
+            {
+              "id": 1794670002167339,
+              "pitch": 62,
+              "start": 224.0,
+              "duration": 6.0,
+              "velocity": 0.55
+            },
+            {
+              "id": 1794670002167340,
+              "pitch": 60,
+              "start": 232.0,
+              "duration": 7.0,
+              "velocity": 0.5
+            }
+          ]
+        }
+      ],
+      "clips": [
+        {
+          "id": 1794670002167345,
+          "pattern_id": 1794670002167344,
+          "start": 0.0,
+          "loops": 1,
+          "fade_in": 0.0,
+          "fade_out": 0.0
+        }
+      ],
+      "preset": {
+        "id": "psy-leads.dark-lead",
+        "name": "Dark Lead",
+        "description": "Deep, dubby lead with an octave-down body and a slow scoop up into each note. Play low-mid; pairs well with bright arps.",
+        "oscillators": [
+          {
+            "waveform": "saw",
+            "level": 0.5,
+            "frequency_ratio": 0.5,
+            "detune_cents": -4.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "square",
+            "level": 0.4,
+            "frequency_ratio": 1.0,
+            "detune_cents": 6.0,
+            "pulse_width": 0.5
+          },
+          {
+            "waveform": "sine",
+            "level": 0.5,
+            "frequency_ratio": 1.0,
+            "detune_cents": 0.0,
+            "pulse_width": 0.5
+          }
+        ],
+        "envelope": {
+          "attack": 0.01,
+          "decay": 0.35,
+          "sustain": 0.6,
+          "release": 0.3
+        },
+        "pitch_envelope": {
+          "amount_semitones": -9.0,
+          "decay": 0.3
+        },
+        "filter_envelope": {
+          "amount_octaves": 1.5,
+          "decay": 0.25
+        },
+        "filter_cutoff": 750.0,
+        "filter_resonance": 0.55,
+        "bit_depth": 24,
+        "sample_hold": 1,
+        "gain": 0.8,
+        "monophonic": true,
+        "audition_note": 55,
+        "audition_duration": 1.4
+      }
+    }
+  ]
+}

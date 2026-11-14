@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "id": "psy-arps",
+  "name": "Psy · Plucks & Arps",
+  "description": "Percussive plucks, mallets, bells and metallic tones for programmed-feeling sequences. There is no arpeggiator - every sound is one played note; run 16ths or chords yourself.",
+  "author": "Devin",
+  "instruments": [
+    {
+      "id": "psy-arps.glass-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "Glass Pluck",
+      "description": "Bright glassy pluck: sine body with fast-decaying high partials. Arpeggiate fast for shimmer; chords give glassy hits.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 3.98, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.3 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 8.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.18 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.7, "sustain": 0.05, "release": 0.3 },
+      "filter_cutoff": 9500.0,
+      "filter_resonance": 0.15,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.mallet",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "Mallet",
+      "description": "Soft mallet/keys tone - triangle plus sine partials with a medium decay. Good for melodic arps and chord stabs.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.75, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.4 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.55, "sustain": 0.1, "release": 0.25 },
+      "filter_cutoff": 5200.0,
+      "filter_resonance": 0.2,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.kalimba",
+      "audition_note": 64,
+      "audition_duration": 0.8,
+      "name": "Kalimba",
+      "description": "Thumb-piano pluck: fast attack, quick decay, slightly inharmonic partials. Play short repetitive figures; very effective in fast arps.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 6.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.42, "sustain": 0.05, "release": 0.18 },
+      "filter_cutoff": 6200.0,
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.1 },
+      "filter_resonance": 0.25,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.plastic-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.6,
+      "name": "Plastic Pluck",
+      "description": "Narrow digital pluck with a noise click transient - plastic and chip-adjacent but cleaner. Crisp 16th-note arps.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": -3.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.22, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.03 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.26, "sustain": 0.0, "release": 0.07 },
+      "filter_cutoff": 4400.0,
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.12 },
+      "filter_resonance": 0.4,
+      "bit_depth": 20,
+      "sample_hold": 2,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.metal-hammer",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "Metal Hammer",
+      "description": "Inharmonic metallic hit - struck-bar partials plus a noise transient. Great for industrial accents inside sequences.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 2.76, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.045 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 5.4, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.6, "sustain": 0.05, "release": 0.3 },
+      "filter_cutoff": 7200.0,
+      "filter_resonance": 0.3,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.bell-toll",
+      "audition_note": 55,
+      "audition_duration": 2.0,
+      "name": "Bell Toll",
+      "description": "Deep bell partials that bloom open after the strike. Toll whole notes or use as arp bass; the long ring suits held chords.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.32, "frequency_ratio": 2.4, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 3.9, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.8 },
+        { "waveform": "sine", "level": 0.14, "frequency_ratio": 5.1, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.0 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 1.1, "sustain": 0.15, "release": 0.6 },
+      "filter_cutoff": 8200.0,
+      "filter_envelope": { "amount_octaves": -1.2, "decay": 0.9 },
+      "filter_resonance": 0.2,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.resonant-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.8,
+      "name": "Resonant Pluck",
+      "description": "Filter-resonant saw pluck with a closing squelch - the classic acid-pluck building block for rolling sequences.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 7.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.32, "sustain": 0.08, "release": 0.12 },
+      "filter_cutoff": 1900.0,
+      "filter_envelope": { "amount_octaves": 3.5, "decay": 0.2 },
+      "filter_resonance": 0.8,
+      "pitch_envelope": { "amount_semitones": 7.0, "decay": 0.09 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.seq-bass",
+      "audition_note": 36,
+      "audition_duration": 0.7,
+      "name": "Seq Bass",
+      "description": "Short round bass pluck for driving low sequences - triangle body, sine sub, faint pulse edge. Play 16ths an octave down.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.22, "frequency_ratio": 2.0, "detune_cents": 4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.3, "sustain": 0.12, "release": 0.1 },
+      "filter_cutoff": 650.0,
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.08 },
+      "filter_resonance": 0.3,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "psy-arps.echo-pluck",
+      "audition_note": 62,
+      "audition_duration": 0.9,
+      "name": "Echo Pluck",
+      "description": "Plucky tone with a gentle vibrato tail - pairs well with dotted rhythms. Light and melodic; good mid-range arp voice.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 2.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 3.0, "detune_cents": -5.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.45, "sustain": 0.08, "release": 0.3 },
+      "filter_cutoff": 5400.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 3.4, "pitch_semitones": 0.7, "filter_octaves": 0.0, "amplitude": 0.5 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.glitch-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.5,
+      "name": "Glitch Pluck",
+      "description": "Bitcrushed, sample-held pluck with a noise tick - digital, twitchy, perfect for glitchy sequence fills.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.3 },
+        { "waveform": "noise", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.02 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.16, "sustain": 0.0, "release": 0.05 },
+      "filter_cutoff": 4000.0,
+      "filter_envelope": { "amount_octaves": 1.8, "decay": 0.1 },
+      "filter_resonance": 0.5,
+      "bit_depth": 12,
+      "sample_hold": 8,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.ice-pluck",
+      "audition_note": 72,
+      "audition_duration": 1.0,
+      "name": "Ice Pluck",
+      "description": "Cluster of high sine partials with a fast shimmer decay - icy bells for upper-register arps. Keep it high; it gets thin low.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.28, "frequency_ratio": 5.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "sine", "level": 0.14, "frequency_ratio": 9.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.3 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.85, "sustain": 0.05, "release": 0.4 },
+      "filter_cutoff": 11500.0,
+      "filter_resonance": 0.15,
+      "lfo": { "waveform": "sine", "rate_hz": 7.0, "pitch_semitones": 0.3, "filter_octaves": 0.0, "amplitude": 0.4 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.thump",
+      "audition_note": 36,
+      "audition_duration": 0.6,
+      "name": "Thump",
+      "description": "Low percussive thud with a click - kick-adjacent pluck for sequence downbeats. Mono; keep it low.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.6, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.02 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.2, "sustain": 0.08, "release": 0.07 },
+      "filter_cutoff": 520.0,
+      "filter_resonance": 0.25,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "psy-arps.vowel-pluck",
+      "audition_note": 60,
+      "audition_duration": 1.2,
+      "name": "Vowel Pluck",
+      "description": "Pluck that wobbles between vowel-like filter positions on every note - vocal-ish sequences. Hold notes longer to hear the drift.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.6 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.3, "sustain": 0.06, "release": 0.1 },
+      "filter_cutoff": 1500.0,
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.1 },
+      "filter_resonance": 0.55,
+      "lfo": { "waveform": "triangle", "rate_hz": 4.2, "pitch_semitones": 0.0, "filter_octaves": 2.0, "amplitude": 0.8 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.acid-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "Acid Pluck",
+      "description": "Resonant acid-style pluck: saw plus off-pulse partial and a big closing filter envelope. The rolling-arp workhorse.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 2.0, "detune_cents": 10.0, "pulse_width": 0.3 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.38, "sustain": 0.06, "release": 0.15 },
+      "filter_cutoff": 1100.0,
+      "filter_envelope": { "amount_octaves": 4.5, "decay": 0.18 },
+      "filter_resonance": 0.82,
+      "bit_depth": 16,
+      "sample_hold": 2,
+      "pitch_envelope": { "amount_semitones": 5.0, "decay": 0.08 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.string-pluck",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "String Pluck",
+      "description": "Round plucked-string tone - triangle and soft saw with a quick filter snap. Versatile melodic arp voice.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 5.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.4, "sustain": 0.12, "release": 0.2 },
+      "filter_cutoff": 4600.0,
+      "filter_envelope": { "amount_octaves": 1.2, "decay": 0.15 },
+      "filter_resonance": 0.25,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-arps.cosmic-pluck",
+      "audition_note": 60,
+      "audition_duration": 1.2,
+      "name": "Cosmic Pluck",
+      "description": "Slow-scooping pluck with an airy noise tail and drifting filter - spacey sequence notes that bloom slightly after the hit.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 1.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.14, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.25 },
+        { "waveform": "triangle", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 7.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.7, "sustain": 0.1, "release": 0.4 },
+      "filter_cutoff": 6800.0,
+      "filter_resonance": 0.3,
+      "pitch_envelope": { "amount_semitones": -9.0, "decay": 0.35 },
+      "lfo": { "waveform": "sine", "rate_hz": 0.8, "pitch_semitones": 0.0, "filter_octaves": 1.6, "amplitude": 0.6 },
+      "gain": 0.7,
+      "monophonic": false
+    }
+  ]
+}

@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "id": "psy-space",
+  "name": "Psy · Space & Motion",
+  "description": "Eight evolving pads plus eight drones, sweeps and noise textures for transitions and atmosphere. Hold notes for the full envelopes; automate filter cutoff live if you like.",
+  "author": "Devin",
+  "instruments": [
+    {
+      "id": "psy-space.cosmic-pad",
+      "audition_note": 55,
+      "audition_duration": 3.5,
+      "name": "Cosmic Pad",
+      "description": "Wide detuned-saw pad with a slow filter LFO and gentle pitch drift. Hold chords for the full 1.2s swell; the release is long.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.2, "decay": 1.0, "sustain": 0.8, "release": 4.0 },
+      "filter_cutoff": 2700.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 0.25, "pitch_semitones": 0.4, "filter_octaves": 1.5, "amplitude": 0.55 },
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.dark-nebula",
+      "audition_note": 50,
+      "audition_duration": 4.0,
+      "name": "Dark Nebula",
+      "description": "Dark, heavy pad that opens slowly from a muffled start - the negative filter envelope gives a long bloom. Low-mid chords work best.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 11.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 3.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.5, "decay": 1.2, "sustain": 0.75, "release": 5.0 },
+      "filter_cutoff": 850.0,
+      "filter_envelope": { "amount_octaves": -2.5, "decay": 4.0 },
+      "filter_resonance": 0.6,
+      "lfo": { "waveform": "sine", "rate_hz": 0.18, "pitch_semitones": 0.0, "filter_octaves": 1.2, "amplitude": 0.5 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.airy-shimmer",
+      "audition_note": 67,
+      "audition_duration": 3.0,
+      "name": "Airy Shimmer",
+      "description": "Light, high pad of sine and triangle partials - bright, weightless, slowly breathing. Best in the upper register.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 3.0, "detune_cents": -4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.8, "decay": 0.8, "sustain": 0.85, "release": 3.0 },
+      "filter_cutoff": 12000.0,
+      "filter_resonance": 0.2,
+      "lfo": { "waveform": "sine", "rate_hz": 0.7, "pitch_semitones": 0.0, "filter_octaves": 1.0, "amplitude": 0.4 },
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.honey-pad",
+      "audition_note": 55,
+      "audition_duration": 3.0,
+      "name": "Honey Pad",
+      "description": "Warm mid pad - triangle body with a soft saw edge and slow triangle-wave filter motion. Comfortable sustained chords.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.9, "decay": 0.9, "sustain": 0.8, "release": 3.5 },
+      "filter_cutoff": 2300.0,
+      "filter_resonance": 0.25,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.35, "pitch_semitones": 0.0, "filter_octaves": 1.8, "amplitude": 0.6 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.choir-cloud",
+      "audition_note": 55,
+      "audition_duration": 4.0,
+      "name": "Choir Cloud",
+      "description": "Four detuned saws drifting through vowel-like filter positions - a slow, breathing choir pad. Hold whole-note chords.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -18.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 20.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.8, "decay": 1.5, "sustain": 0.8, "release": 6.0 },
+      "filter_cutoff": 1250.0,
+      "filter_envelope": { "amount_octaves": -1.5, "decay": 3.0 },
+      "filter_resonance": 0.45,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.5, "pitch_semitones": 0.0, "filter_octaves": 2.5, "amplitude": 0.8 },
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.ultra-wide",
+      "audition_note": 55,
+      "audition_duration": 4.0,
+      "name": "Ultra Wide",
+      "description": "Maximum-width pad: four saws spread +/-35 cents with very slow drift. Immense but diffuse - layer under leads rather than on top.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -35.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 35.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.0, "decay": 1.5, "sustain": 0.75, "release": 6.0 },
+      "filter_cutoff": 3000.0,
+      "filter_resonance": 0.2,
+      "lfo": { "waveform": "sine", "rate_hz": 0.15, "pitch_semitones": 0.6, "filter_octaves": 1.0, "amplitude": 0.5 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.deepspace",
+      "audition_note": 43,
+      "audition_duration": 3.5,
+      "name": "Deepspace",
+      "description": "Deep, sub-weighted pad with a dark low-pass and slow motion - cinematic low-end wash. Play low; it gets huge.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.4, "decay": 1.2, "sustain": 0.8, "release": 5.0 },
+      "filter_cutoff": 1050.0,
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 0.12, "pitch_semitones": 0.0, "filter_octaves": 1.0, "amplitude": 0.5 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.phantom-pad",
+      "audition_note": 55,
+      "audition_duration": 4.0,
+      "name": "Phantom Pad",
+      "description": "Eerie pulse pad with slow pitch drift and formant motion - haunted, unstable, beautiful. Hold notes; don't rush it.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -10.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 14.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.6, "decay": 1.4, "sustain": 0.75, "release": 5.5 },
+      "filter_cutoff": 1600.0,
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.8 },
+      "filter_resonance": 0.5,
+      "pitch_envelope": { "amount_semitones": 2.0, "decay": 1.5 },
+      "lfo": { "waveform": "sine", "rate_hz": 0.22, "pitch_semitones": 0.8, "filter_octaves": 1.5, "amplitude": 0.6 },
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-space.drone-root",
+      "audition_note": 36,
+      "audition_duration": 4.0,
+      "name": "Drone Root",
+      "description": "Steady low drone: octave-down saw pair plus sine root. Holds forever; the filter LFO keeps it slowly moving.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 0.5, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 0.5, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.0, "decay": 2.0, "sustain": 0.85, "release": 8.0 },
+      "filter_cutoff": 1400.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 0.1, "pitch_semitones": 0.0, "filter_octaves": 1.2, "amplitude": 0.6 },
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.dark-drone",
+      "audition_note": 33,
+      "audition_duration": 4.0,
+      "name": "Dark Drone",
+      "description": "Sub drone with a whisper of noise air - deep, ominous, near-still. Sustain is very long; use as a song foundation.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.75, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.1, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.5, "decay": 2.0, "sustain": 0.85, "release": 10.0 },
+      "filter_cutoff": 520.0,
+      "filter_resonance": 0.4,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.08, "pitch_semitones": 0.0, "filter_octaves": 0.8, "amplitude": 0.5 },
+      "gain": 0.65,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.sweep-up",
+      "audition_note": 55,
+      "audition_duration": 4.0,
+      "name": "Sweep Up",
+      "description": "Transition riser drone: the filter envelope opens over ~14s from a muffled start toward full brightness. Hold a note through the transition.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 3.0, "decay": 3.0, "sustain": 0.9, "release": 6.0 },
+      "filter_cutoff": 2000.0,
+      "filter_envelope": { "amount_octaves": -4.0, "decay": 14.0 },
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 0.2, "pitch_semitones": 0.0, "filter_octaves": 0.8, "amplitude": 0.4 },
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.sweep-down",
+      "audition_note": 55,
+      "audition_duration": 4.0,
+      "name": "Sweep Down",
+      "description": "Descending transition drone: starts bright and closes over ~13s into darkness. Pair with Sweep Up for before/after transitions.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 3.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.0, "decay": 2.0, "sustain": 0.85, "release": 8.0 },
+      "filter_cutoff": 6000.0,
+      "filter_envelope": { "amount_octaves": 4.5, "decay": 13.0 },
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 0.15, "pitch_semitones": 0.0, "filter_octaves": 1.0, "amplitude": 0.4 },
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.wind-noise",
+      "audition_note": 40,
+      "audition_duration": 3.5,
+      "name": "Wind Noise",
+      "description": "Breathing noise wash with a faint sub tone - wind, tape hiss, room tone. Hold any low note; automate filter cutoff for storm intensity.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": -9.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.0, "decay": 1.5, "sustain": 0.8, "release": 8.0 },
+      "filter_cutoff": 950.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.15, "pitch_semitones": 0.0, "filter_octaves": 2.5, "amplitude": 0.9 },
+      "gain": 0.55,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.alien-drone",
+      "audition_note": 45,
+      "audition_duration": 4.0,
+      "name": "Alien Drone",
+      "description": "Slowly drifting cluster drone with odd partial spacing and a long pitch scoop - a genuinely strange bed for ambient sections.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 1.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 2.4, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.18, "frequency_ratio": 0.75, "detune_cents": 11.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 2.5, "decay": 2.0, "sustain": 0.85, "release": 10.0 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.5,
+      "pitch_envelope": { "amount_semitones": -4.0, "decay": 2.0 },
+      "lfo": { "waveform": "sine", "rate_hz": 0.11, "pitch_semitones": 1.2, "filter_octaves": 1.0, "amplitude": 0.7 },
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.pulse-machine",
+      "audition_note": 45,
+      "audition_duration": 3.5,
+      "name": "Pulse Machine",
+      "description": "Detuned pulse-pair drone with beating low end and slow filter motion - a hypnotic motorik-ish bed. Hold one note and let it run.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": -14.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 16.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.5, "decay": 1.5, "sustain": 0.8, "release": 7.0 },
+      "filter_cutoff": 2400.0,
+      "filter_resonance": 0.55,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.3, "pitch_semitones": 0.4, "filter_octaves": 1.5, "amplitude": 0.7 },
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-space.radio-sky",
+      "audition_note": 48,
+      "audition_duration": 3.0,
+      "name": "Radio Sky",
+      "description": "Lo-fi sky texture: thin pulse carrier over noise with a deep sub. Slight band-limited grit; great for intro/outro washes.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.1 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 0.25, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 1.2, "decay": 1.0, "sustain": 0.75, "release": 6.0 },
+      "filter_cutoff": 3400.0,
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 1.5 },
+      "filter_resonance": 0.6,
+      "bit_depth": 16,
+      "sample_hold": 2,
+      "lfo": { "waveform": "sine", "rate_hz": 0.4, "pitch_semitones": 0.0, "filter_octaves": 1.8, "amplitude": 0.7 },
+      "gain": 0.6,
+      "monophonic": true
+    }
+  ]
+}

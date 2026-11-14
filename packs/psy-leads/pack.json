@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "id": "psy-leads",
+  "name": "Psy · Leads",
+  "description": "Singable psychedelic leads: resonant filter squelch, detuned width, sync-style pitch chirps, vowel-like filter motion and vibrato. All synthesized, no samples and no arpeggiator - play the lines yourself.",
+  "author": "Devin",
+  "instruments": [
+    {
+      "id": "psy-leads.squelch-lead",
+      "audition_note": 64,
+      "audition_duration": 1.2,
+      "name": "Squelch Lead",
+      "description": "Resonant acid-style squelch lead: a bright filter snap settling into a dark, peaking sustain. Sing short-to-medium lines in the middle register; sits beautifully under arps.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.125 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.28, "sustain": 0.55, "release": 0.2 },
+      "filter_cutoff": 1500.0,
+      "filter_envelope": { "amount_octaves": 3.5, "decay": 0.3 },
+      "filter_resonance": 0.82,
+      "lfo": { "waveform": "triangle", "rate_hz": 2.4, "pitch_semitones": 0.0, "filter_octaves": 1.4, "amplitude": 0.55 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.sing-lead",
+      "audition_note": 64,
+      "audition_duration": 1.5,
+      "name": "Sing Lead",
+      "description": "Soft, vocal-style lead with a gentle vibrato and a small pitch settle on each note. Play sustained melody lines around C4-C5 for the most vocal result.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.22, "frequency_ratio": 2.0, "detune_cents": -4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.02, "decay": 0.3, "sustain": 0.7, "release": 0.4 },
+      "filter_cutoff": 3400.0,
+      "filter_resonance": 0.2,
+      "pitch_envelope": { "amount_semitones": 3.0, "decay": 0.15 },
+      "lfo": { "waveform": "sine", "rate_hz": 5.4, "pitch_semitones": 0.9, "filter_octaves": 0.0, "amplitude": 0.8 },
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.vowel-vox",
+      "audition_note": 57,
+      "audition_duration": 1.8,
+      "name": "Vowel Vox",
+      "description": "Formant-style lead that drifts between vowel-like filter positions. Hold longer notes to let the filter LFO shape the vowels; strongest in the low-mid register.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.15, "decay": 0.5, "sustain": 0.75, "release": 0.6 },
+      "filter_cutoff": 850.0,
+      "filter_envelope": { "amount_octaves": -2.0, "decay": 1.4 },
+      "filter_resonance": 0.5,
+      "lfo": { "waveform": "triangle", "rate_hz": 1.7, "pitch_semitones": 0.0, "filter_octaves": 2.6, "amplitude": 0.9 },
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.wide-lead",
+      "audition_note": 64,
+      "audition_duration": 1.5,
+      "name": "Wide Lead",
+      "description": "Detuned saw-and-triangle lead with slow filter breathing - width without chorus. Works single or doubled on two tracks for extra spread.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -18.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 18.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 2.0, "detune_cents": 4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.3, "sustain": 0.65, "release": 0.35 },
+      "filter_cutoff": 5400.0,
+      "filter_resonance": 0.25,
+      "lfo": { "waveform": "sine", "rate_hz": 0.45, "pitch_semitones": 0.0, "filter_octaves": 1.6, "amplitude": 0.5 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-leads.soft-sync",
+      "audition_note": 64,
+      "audition_duration": 1.2,
+      "name": "Soft Sync-Style Lead",
+      "description": "Sync-style chirp lead (a pitch-drop sweep on note-on, not oscillator sync): narrow pulse over a detuned saw with a quick filter snap. Melodic hook material.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": -3.0, "pulse_width": 0.2 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.22, "sustain": 0.6, "release": 0.15 },
+      "filter_cutoff": 3000.0,
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.15 },
+      "filter_resonance": 0.55,
+      "pitch_envelope": { "amount_semitones": 13.0, "decay": 0.22 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.hard-sync",
+      "audition_note": 72,
+      "audition_duration": 0.8,
+      "name": "Hard Sync-Style Lead",
+      "description": "Aggressive sync-style lead (a very fast pitch-drop sweep, not oscillator sync): thin pulse, tight filter snap and a noise edge. Best for short stabs and riffs an octave up.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.08 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.05 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.18, "sustain": 0.55, "release": 0.1 },
+      "filter_cutoff": 2600.0,
+      "filter_envelope": { "amount_octaves": 2.5, "decay": 0.1 },
+      "filter_resonance": 0.7,
+      "pitch_envelope": { "amount_semitones": 18.0, "decay": 0.06 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.bell-lead",
+      "audition_note": 72,
+      "audition_duration": 1.5,
+      "name": "Bell Lead",
+      "description": "Inharmonic sine-partial lead - bell-like but playable as a lead voice. Nice for arpeggiated bells and high melodies; polyphonic.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.75, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 2.76, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 5.4, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.6, "sustain": 0.35, "release": 0.55 },
+      "filter_cutoff": 8500.0,
+      "filter_resonance": 0.2,
+      "pitch_envelope": { "amount_semitones": 5.0, "decay": 0.3 },
+      "filter_envelope": { "amount_octaves": -1.0, "decay": 0.5 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-leads.trance-lead",
+      "audition_note": 67,
+      "audition_duration": 1.8,
+      "name": "Trance Lead",
+      "description": "Classic wide detuned-saw lead (detune spread for width, not stacked unisons). Bright and anthemic; hold whole notes or run fast lines.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 6.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.28, "sustain": 0.7, "release": 0.3 },
+      "filter_cutoff": 4000.0,
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.5 },
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 0.6, "pitch_semitones": 0.0, "filter_octaves": 1.0, "amplitude": 0.4 },
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.dark-lead",
+      "audition_note": 55,
+      "audition_duration": 1.4,
+      "name": "Dark Lead",
+      "description": "Deep, dubby lead with an octave-down body and a slow scoop up into each note. Play low-mid; pairs well with bright arps.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": -4.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.35, "sustain": 0.6, "release": 0.3 },
+      "filter_cutoff": 750.0,
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.25 },
+      "filter_resonance": 0.55,
+      "pitch_envelope": { "amount_semitones": -9.0, "decay": 0.3 },
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.laser-lead",
+      "audition_note": 72,
+      "audition_duration": 0.7,
+      "name": "Laser Lead",
+      "description": "Narrow-pulse lead with a very fast downward chirp and a noise edge - laser/zap lead lines. Keep notes short or staccato.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.55, "frequency_ratio": 2.0, "detune_cents": -2.0, "pulse_width": 0.15 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.4 },
+        { "waveform": "noise", "level": 0.14, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.04 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.16, "sustain": 0.4, "release": 0.08 },
+      "filter_cutoff": 4800.0,
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.12 },
+      "filter_resonance": 0.45,
+      "pitch_envelope": { "amount_semitones": 22.0, "decay": 0.07 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.choir-lead",
+      "audition_note": 60,
+      "audition_duration": 2.5,
+      "name": "Choir Lead",
+      "description": "Slow-attack, vowel-drifting lead that behaves like a small choir. Hold notes for the full swell; less sustain for plucky lines.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -15.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 3.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 17.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.35, "decay": 0.8, "sustain": 0.8, "release": 0.9 },
+      "filter_cutoff": 1150.0,
+      "filter_envelope": { "amount_octaves": -1.5, "decay": 2.5 },
+      "filter_resonance": 0.45,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.9, "pitch_semitones": 0.0, "filter_octaves": 2.2, "amplitude": 0.8 },
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-leads.funk-lead",
+      "audition_note": 62,
+      "audition_duration": 0.8,
+      "name": "Funk Lead",
+      "description": "Short, clipped lead for syncopated groove lines - plucky attack and a quick filter snap. Best with rests between phrases; slight lo-fi grit.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": -3.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 7.0, "pulse_width": 0.25 },
+        { "waveform": "noise", "level": 0.08, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.03 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.16, "sustain": 0.2, "release": 0.07 },
+      "filter_cutoff": 3000.0,
+      "filter_envelope": { "amount_octaves": 2.2, "decay": 0.14 },
+      "filter_resonance": 0.5,
+      "bit_depth": 20,
+      "sample_hold": 2,
+      "pitch_envelope": { "amount_semitones": 4.0, "decay": 0.09 },
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.arctic-lead",
+      "audition_note": 72,
+      "audition_duration": 1.2,
+      "name": "Arctic Lead",
+      "description": "Bright, glassy lead of stacked sine and triangle partials with light vibrato. High-register sparkle; good counter-melody voice.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.45, "frequency_ratio": 2.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 4.0, "detune_cents": -3.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.15, "frequency_ratio": 3.0, "detune_cents": 9.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.35, "sustain": 0.6, "release": 0.45 },
+      "filter_cutoff": 9500.0,
+      "filter_resonance": 0.2,
+      "pitch_envelope": { "amount_semitones": 4.0, "decay": 0.22 },
+      "lfo": { "waveform": "sine", "rate_hz": 6.2, "pitch_semitones": 0.5, "filter_octaves": 0.0, "amplitude": 0.6 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.duo-lead",
+      "audition_note": 64,
+      "audition_duration": 1.2,
+      "name": "Duo Lead",
+      "description": "Two pulse oscillators at slightly different widths and pitches beating against each other. Hollow, chorused lead; mono-friendly.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -12.0, "pulse_width": 0.3 },
+        { "waveform": "pulse", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.7 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.006, "decay": 0.3, "sustain": 0.6, "release": 0.3 },
+      "filter_cutoff": 3600.0,
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.3 },
+      "filter_resonance": 0.4,
+      "lfo": { "waveform": "sine", "rate_hz": 3.1, "pitch_semitones": 0.6, "filter_octaves": 0.0, "amplitude": 0.6 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.cosmic-lead",
+      "audition_note": 60,
+      "audition_duration": 2.0,
+      "name": "Cosmic Lead",
+      "description": "Strange but singable: a slow upward scoop, drifting filter motion and an airy noise layer. Hold longer notes for the full alien bloom.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.14, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.3 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 3.01, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.05, "decay": 0.7, "sustain": 0.7, "release": 0.8 },
+      "filter_cutoff": 2100.0,
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.8 },
+      "filter_resonance": 0.5,
+      "pitch_envelope": { "amount_semitones": -14.0, "decay": 0.55 },
+      "lfo": { "waveform": "sine", "rate_hz": 0.35, "pitch_semitones": 0.5, "filter_octaves": 2.2, "amplitude": 0.7 },
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-leads.acid-lead",
+      "audition_note": 62,
+      "audition_duration": 1.0,
+      "name": "Acid Lead",
+      "description": "Crunchy resonant lead with a big closing filter envelope - squelch with bite. Play octave-jumping lines; the light bitcrush adds aggression.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 8.0, "pulse_width": 0.25 },
+        { "waveform": "square", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.3, "sustain": 0.6, "release": 0.18 },
+      "filter_cutoff": 900.0,
+      "filter_envelope": { "amount_octaves": 4.0, "decay": 0.4 },
+      "filter_resonance": 0.85,
+      "bit_depth": 14,
+      "sample_hold": 2,
+      "pitch_envelope": { "amount_semitones": 9.0, "decay": 0.1 },
+      "gain": 0.75,
+      "monophonic": true
+    }
+  ]
+}

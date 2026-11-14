@@ -7,7 +7,7 @@ use super::dsp::{
     Svf, SvfCoefs,
 };
 use crate::model::{map_drum_pitch, pitch_hz, Instrument};
-use crate::packs::{InstrumentPreset, Waveform};
+use crate::packs::{InstrumentPreset, LfoWaveform, Waveform};
 
 pub const MAX_PRESET_OSCILLATORS: usize = 4;
 /// Lowest pitch the plucked-string model tunes to; lower notes are folded up an octave.
@@ -23,6 +23,8 @@ pub struct OscParams {
     /// Frequency multiplier including detune.
     pub ratio: f32,
     pub width: f32,
+    /// Per-layer T60 in seconds; 0.0 disables the layer envelope.
+    pub decay: f32,
 }
 
 /// A pack preset flattened into a fixed-size `Copy` value so it can be sent to and stored on
@@ -35,7 +37,17 @@ pub struct PresetParams {
     pub decay: f32,
     pub sustain: f32,
     pub release: f32,
+    pub pitch_env_amount: f32,
+    pub pitch_env_decay: f32,
+    pub filter_env_amount: f32,
+    pub filter_env_decay: f32,
     pub cutoff: f32,
+    pub resonance: f32,
+    pub lfo_wave: LfoWaveform,
+    pub lfo_rate: f32,
+    pub lfo_pitch: f32,
+    pub lfo_filter: f32,
+    pub lfo_amp: f32,
     pub bits: u8,
     pub hold: u32,
     pub gain: f32,
@@ -58,13 +70,24 @@ impl PresetParams {
             level: 1.0,
             ratio: 1.0,
             width: 0.5,
+            decay: 0.0,
         }; MAX_PRESET_OSCILLATORS],
         count: 1,
         attack: 0.01,
         decay: 0.2,
         sustain: 0.7,
         release: 0.3,
+        pitch_env_amount: 0.0,
+        pitch_env_decay: 0.2,
+        filter_env_amount: 0.0,
+        filter_env_decay: 0.5,
         cutoff: 20_000.0,
+        resonance: 0.0,
+        lfo_wave: LfoWaveform::Sine,
+        lfo_rate: 1.0,
+        lfo_pitch: 0.0,
+        lfo_filter: 0.0,
+        lfo_amp: 0.0,
         bits: 24,
         hold: 1,
         gain: 0.9,
@@ -79,6 +102,7 @@ impl PresetParams {
             level: 0.0,
             ratio: 1.0,
             width: 0.5,
+            decay: 0.0,
         }; MAX_PRESET_OSCILLATORS];
         let mut count = 0;
         for spec in p.oscillators.iter().take(MAX_PRESET_OSCILLATORS) {
@@ -89,6 +113,10 @@ impl PresetParams {
                 ratio: finite(spec.frequency_ratio, 1.0).clamp(0.125, 16.0)
                     * 2f32.powf(detune / 1200.0),
                 width: finite(spec.pulse_width, 0.5).clamp(0.05, 0.95),
+                decay: spec
+                    .decay
+                    .map(|decay| finite(decay, 0.0).clamp(0.005, 20.0))
+                    .unwrap_or(0.0),
             };
             count += 1;
         }
@@ -96,6 +124,9 @@ impl PresetParams {
             oscs[0].level = 1.0;
             count = 1;
         }
+        let pitch_env = p.pitch_envelope.as_ref();
+        let filter_env = p.filter_envelope.as_ref();
+        let lfo = p.lfo.as_ref();
         PresetParams {
             oscs,
             count,
@@ -103,12 +134,55 @@ impl PresetParams {
             decay: finite(p.envelope.decay, 0.2).clamp(0.0, 10.0),
             sustain: finite(p.envelope.sustain, 0.7).clamp(0.0, 1.0),
             release: finite(p.envelope.release, 0.3).clamp(0.005, 20.0),
+            pitch_env_amount: pitch_env
+                .map(|env| finite(env.amount_semitones, 0.0).clamp(-48.0, 48.0))
+                .unwrap_or(0.0),
+            pitch_env_decay: pitch_env
+                .map(|env| finite(env.decay, 0.2).clamp(0.005, 10.0))
+                .unwrap_or(0.2),
+            filter_env_amount: filter_env
+                .map(|env| finite(env.amount_octaves, 0.0).clamp(-6.0, 6.0))
+                .unwrap_or(0.0),
+            filter_env_decay: filter_env
+                .map(|env| finite(env.decay, 0.5).clamp(0.005, 20.0))
+                .unwrap_or(0.5),
             cutoff: finite(p.filter_cutoff, 20_000.0).clamp(100.0, 20_000.0),
+            resonance: finite(p.filter_resonance, 0.0).clamp(0.0, 0.95),
+            lfo_wave: lfo.map_or(LfoWaveform::Sine, |lfo| lfo.waveform),
+            lfo_rate: lfo
+                .map(|lfo| finite(lfo.rate_hz, 1.0).clamp(0.05, 20.0))
+                .unwrap_or(1.0),
+            lfo_pitch: lfo
+                .map(|lfo| finite(lfo.pitch_semitones, 0.0).clamp(0.0, 12.0))
+                .unwrap_or(0.0),
+            lfo_filter: lfo
+                .map(|lfo| finite(lfo.filter_octaves, 0.0).clamp(0.0, 4.0))
+                .unwrap_or(0.0),
+            lfo_amp: lfo
+                .map(|lfo| finite(lfo.amplitude, 0.0).clamp(0.0, 1.0))
+                .unwrap_or(0.0),
             bits: p.bit_depth.clamp(4, 24),
             hold: p.sample_hold.clamp(1, 64),
             gain: finite(p.gain, 0.9).clamp(0.0, 1.0),
             mono: p.monophonic,
         }
+    }
+
+    #[inline]
+    fn uses_legacy_preset_path(&self) -> bool {
+        self.pitch_env_amount == 0.0
+            && self.filter_env_amount == 0.0
+            && self.resonance == 0.0
+            && self.lfo_pitch == 0.0
+            && self.lfo_filter == 0.0
+            && self.lfo_amp == 0.0
+            && self.oscs.iter().take(self.count).all(|o| o.decay == 0.0)
+    }
+
+    #[inline]
+    fn resonance_q(&self) -> f32 {
+        let r = (finite(self.resonance, 0.0) / 0.95).clamp(0.0, 1.0);
+        0.707 + r * r * 9.293
     }
 }
 
@@ -316,6 +390,10 @@ pub struct Voice {
     fade: f32,
     fade_step: f32,
     lfo: f32,
+    pitch_env: f32,
+    pitch_env_coef: f32,
+    filter_env: f32,
+    filter_env_coef: f32,
     hold_left: u32,
     hold_value: f32,
     noise_value: [f32; MAX_PRESET_OSCILLATORS],
@@ -372,6 +450,10 @@ impl Voice {
             fade: 1.0,
             fade_step: 0.0,
             lfo: 0.0,
+            pitch_env: 0.0,
+            pitch_env_coef: 0.0,
+            filter_env: 0.0,
+            filter_env_coef: 0.0,
             hold_left: 0,
             hold_value: 0.0,
             noise_value: [0.0; MAX_PRESET_OSCILLATORS],
@@ -469,14 +551,29 @@ impl Voice {
                 self.preset = p;
                 self.amp = Adsr::new(
                     sr,
-                    p.attack.max(0.001),
-                    p.decay.max(0.001) / 4.0,
-                    p.sustain,
-                    p.release / 5.0,
+                    finite(p.attack, 0.01).clamp(0.0, 5.0).max(0.001),
+                    finite(p.decay, 0.2).clamp(0.0, 10.0).max(0.001) / 4.0,
+                    finite(p.sustain, 0.7).clamp(0.0, 1.0),
+                    finite(p.release, 0.3).clamp(0.005, 20.0) / 5.0,
                 );
-                self.fc = SvfCoefs::new(p.cutoff, 0.707, sr);
+                self.fc = SvfCoefs::new(p.cutoff, p.resonance_q(), sr);
                 self.hold_left = 0;
                 self.hold_value = 0.0;
+                self.pitch_env = finite(p.pitch_env_amount, 0.0).clamp(-48.0, 48.0);
+                self.pitch_env_coef =
+                    t60_coef(finite(p.pitch_env_decay, 0.2).clamp(0.005, 10.0), sr);
+                self.filter_env = finite(p.filter_env_amount, 0.0).clamp(-6.0, 6.0);
+                self.filter_env_coef =
+                    t60_coef(finite(p.filter_env_decay, 0.5).clamp(0.005, 20.0), sr);
+                self.lfo = 0.0;
+                for k in 0..MAX_PRESET_OSCILLATORS {
+                    self.e[k] = 1.0;
+                    self.c[k] = if p.oscs[k].decay > 0.0 {
+                        t60_coef(p.oscs[k].decay, sr)
+                    } else {
+                        1.0
+                    };
+                }
                 let rng = &mut self.rng;
                 self.noise_value.iter_mut().for_each(|x| *x = rng.noise());
             }
@@ -955,6 +1052,53 @@ impl Voice {
             self.done = true;
         }
         let p = self.preset;
+        if p.uses_legacy_preset_path() {
+            return self.preset_sample_legacy(a, p);
+        }
+
+        let lfo = self.next_preset_lfo(p);
+        let pitch = (self.pitch_env + lfo * finite(p.lfo_pitch, 0.0)).clamp(-60.0, 60.0);
+        let freq = (self.freq * 2f32.powf(pitch / 12.0)).clamp(1.0, self.sr * 0.45);
+        self.pitch_env *= self.pitch_env_coef;
+
+        if self.ctl == 0 {
+            let octaves = (self.filter_env + lfo * finite(p.lfo_filter, 0.0)).clamp(-8.0, 8.0);
+            let cutoff =
+                (finite(p.cutoff, 20_000.0) * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
+            self.fc = SvfCoefs::new(cutoff, p.resonance_q(), self.sr);
+        }
+        self.ctl = (self.ctl + 1) % CONTROL_INTERVAL;
+        self.filter_env *= self.filter_env_coef;
+
+        let mut sum = 0.0;
+        let mut total = 0.0;
+        for (k, o) in p.oscs.iter().take(p.count).enumerate() {
+            // Defensive re-clamp: PresetParams may be built by hand, bypassing
+            // from_preset's validation clamps.
+            let o = OscParams {
+                level: finite(o.level, 0.0).clamp(0.0, 1.0),
+                ratio: finite(o.ratio, 1.0).clamp(0.0, 64.0),
+                width: finite(o.width, 0.5).clamp(0.05, 0.95),
+                ..*o
+            };
+            let inc = (freq * o.ratio * self.inv_sr).clamp(0.0, 0.49);
+            let v = self.preset_osc_sample(k, o, inc, freq);
+            let layer = if o.decay > 0.0 {
+                let env = self.e[k];
+                self.e[k] *= self.c[k];
+                env
+            } else {
+                1.0
+            };
+            sum += v * o.level * layer;
+            total += o.level;
+        }
+        let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        let raw = sum / total.max(1.0) * a * trem.clamp(0.0, 1.0);
+        self.finish_preset_sample(raw, p)
+    }
+
+    fn preset_sample_legacy(&mut self, a: f32, p: PresetParams) -> (f32, f32) {
         let mut sum = 0.0;
         let mut total = 0.0;
         for (k, &o) in p.oscs.iter().take(p.count).enumerate() {
@@ -980,7 +1124,10 @@ impl Voice {
             sum += v * o.level;
             total += o.level;
         }
-        let raw = sum / total.max(1.0) * a;
+        self.finish_preset_sample(sum / total.max(1.0) * a, p)
+    }
+
+    fn finish_preset_sample(&mut self, raw: f32, p: PresetParams) -> (f32, f32) {
         if self.hold_left == 0 {
             self.hold_value = raw;
             self.hold_left = ((p.hold as f32 * self.sr / 44_100.0).round() as u32).max(1);
@@ -993,6 +1140,39 @@ impl Voice {
         }
         let y = self.f1.low(&self.fc, x) * p.gain * self.gain * 0.55;
         (y, y)
+    }
+
+    fn preset_osc_sample(&mut self, k: usize, o: OscParams, inc: f32, freq: f32) -> f32 {
+        let v = match o.wave {
+            Waveform::Sine => sine(self.ph[k]),
+            Waveform::Triangle => 4.0 * (self.ph[k] - 0.5).abs() - 1.0,
+            Waveform::Saw => saw(self.ph[k], inc),
+            Waveform::Square => square(self.ph[k], inc),
+            Waveform::Pulse => pulse(self.ph[k], inc, o.width),
+            Waveform::Noise => self.noise_value[k],
+        };
+        if o.wave == Waveform::Noise {
+            self.ph[k] += (freq * o.ratio * 64.0 * self.inv_sr).min(1.0);
+            if self.ph[k] >= 1.0 {
+                self.ph[k] -= self.ph[k].floor();
+                self.noise_value[k] = self.rng.noise();
+            }
+        } else {
+            advance(&mut self.ph[k], inc);
+        }
+        v
+    }
+
+    fn next_preset_lfo(&mut self, p: PresetParams) -> f32 {
+        let value = match p.lfo_wave {
+            LfoWaveform::Sine => sine(self.lfo),
+            LfoWaveform::Triangle => 1.0 - 4.0 * (self.lfo - 0.5).abs(),
+        };
+        advance(
+            &mut self.lfo,
+            finite(p.lfo_rate, 1.0).clamp(0.05, 20.0) * self.inv_sr,
+        );
+        value.clamp(-1.0, 1.0)
     }
 }
 
@@ -1016,11 +1196,21 @@ fn pulse(phase: f32, dt: f32, width: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packs::{Envelope, OscillatorSpec};
+    use crate::packs::{Envelope, FilterEnvelope, LfoSpec, OscillatorSpec, PitchEnvelope};
 
     const SR: f32 = 44_100.0;
 
     fn render(sound: Sound, pitch: u8, seconds: f32, gate_seconds: f32) -> Vec<f32> {
+        render_chunked(sound, pitch, seconds, gate_seconds, 256)
+    }
+
+    fn render_chunked(
+        sound: Sound,
+        pitch: u8,
+        seconds: f32,
+        gate_seconds: f32,
+        chunk: usize,
+    ) -> Vec<f32> {
         let mut v = Voice::new(SR);
         v.start(&NoteStart {
             sound,
@@ -1034,7 +1224,7 @@ mod tests {
         let n = (seconds * SR) as usize;
         let mut l = vec![0.0; n];
         let mut r = vec![0.0; n];
-        for (cl, cr) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+        for (cl, cr) in l.chunks_mut(chunk).zip(r.chunks_mut(chunk)) {
             if v.active {
                 v.render(cl, cr);
             }
@@ -1068,6 +1258,32 @@ mod tests {
         a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
     }
 
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    fn mean_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>()
+            / a.len().min(b.len()).max(1) as f32
+    }
+
+    fn zc_rate(x: &[f32]) -> f32 {
+        x.windows(2)
+            .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
+            .count() as f32
+            / x.len().max(1) as f32
+    }
+
+    fn brightness(x: &[f32]) -> f32 {
+        let diff: Vec<f32> = x.windows(2).map(|w| w[1] - w[0]).collect();
+        rms(&diff) / rms(x).max(1e-9)
+    }
+
+    fn preset_sound(preset: InstrumentPreset) -> Sound {
+        crate::packs::validate_preset(&preset).unwrap();
+        Sound::Preset(PresetParams::from_preset(&preset))
+    }
+
     pub(crate) fn chip_preset() -> InstrumentPreset {
         InstrumentPreset {
             id: "test.chip".into(),
@@ -1080,6 +1296,7 @@ mod tests {
                     frequency_ratio: 1.0,
                     detune_cents: 0.0,
                     pulse_width: 0.25,
+                    decay: None,
                 },
                 OscillatorSpec {
                     waveform: Waveform::Triangle,
@@ -1087,6 +1304,7 @@ mod tests {
                     frequency_ratio: 0.5,
                     detune_cents: 3.0,
                     pulse_width: 0.5,
+                    decay: None,
                 },
             ],
             envelope: Envelope {
@@ -1095,11 +1313,17 @@ mod tests {
                 sustain: 0.5,
                 release: 0.1,
             },
+            pitch_envelope: None,
+            filter_envelope: None,
             filter_cutoff: 8000.0,
+            filter_resonance: 0.0,
+            lfo: None,
             bit_depth: 6,
             sample_hold: 3,
             gain: 0.9,
             monophonic: false,
+            audition_note: 60,
+            audition_duration: 0.8,
         }
     }
 
@@ -1198,6 +1422,360 @@ mod tests {
                 "{sound:?} {pitch}: period {best} vs {expected}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_defaults_keep_identical_preset_audio() {
+        let legacy = chip_preset();
+        let mut explicit = legacy.clone();
+        explicit.pitch_envelope = Some(PitchEnvelope::default());
+        explicit.filter_envelope = Some(FilterEnvelope::default());
+        explicit.filter_resonance = 0.0;
+        explicit.lfo = Some(LfoSpec::default());
+        for osc in &mut explicit.oscillators {
+            osc.decay = None;
+        }
+        let a = render(preset_sound(legacy), 60, 0.8, 0.5);
+        let b = render(preset_sound(explicit), 60, 0.8, 0.5);
+        assert_eq!(
+            a, b,
+            "default new controls must preserve legacy preset output"
+        );
+    }
+
+    #[test]
+    fn preset_params_clamp_new_fields_for_audio_safety() {
+        let mut p = chip_preset();
+        p.oscillators[0].decay = Some(f32::INFINITY);
+        p.pitch_envelope = Some(PitchEnvelope {
+            amount_semitones: f32::NAN,
+            decay: -2.0,
+        });
+        p.filter_envelope = Some(FilterEnvelope {
+            amount_octaves: 12.0,
+            decay: f32::INFINITY,
+        });
+        p.filter_resonance = 3.0;
+        p.lfo = Some(LfoSpec {
+            rate_hz: f32::NAN,
+            pitch_semitones: 90.0,
+            filter_octaves: 9.0,
+            amplitude: 2.0,
+            ..Default::default()
+        });
+        p.bit_depth = 99;
+        p.sample_hold = 0;
+        p.gain = f32::NAN;
+        let params = PresetParams::from_preset(&p);
+        assert_eq!(params.oscs[0].decay, 0.005);
+        assert_eq!(params.pitch_env_amount, 0.0);
+        assert_eq!(params.pitch_env_decay, 0.005);
+        assert_eq!(params.filter_env_amount, 6.0);
+        assert_eq!(params.filter_env_decay, 0.5);
+        assert_eq!(params.resonance, 0.95);
+        assert_eq!(params.lfo_rate, 1.0);
+        assert_eq!(params.lfo_pitch, 12.0);
+        assert_eq!(params.lfo_filter, 4.0);
+        assert_eq!(params.lfo_amp, 1.0);
+        assert_eq!(params.bits, 24);
+        assert_eq!(params.hold, 1);
+        assert_eq!(params.gain, 0.9);
+    }
+
+    #[test]
+    fn pitch_envelope_filter_motion_resonance_decay_and_lfo_are_audible() {
+        let mut pitchy = chip_preset();
+        pitchy.bit_depth = 24;
+        pitchy.sample_hold = 1;
+        pitchy.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Sine,
+            ..Default::default()
+        }];
+        pitchy.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        };
+        pitchy.pitch_envelope = Some(PitchEnvelope {
+            amount_semitones: 24.0,
+            decay: 0.2,
+        });
+        let pitch_audio = render(preset_sound(pitchy), 60, 0.6, 0.55);
+        assert!(
+            zc_rate(&pitch_audio[(0.0 * SR) as usize..(0.04 * SR) as usize])
+                > zc_rate(&pitch_audio[(0.4 * SR) as usize..(0.55 * SR) as usize]) * 1.45,
+            "positive pitch envelope should decay from a higher pitch"
+        );
+
+        let mut sweep = chip_preset();
+        sweep.bit_depth = 24;
+        sweep.sample_hold = 1;
+        sweep.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Saw,
+            ..Default::default()
+        }];
+        sweep.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        };
+        sweep.filter_cutoff = 4_000.0;
+        sweep.filter_envelope = Some(FilterEnvelope {
+            amount_octaves: -4.0,
+            decay: 0.25,
+        });
+        let sweep_audio = render(preset_sound(sweep.clone()), 48, 1.3, 1.25);
+        // Fixed references bracket the sweep: `dark` sits at the envelope's
+        // starting cutoff (4000 * 2^-4 = 250 Hz), `bright` at its settled base.
+        let mut fixed_dark = sweep.clone();
+        fixed_dark.filter_envelope = None;
+        fixed_dark.filter_cutoff = 250.0;
+        let dark_audio = render(preset_sound(fixed_dark), 48, 1.3, 1.25);
+        let mut fixed_bright = sweep.clone();
+        fixed_bright.filter_envelope = None;
+        let bright_audio = render(preset_sound(fixed_bright), 48, 1.3, 1.25);
+        let early = (0.005 * SR) as usize..(0.05 * SR) as usize;
+        let late = (0.9 * SR) as usize..(1.2 * SR) as usize;
+        // The opening filter is darker early and brighter late.
+        assert!(
+            brightness(&sweep_audio[early.clone()]) < brightness(&sweep_audio[late.clone()]),
+            "negative filter envelope should open the cutoff over time"
+        );
+        // Early in the note the sweep is spectrally nearer the dark reference
+        // than the bright one.
+        let bs = brightness(&sweep_audio[early.clone()]);
+        let bd = brightness(&dark_audio[early.clone()]);
+        let bb = brightness(&bright_audio[early.clone()]);
+        assert!(
+            (bs - bd).abs() < (bs - bb).abs(),
+            "early sweep brightness {bs} should be nearer dark {bd} than bright {bb}"
+        );
+        // Once the T60 envelope has decayed, the output is the unmodulated
+        // preset at its base cutoff — bit for bit.
+        assert_eq!(
+            &sweep_audio[late.clone()],
+            &bright_audio[late.clone()],
+            "settled filter envelope must leave the base-cutoff signal untouched"
+        );
+
+        let mut resonant = sweep.clone();
+        resonant.filter_envelope = None;
+        let plain = render(preset_sound(resonant.clone()), 48, 0.4, 0.35);
+        resonant.filter_resonance = 0.9;
+        let res = render(preset_sound(resonant), 48, 0.4, 0.35);
+        assert!(
+            mean_abs_diff(&plain, &res) > 0.003,
+            "resonance should change the tone"
+        );
+        assert!(res.iter().all(|s| s.is_finite() && s.abs() < 1.5));
+
+        let mut decaying_layer = chip_preset();
+        decaying_layer.bit_depth = 24;
+        decaying_layer.sample_hold = 1;
+        decaying_layer.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Sine,
+            decay: Some(0.035),
+            ..Default::default()
+        }];
+        decaying_layer.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        };
+        let decayed = render(preset_sound(decaying_layer), 0, 0.35, 0.3);
+        assert!(
+            rms(&decayed[(0.01 * SR) as usize..(0.04 * SR) as usize])
+                > rms(&decayed[(0.25 * SR) as usize..(0.34 * SR) as usize]) * 50.0,
+            "oscillator layer decay should be an independent T60 fade"
+        );
+
+        let mut lfo = chip_preset();
+        lfo.bit_depth = 24;
+        lfo.sample_hold = 1;
+        lfo.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Sine,
+            ..Default::default()
+        }];
+        lfo.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        };
+        let base = render(preset_sound(lfo.clone()), 60, 0.8, 0.75);
+        lfo.lfo = Some(LfoSpec {
+            rate_hz: 2.0,
+            pitch_semitones: 1.0,
+            amplitude: 0.7,
+            ..Default::default()
+        });
+        let moved = render(preset_sound(lfo), 60, 0.8, 0.75);
+        assert!(
+            mean_abs_diff(&base, &moved) > 0.01,
+            "LFO should modulate pitch/amplitude"
+        );
+        assert!(moved.iter().all(|s| s.is_finite() && s.abs() < 1.5));
+    }
+
+    #[test]
+    fn preset_resonant_low_cutoff_stays_finite_and_sustains() {
+        // A held saw through a resonant low cutoff: the SVF must remain stable
+        // for the whole note — finite, bounded, and still audible late.
+        let mut p = chip_preset();
+        p.bit_depth = 24;
+        p.sample_hold = 1;
+        p.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Saw,
+            ..Default::default()
+        }];
+        p.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        };
+        p.filter_cutoff = 220.0;
+        p.filter_resonance = 0.95;
+        let x = render(preset_sound(p.clone()), 36, 2.0, 1.9);
+        assert!(x.iter().all(|s| s.is_finite()));
+        assert!(
+            x.iter().all(|s| s.abs() < 1.5),
+            "resonance must not run away"
+        );
+        let late = rms(&x[(1.5 * SR) as usize..(1.9 * SR) as usize]);
+        assert!(
+            late > 0.001,
+            "resonant low voice should keep ringing ({late})"
+        );
+        // Resonance actually changes the sustained tone vs the same voice flat.
+        let mut flat = p;
+        flat.filter_resonance = 0.0;
+        let y = render(preset_sound(flat), 36, 2.0, 1.9);
+        assert!(
+            mean_abs_diff(
+                &x[(1.5 * SR) as usize..(1.9 * SR) as usize],
+                &y[(1.5 * SR) as usize..(1.9 * SR) as usize]
+            ) > 1e-4,
+            "resonance should be audible in the sustained tail"
+        );
+    }
+
+    #[test]
+    fn preset_long_release_tail_decays_and_ends() {
+        let mut p = chip_preset();
+        p.bit_depth = 24;
+        p.sample_hold = 1;
+        p.oscillators = vec![OscillatorSpec {
+            waveform: Waveform::Sine,
+            ..Default::default()
+        }];
+        p.envelope = Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 0.8,
+            release: 4.0,
+        };
+        // Keep the modulated path active so the tail exercises LFO motion too.
+        p.lfo = Some(LfoSpec {
+            rate_hz: 0.2,
+            amplitude: 0.3,
+            ..Default::default()
+        });
+        let x = render(preset_sound(p), 60, 6.0, 0.5);
+        assert!(x.iter().all(|s| s.is_finite()));
+        let mid = rms(&x[(2.0 * SR) as usize..(3.0 * SR) as usize]);
+        let end = rms(&x[(5.5 * SR) as usize..(5.9 * SR) as usize]);
+        assert!(mid > 1e-4, "long release should still ring at 2-3s ({mid})");
+        assert!(
+            end < mid * 0.2,
+            "release tail must keep decaying ({end} vs {mid})"
+        );
+        assert!(
+            x[(5.8 * SR) as usize..].iter().all(|s| s.abs() < 1e-3),
+            "long release must still end"
+        );
+    }
+
+    #[test]
+    fn preset_modulation_survives_hostile_params() {
+        // A hand-built PresetParams bypassing from_preset must still render
+        // finite, bounded audio: every modulation input is defensively clamped.
+        let mut p = PresetParams::from_preset(&chip_preset());
+        p.pitch_env_amount = f32::NAN;
+        p.pitch_env_decay = f32::INFINITY;
+        p.filter_env_amount = f32::NEG_INFINITY;
+        p.filter_env_decay = f32::NAN;
+        p.cutoff = f32::NAN;
+        p.resonance = f32::INFINITY;
+        p.lfo_rate = f32::NAN;
+        p.lfo_pitch = f32::INFINITY;
+        p.lfo_filter = f32::NEG_INFINITY;
+        p.lfo_amp = f32::NAN;
+        p.attack = f32::NAN;
+        p.sustain = f32::NAN;
+        p.release = f32::INFINITY;
+        for o in &mut p.oscs {
+            o.level = f32::NAN;
+            o.ratio = f32::INFINITY;
+            o.width = f32::NAN;
+            o.decay = f32::NAN;
+        }
+        let x = render(Sound::Preset(p), 60, 0.5, 0.4);
+        assert!(
+            x.iter().all(|s| s.is_finite()),
+            "hostile preset params produced non-finite audio"
+        );
+        assert!(x.iter().all(|s| s.abs() < 1.5));
+    }
+
+    #[test]
+    fn bundled_8bit_presets_all_take_the_legacy_path() {
+        // Every preset shipped before the modulation controls existed must
+        // keep the exact legacy signal path: no envelopes, no resonance, no
+        // LFO and no per-oscillator decay.
+        let pack = crate::packs::parse_pack(include_str!("../../packs/8-bit/pack.json")).unwrap();
+        assert!(!pack.instruments.is_empty());
+        for preset in &pack.instruments {
+            let params = PresetParams::from_preset(preset);
+            assert!(
+                params.uses_legacy_preset_path(),
+                "{} unexpectedly left the legacy preset path",
+                preset.id
+            );
+        }
+    }
+
+    #[test]
+    fn preset_modulation_is_block_size_invariant() {
+        let mut preset = chip_preset();
+        preset.bit_depth = 24;
+        preset.sample_hold = 1;
+        preset.pitch_envelope = Some(PitchEnvelope {
+            amount_semitones: 7.0,
+            decay: 0.2,
+        });
+        preset.filter_envelope = Some(FilterEnvelope {
+            amount_octaves: -2.0,
+            decay: 0.4,
+        });
+        preset.filter_resonance = 0.4;
+        preset.lfo = Some(LfoSpec {
+            rate_hz: 3.0,
+            pitch_semitones: 0.5,
+            filter_octaves: 0.5,
+            amplitude: 0.25,
+            ..Default::default()
+        });
+        preset.oscillators[0].decay = Some(0.3);
+        let sound = preset_sound(preset);
+        assert_eq!(
+            render_chunked(sound, 60, 0.6, 0.5, 1),
+            render_chunked(sound, 60, 0.6, 0.5, 257),
+            "voice modulation must not depend on host block size"
+        );
     }
 
     #[test]

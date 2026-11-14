@@ -55,12 +55,31 @@
           "$ref": "#/$defs/envelope",
           "description": "ADSR-style amplitude envelope in seconds."
         },
+        "pitch_envelope": {
+          "$ref": "#/$defs/pitchEnvelope",
+          "description": "Optional pitch sweep: starts `amount_semitones` sharp/flat and decays exponentially to zero after note-on. `decay` is T60 (0.001 of the offset remains at that time)."
+        },
+        "filter_envelope": {
+          "$ref": "#/$defs/filterEnvelope",
+          "description": "Optional filter sweep in log2 cutoff space: `amount_octaves` is added to the base cutoff and decays exponentially to zero (T60). Negative amounts start darker and open toward the base cutoff."
+        },
         "filter_cutoff": {
           "type": "number",
           "minimum": 100,
           "maximum": 20000,
           "default": 20000,
           "description": "Low-pass filter cutoff in Hz."
+        },
+        "filter_resonance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.95,
+          "default": 0,
+          "description": "Resonance of the low-pass filter, normalized 0..0.95 and mapped to a safe filter Q. 0 = the legacy flat response."
+        },
+        "lfo": {
+          "$ref": "#/$defs/lfo",
+          "description": "Optional free-running LFO (unsynced Hz, deterministic from note-on) modulating pitch, filter cutoff and/or tremolo depth."
         },
         "bit_depth": {
           "type": "integer",
@@ -77,7 +96,21 @@
           "description": "Sample-and-hold interval in samples. 1 = off; higher values add aliasing grit."
         },
         "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
-        "monophonic": { "type": "boolean", "default": false }
+        "monophonic": { "type": "boolean", "default": false },
+        "audition_note": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127,
+          "default": 60,
+          "description": "MIDI note the library preview/audition centres on. Preview metadata only; never affects the rendered signal."
+        },
+        "audition_duration": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 8,
+          "default": 0.8,
+          "description": "Seconds the library preview/audition holds the note. Preview metadata only; never affects the rendered signal."
+        }
       }
     },
     "oscillator": {
@@ -104,6 +137,12 @@
           "maximum": 0.95,
           "default": 0.5,
           "description": "Fraction of the cycle the pulse stays high (0.5 = 50% duty). Only used by the pulse waveform."
+        },
+        "decay": {
+          "type": ["number", "null"],
+          "minimum": 0.005,
+          "maximum": 20,
+          "description": "Optional per-layer T60 fade in seconds after note-on, on top of the global envelope. Omit or null for a constant layer level. Useful for short noise clicks vs longer tails."
         }
       }
     },
@@ -117,6 +156,36 @@
         "release": { "type": "number", "minimum": 0.005, "maximum": 20, "default": 0.3 }
       },
       "description": "Times in seconds; sustain is a 0..1 level."
+    },
+    "pitchEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "amount_semitones": { "type": "number", "minimum": -48, "maximum": 48, "default": 0 },
+        "decay": { "type": "number", "minimum": 0.005, "maximum": 10, "default": 0.2 }
+      },
+      "description": "Pitch offset in semitones decaying exponentially to zero after note-on; `decay` is T60."
+    },
+    "filterEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "amount_octaves": { "type": "number", "minimum": -6, "maximum": 6, "default": 0 },
+        "decay": { "type": "number", "minimum": 0.005, "maximum": 20, "default": 0.5 }
+      },
+      "description": "Filter cutoff offset in octaves (log2 space) decaying exponentially to the base cutoff; `decay` is T60."
+    },
+    "lfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "waveform": { "type": "string", "enum": ["sine", "triangle"], "default": "sine" },
+        "rate_hz": { "type": "number", "minimum": 0.05, "maximum": 20, "default": 1 },
+        "pitch_semitones": { "type": "number", "minimum": 0, "maximum": 12, "default": 0 },
+        "filter_octaves": { "type": "number", "minimum": 0, "maximum": 4, "default": 0 },
+        "amplitude": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
+      },
+      "description": "Free-running LFO starting deterministically at note-on. Pitch/filter depths are bipolar; `amplitude` is tremolo depth and never amplifies the signal."
     }
   }
 }

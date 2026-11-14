@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "id": "psy-keys",
+  "name": "Psy · Keys & Organs",
+  "description": "Synthesized keyboard, electric-piano, bell and reed approximations plus additive drawbar-style organs — from clean soul keys to dub-swelling rotary tones. Pure synthesis, no samples; electric-piano and organ voicings are approximations, not branded emulations.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "psy-keys.tine-ep",
+      "audition_note": 62,
+      "audition_duration": 1.2,
+      "name": "Tine EP",
+      "description": "Synthesized tine electric piano (Rhodes-style approximation, not a sample). A noise hammer-click plus inharmonic partials that decay faster than the fundamental give the bell-like tine attack. Best around MIDI 55-80 with medium gates.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.03 },
+        { "waveform": "sine", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 3.92, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.4 },
+        { "waveform": "sine", "level": 0.1, "frequency_ratio": 9.4, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.18 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.45, "sustain": 0.4, "release": 0.7 },
+      "pitch_envelope": { "amount_semitones": 0.6, "decay": 0.06 },
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.5 },
+      "filter_cutoff": 4200.0,
+      "filter_resonance": 0.3,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.wurli-keys",
+      "audition_note": 58,
+      "audition_duration": 1.5,
+      "name": "Wurli-Style Keys",
+      "description": "Warm tremolo electric keys evoking a Wurlitzer-style EP (synthesized approximation, not a sample). The built-in amplitude LFO supplies the classic pulsing tone with a subtle pitch drift. Soul/jazz chords around MIDI 50-75.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 4.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.6 },
+        { "waveform": "sine", "level": 0.12, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.25 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.6, "sustain": 0.5, "release": 0.8 },
+      "filter_cutoff": 4200.0,
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 4.8, "pitch_semitones": 0.3, "filter_octaves": 0.0, "amplitude": 0.3 },
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.clav-stab",
+      "audition_note": 58,
+      "audition_duration": 0.7,
+      "name": "Clav Stab",
+      "description": "Short woody clavinet-style stab (synthesized approximation). Fast pitch and filter snap reproduce the percussive 'chunk'; built for syncopated 16th-note funk stabs and chord chops around MIDI 48-72.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.4 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.22, "sustain": 0.2, "release": 0.09 },
+      "pitch_envelope": { "amount_semitones": 1.2, "decay": 0.04 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.12 },
+      "filter_cutoff": 3000.0,
+      "filter_resonance": 0.55,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.harpsi",
+      "audition_note": 67,
+      "audition_duration": 0.8,
+      "name": "Harpsichord Pluck",
+      "description": "Bright plucked keyboard tone with fast attack, rapid decay and almost no sustain. Use short gates; great for arpeggios and baroque-flavoured leads around MIDI 60-84.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.125 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 4.02, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.25 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.35, "sustain": 0.05, "release": 0.15 },
+      "filter_envelope": { "amount_octaves": 1.8, "decay": 0.08 },
+      "filter_cutoff": 3800.0,
+      "filter_resonance": 0.3,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.glass-bell",
+      "audition_note": 76,
+      "audition_duration": 2.0,
+      "name": "Glass Bell",
+      "description": "Inharmonic sine-stack bell with a glassy top end and a long decay. Suits sparse psychedelic melodies and motifs; try MIDI 72 and up for chime-like sparkle.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.4 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.76, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.9 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 5.4, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.45 },
+        { "waveform": "sine", "level": 0.08, "frequency_ratio": 8.93, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.2 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 1.6, "sustain": 0.0, "release": 1.0 },
+      "pitch_envelope": { "amount_semitones": 0.5, "decay": 0.15 },
+      "filter_cutoff": 13000.0,
+      "filter_resonance": 0.15,
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.celesta",
+      "audition_note": 72,
+      "audition_duration": 1.5,
+      "name": "Celesta",
+      "description": "Music-box / celesta-like mallet tone: a struck thin-pulse edge over a decaying sine stack. Medium decay; lovely for motifs and callbacks around MIDI 67-91.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.9 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.45 },
+        { "waveform": "sine", "level": 0.1, "frequency_ratio": 9.9, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.2 },
+        { "waveform": "pulse", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.1, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 1.0, "sustain": 0.05, "release": 0.5 },
+      "pitch_envelope": { "amount_semitones": 0.7, "decay": 0.1 },
+      "filter_cutoff": 11000.0,
+      "filter_resonance": 0.2,
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.reed-keys",
+      "audition_note": 55,
+      "audition_duration": 1.2,
+      "name": "Reed Keys",
+      "description": "Accordion / melodeon-style reedy keys (synthesized approximation). Detuned saws plus an octave-down square give a folk-reed honk; built-in vibrato. Polyphonic, works around MIDI 48-72.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.02, "decay": 0.5, "sustain": 0.65, "release": 0.6 },
+      "filter_cutoff": 4800.0,
+      "filter_resonance": 0.4,
+      "lfo": { "waveform": "sine", "rate_hz": 5.2, "pitch_semitones": 0.5, "filter_octaves": 0.2, "amplitude": 0.15 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.soul-keys",
+      "audition_note": 55,
+      "audition_duration": 1.5,
+      "name": "Soul Keys",
+      "description": "Warm chord-friendly electric keys for soul and jazz voicings (synthesized EP, not a sample). Detuned triangle body, fast-decaying tine partials and light tremolo. Keep gain moderate on big chords; MIDI 48-72.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 3.92, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "sine", "level": 0.08, "frequency_ratio": 9.4, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.2 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.9, "sustain": 0.45, "release": 1.0 },
+      "filter_envelope": { "amount_octaves": 1.2, "decay": 0.6 },
+      "filter_cutoff": 4000.0,
+      "filter_resonance": 0.45,
+      "lfo": { "waveform": "sine", "rate_hz": 4.0, "pitch_semitones": 0.2, "filter_octaves": 0.0, "amplitude": 0.22 },
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.drawbar",
+      "audition_note": 55,
+      "audition_duration": 1.5,
+      "name": "Drawbar Organ",
+      "description": "Hammond-style drawbar organ approximation built from additive partials: a 16' sine, 8' sine, 8' 2nd and 8' 3rd plus a quiet detuned chorus saw. Fast attack, near-endless sustain; classic keys range around MIDI 48-72. Chord-friendly — watch the gain.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.3, "sustain": 0.85, "release": 1.2 },
+      "filter_cutoff": 9000.0,
+      "filter_resonance": 0.15,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.psy-organ",
+      "audition_note": 60,
+      "audition_duration": 2.0,
+      "name": "Psychedelic Organ",
+      "description": "Wide detuned saw stack with a slow triangle-wave filter sweep and gentle pitch drift — the classic 'organ in the sky' wash. Long release suits held chords; keep moderate gain for stacks.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -14.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 14.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.06, "decay": 0.8, "sustain": 0.8, "release": 2.5 },
+      "filter_cutoff": 7000.0,
+      "filter_resonance": 0.25,
+      "lfo": { "waveform": "triangle", "rate_hz": 0.6, "pitch_semitones": 0.6, "filter_octaves": 1.2, "amplitude": 0.0 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.soul-organ",
+      "audition_note": 55,
+      "audition_duration": 2.0,
+      "name": "Soul Organ",
+      "description": "Warm gospel-style organ (synthesized approximation): slow swell-in attack, sub octave, soft 3rd partial and gentle tremolo. Great for ballads and neo-soul voicings.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -4.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 4.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.18, "decay": 0.7, "sustain": 0.75, "release": 2.0 },
+      "filter_cutoff": 5200.0,
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 3.8, "pitch_semitones": 0.25, "filter_octaves": 0.0, "amplitude": 0.18 },
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.dub-organ",
+      "audition_note": 48,
+      "audition_duration": 3.0,
+      "name": "Dub Organ",
+      "description": "Deep dub-style organ: sub-heavy voicing that starts dark and slowly opens via a negative filter envelope — a filter sweep baked into every note. Pair with delay and reverb for full dub weight.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.05, "decay": 1.0, "sustain": 0.8, "release": 3.0 },
+      "filter_envelope": { "amount_octaves": -2.5, "decay": 3.5 },
+      "filter_cutoff": 800.0,
+      "filter_resonance": 0.4,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.rotary",
+      "audition_note": 55,
+      "audition_duration": 1.5,
+      "name": "Rotary Organ",
+      "description": "Leslie-style rotary speaker approximation: fast amplitude LFO with slight pitch and filter wobble. Slow gates give rotating swells; short chops give tremolo stabs.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.4, "sustain": 0.8, "release": 1.5 },
+      "filter_cutoff": 6500.0,
+      "filter_resonance": 0.2,
+      "lfo": { "waveform": "triangle", "rate_hz": 6.5, "pitch_semitones": 0.4, "filter_octaves": 0.3, "amplitude": 0.45 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.calliope",
+      "audition_note": 62,
+      "audition_duration": 1.2,
+      "name": "Calliope",
+      "description": "Steam-calliope-style reedy keyboard (synthesized approximation). Bright mid harmonics with a small pitch settle on attack; circus-to-cinematic colour around MIDI 55-79.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 4.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.4, "sustain": 0.7, "release": 0.8 },
+      "pitch_envelope": { "amount_semitones": 0.8, "decay": 0.15 },
+      "filter_cutoff": 7500.0,
+      "filter_resonance": 0.3,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.jazz-organ",
+      "audition_note": 55,
+      "audition_duration": 2.0,
+      "name": "Jazz Organ",
+      "description": "Ballad organ voicing with a slow swell-in attack, long release and soft vibrato. Understated by design — layer under keys or use alone for noir and jazz passages.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.25, "decay": 0.8, "sustain": 0.7, "release": 2.5 },
+      "filter_cutoff": 4500.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 4.5, "pitch_semitones": 0.35, "filter_octaves": 0.0, "amplitude": 0.1 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-keys.mini-organ",
+      "audition_note": 58,
+      "audition_duration": 1.0,
+      "name": "Toy Organ",
+      "description": "Cheap reed organ / toy-keyboard honk with a touch of crunch (12-bit, mild sample-hold). Quirky counterpoint and novelty parts; short-to-medium gates.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.25 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.3, "sustain": 0.6, "release": 0.5 },
+      "filter_cutoff": 5500.0,
+      "filter_resonance": 0.25,
+      "bit_depth": 12,
+      "sample_hold": 2,
+      "gain": 0.6,
+      "monophonic": false
+    }
+  ]
+}

@@ -390,7 +390,14 @@ impl CadenceApp {
         let pitch_center = pat
             .filter(|p| !p.notes.is_empty())
             .map(|p| p.notes.iter().map(|n| n.pitch as u32).sum::<u32>() / p.notes.len() as u32)
-            .unwrap_or_else(|| track.instrument.default_pitch() as u32);
+            .unwrap_or_else(|| {
+                // An empty pack-preset pattern homes on its audition note;
+                // built-ins keep their instrument default pitch.
+                track.preset.as_ref().map_or_else(
+                    || track.instrument.default_pitch() as u32,
+                    |p| u32::from(p.audition_note),
+                )
+            });
         let row = (LAST_PITCH as u32 - pitch_center) as f32;
         // Before the first paint the grid rect is still empty; use a typical
         // editor height so the first frame already shows the right octave.

@@ -5,19 +5,22 @@ Two parts: **Verified** items have automated-test or native-run evidence (see [v
 ## Verified by automated tests / native run
 
 - [x] `cargo fmt --all -- --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean.
-- [x] `cargo test --locked --all-targets`: **178 passed, 0 failed, 1 ignored** (143 library + 35 binary/integration; the ignored test is the real-device lifecycle test that needs a live audio device).
+- [x] `cargo test --locked --all-targets`: **201 passed, 0 failed, 1 ignored** (160 library + 41 binary/integration; the ignored test is the real-device lifecycle test that needs a live audio device).
 - [x] Persistence, recovery, CLI, render/WAV, MIDI interop, and pack-pipeline integration tests (`tests/`).
 - [x] Headless GUI tests (`src/gui/tests.rs`): drum grid paint/erase/drag/accents, piano-roll draw/move/resize, marquee select + delete, velocity lane, arrow-key nudge, arranger clip drag + double-click placement, unsaved-changes guard, Escape closes Help, audio-less Space warns but editing continues, save/open roundtrip, MIDI roundtrip, WAV export worker, preset track embedding/portability.
 - [x] Clip loop/fade handle tests, legacy file compatibility, and regression checks that shortening loops or shared patterns keeps fades valid and saveable.
 - [x] Headless input tests for plain/reverse/additive box selection, group movement across tracks and piano-roll notes, Shift-click removal, bounds, Alt-copy metadata/capacity, no accidental note insertion or dirty state, and one undo per multi-frame gesture.
 - [x] Isolated November 15 native test build: select all 22 demo clips, nudge the group, and undo back to the clean eight-bar song.
+- [x] 128 new pack presets (144 total sounds): parse/catalog/deployment, unique definitions, finite bounded non-silent renders and releases. Ten legacy preset WAVs remain byte-identical.
+- [x] Headless library bank/search/reset/sticky-controls tests, sensible audition metadata/editor centering, and native showcase project validation with editable standalone percussion.
+- [x] Full per-preset audit, seven listening reels, and two original 16-bar showcase songs/previews generated. Default audit leaves checked-in songs unchanged.
 - [x] `--render-demo` produces a non-empty WAV; November 13 packaged `.app` visually inspected, looped real CPAL playback showed live voices and `audioReady`. Latest loop/fade changes have automated coverage only.
-- [x] Release artifacts built at `dist/Cadence.app` + `Cadence-1.0.0-macos-arm64.{zip,dmg}`.
-- [x] Windows x64 GNU artifact built on macOS: `cargo check`/`build --release --target x86_64-pc-windows-gnu` passed; `scripts/windows-cross-package.sh` produced `dist/Cadence-1.0.0-windows-x64/Cadence.exe` (~7.4 MiB, PE32+ GUI subsystem, inbox/UCRT imports only, embedded icon) + `.zip` (~3.4 MiB); CRC integrity passes. **Not executed** — runtime still unverified.
+- [x] Release artifacts built at `dist/Cadence.app` + `Cadence-1.1.0-macos-arm64.{zip,dmg}` and a portable JSON-bank/showcase ZIP.
+- [x] Windows x64 GNU artifact built on macOS: release build passed; `scripts/windows-cross-package.sh` produced `dist/Cadence-1.1.0-windows-x64/Cadence.exe` (PE32+ GUI subsystem, system imports, embedded icon) + `.zip`; CRC integrity passes. **Not executed** — runtime still unverified.
 
 ## Manual checks still to run
 
-Run these on each platform you ship. **Windows runtime is unverified** — a real `dist/Cadence-1.0.0-windows-x64/Cadence.exe` (GNU cross-build) now exists and is structurally inspected, but no Windows machine or Wine has executed it yet.
+Run these on each platform you ship. **Windows runtime is unverified** — a real `dist/Cadence-1.1.0-windows-x64/Cadence.exe` (GNU cross-build) exists and is structurally inspected, but no Windows machine or Wine has executed it yet.
 
 ### Build & launch
 
@@ -57,7 +60,7 @@ Run these on each platform you ship. **Windows runtime is unverified** — a rea
 ### Packaging & packs
 
 - [ ] `scripts/mac-package.sh` output launches from `dist/` (zip and dmg install paths).
-- [ ] The cross-built `dist/Cadence-1.0.0-windows-x64/Cadence.exe` (or a `windows-package.ps1` MSVC build) launches on a real Windows machine and plays audio.
+- [ ] The cross-built `dist/Cadence-1.1.0-windows-x64/Cadence.exe` (or a `windows-package.ps1` MSVC build) launches on a real Windows machine and plays audio.
 - [ ] Pack pipeline end-to-end in the GUI: Import Pack…, ~2 s auto-rescan, *Update sound from installed pack* flow.
 - [ ] Unsigned-build behavior: observe what Gatekeeper/SmartScreen actually do on your distribution channel (not guaranteed either way for local builds).
 

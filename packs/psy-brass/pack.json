@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "id": "psy-brass",
+  "name": "Psy · Brass & Stabs",
+  "description": "Synthesized brass, horn and reed ensembles plus punchy electronic stabs — resonant-filter brass attacks, detuned supersaw chords, squelchy acid-style stabs and slow-attack swells. Pure synthesis; no samples, no sampled-brass or sync claims.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "psy-brass.brass-ens",
+      "audition_note": 55,
+      "audition_duration": 1.2,
+      "name": "Brass Section",
+      "description": "Detuned saw-section brass chords (synthesized approximation, not a sampled section). Resonant filter snaps open on the attack and settles into the body; slight vibrato. Chord-friendly — moderate gain for stacks.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -10.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": -22.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": 22.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.04, "decay": 0.5, "sustain": 0.65, "release": 0.6 },
+      "pitch_envelope": { "amount_semitones": 1.5, "decay": 0.3 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.35 },
+      "filter_cutoff": 1400.0,
+      "filter_resonance": 0.6,
+      "lfo": { "waveform": "sine", "rate_hz": 4.8, "pitch_semitones": 0.3, "filter_octaves": 0.0, "amplitude": 0.0 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.brass-lead",
+      "audition_note": 64,
+      "audition_duration": 1.3,
+      "name": "Brass Lead",
+      "description": "Bright monophonic brass lead (synthesized approximation). Sharper pitch and filter attack than the section, octave-down sine for weight and a stronger vibrato. Lead lines around MIDI 55-79.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.35, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.03, "decay": 0.4, "sustain": 0.7, "release": 0.5 },
+      "pitch_envelope": { "amount_semitones": 2.0, "decay": 0.35 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.3 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.55,
+      "lfo": { "waveform": "sine", "rate_hz": 5.5, "pitch_semitones": 0.6, "filter_octaves": 0.0, "amplitude": 0.0 },
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-brass.low-brass",
+      "audition_note": 48,
+      "audition_duration": 1.4,
+      "name": "Low Brass",
+      "description": "Dark trombone-style low brass (synthesized approximation). Octave-down detuned saws with a slower attack and lower filter; monophonic for a solid single-voice low line. MIDI 36-60.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.08, "decay": 0.6, "sustain": 0.6, "release": 0.8 },
+      "pitch_envelope": { "amount_semitones": 1.2, "decay": 0.5 },
+      "filter_envelope": { "amount_octaves": 2.5, "decay": 0.5 },
+      "filter_cutoff": 1000.0,
+      "filter_resonance": 0.5,
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "psy-brass.horn-ens",
+      "audition_note": 55,
+      "audition_duration": 1.8,
+      "name": "Horn Section",
+      "description": "Soft French-horn-style ensemble (synthesized approximation). Gentle swell-in attack, mellow triangle body and a filter that opens slowly — orchestral warmth for pads and hooks.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.15, "decay": 0.8, "sustain": 0.7, "release": 1.2 },
+      "pitch_envelope": { "amount_semitones": 1.8, "decay": 0.7 },
+      "filter_envelope": { "amount_octaves": -1.8, "decay": 2.5 },
+      "filter_cutoff": 1600.0,
+      "filter_resonance": 0.55,
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.reed-ens",
+      "audition_note": 55,
+      "audition_duration": 1.3,
+      "name": "Reed Ensemble",
+      "description": "Sax-style reed ensemble (synthesized approximation). Mid-forward saws with a square edge, resonant filter snap and a slowish vibrato. Horn-section energy for riffs and stabs.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 15.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.05, "decay": 0.5, "sustain": 0.6, "release": 0.6 },
+      "pitch_envelope": { "amount_semitones": 1.5, "decay": 0.3 },
+      "filter_envelope": { "amount_octaves": 2.8, "decay": 0.4 },
+      "filter_cutoff": 2000.0,
+      "filter_resonance": 0.6,
+      "lfo": { "waveform": "sine", "rate_hz": 4.2, "pitch_semitones": 0.5, "filter_octaves": 0.0, "amplitude": 0.1 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.brass-mute",
+      "audition_note": 60,
+      "audition_duration": 0.9,
+      "name": "Muted Brass",
+      "description": "Tighter, brighter muted-brass stab (synthesized approximation). Higher base cutoff and a fast filter snap keep it compact — good for hits, accents and short brass figures.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -10.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.02, "decay": 0.35, "sustain": 0.4, "release": 0.3 },
+      "pitch_envelope": { "amount_semitones": 2.5, "decay": 0.2 },
+      "filter_envelope": { "amount_octaves": 3.2, "decay": 0.25 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.5,
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.brass-swell",
+      "audition_note": 55,
+      "audition_duration": 3.0,
+      "name": "Brass Swell",
+      "description": "Slow-attack orchestral brass swell (synthesized approximation). Filter opens gradually over seconds; hold notes long for cinematic rises and breakdowns.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 18.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.6, "decay": 1.0, "sustain": 0.8, "release": 2.0 },
+      "pitch_envelope": { "amount_semitones": 1.5, "decay": 1.2 },
+      "filter_envelope": { "amount_octaves": -2.0, "decay": 1.5 },
+      "filter_cutoff": 1200.0,
+      "filter_resonance": 0.4,
+      "gain": 0.5,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.mid-brass",
+      "audition_note": 57,
+      "audition_duration": 1.3,
+      "name": "Mid Brass",
+      "description": "Alto-range brass section sitting between lead and low brass (synthesized approximation). Balanced detune stack with a fifth partial for midrange body; chords around MIDI 48-72.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 1.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.05, "decay": 0.5, "sustain": 0.65, "release": 0.7 },
+      "pitch_envelope": { "amount_semitones": 1.8, "decay": 0.35 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.35 },
+      "filter_cutoff": 1600.0,
+      "filter_resonance": 0.55,
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.stab-classic",
+      "audition_note": 58,
+      "audition_duration": 0.6,
+      "name": "Classic Stab",
+      "description": "Detuned saw-and-square chord stab with a punchy filter snap — the house/garage stab. Short gate (~1/16 to 1/8 note); stacks well in chords.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -12.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 12.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.28, "sustain": 0.0, "release": 0.08 },
+      "pitch_envelope": { "amount_semitones": 2.5, "decay": 0.12 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.18 },
+      "filter_cutoff": 2000.0,
+      "filter_resonance": 0.5,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.rave-stab",
+      "audition_note": 60,
+      "audition_duration": 0.5,
+      "name": "Rave Stab",
+      "description": "Supersaw-style detuned chord stab, wide and bright. Filter opens hard on the attack then snaps shut; light vibrato keeps it moving. Very short gates, modest gain.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": -28.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 28.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": -14.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": 14.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.32, "sustain": 0.0, "release": 0.1 },
+      "pitch_envelope": { "amount_semitones": 1.0, "decay": 0.1 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.22 },
+      "filter_cutoff": 2600.0,
+      "filter_resonance": 0.35,
+      "lfo": { "waveform": "sine", "rate_hz": 6.5, "pitch_semitones": 0.3, "filter_octaves": 0.0, "amplitude": 0.0 },
+      "gain": 0.5,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.horn-stab",
+      "audition_note": 55,
+      "audition_duration": 0.8,
+      "name": "Horn Stab",
+      "description": "Brass-tinged electronic stab (synthesized approximation). Saws plus an octave-down body, resonant filter snap and a pitch fall on attack. Punchy on offbeat chords.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.15, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.015, "decay": 0.4, "sustain": 0.0, "release": 0.15 },
+      "pitch_envelope": { "amount_semitones": 2.0, "decay": 0.18 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.22 },
+      "filter_cutoff": 2000.0,
+      "filter_resonance": 0.55,
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.detuned-stab",
+      "audition_note": 55,
+      "audition_duration": 1.2,
+      "name": "Detuned Stab",
+      "description": "Wide ±45-cent detuned stab with a slowish pitch drift — queasy, seasick, very psychedelic. Longer decay than the classic stab; let it ring into pads.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -45.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 45.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 20.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.006, "decay": 0.45, "sustain": 0.0, "release": 0.2 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.3 },
+      "filter_cutoff": 3500.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 3.0, "pitch_semitones": 0.5, "filter_octaves": 0.0, "amplitude": 0.0 },
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.stab-short",
+      "audition_note": 58,
+      "audition_duration": 0.4,
+      "name": "16th Stab",
+      "description": "Ultra-short detuned stab built for fast 16th-note techno and DnB hits. Very fast filter snap and release — even at 180 BPM gates it stays tight.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.12, "sustain": 0.0, "release": 0.03 },
+      "pitch_envelope": { "amount_semitones": 3.0, "decay": 0.08 },
+      "filter_envelope": { "amount_octaves": 3.5, "decay": 0.1 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.45,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.pluck-stab",
+      "audition_note": 60,
+      "audition_duration": 0.8,
+      "name": "Pluck Stab",
+      "description": "Melodic pluck stab: pitch starts sharp and settles while the filter snaps shut fast — plucked-string feel for lead stabs and fills.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.15 },
+        { "waveform": "sine", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.3, "sustain": 0.0, "release": 0.1 },
+      "pitch_envelope": { "amount_semitones": 3.0, "decay": 0.15 },
+      "filter_envelope": { "amount_octaves": 3.5, "decay": 0.12 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.6,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.acid-stab",
+      "audition_note": 48,
+      "audition_duration": 1.0,
+      "name": "Acid Stab",
+      "description": "Squelchy acid-style stab: low base cutoff, heavy resonance and a wide downward filter sweep on every note. Sequence short gates for 303-style squirts; medium gates for squelchy chords.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.5, "sustain": 0.0, "release": 0.2 },
+      "pitch_envelope": { "amount_semitones": 2.0, "decay": 0.3 },
+      "filter_envelope": { "amount_octaves": 4.0, "decay": 0.6 },
+      "filter_cutoff": 500.0,
+      "filter_resonance": 0.7,
+      "gain": 0.55,
+      "monophonic": false
+    },
+    {
+      "id": "psy-brass.swell-stab",
+      "audition_note": 55,
+      "audition_duration": 2.0,
+      "name": "Swell Stab",
+      "description": "Reverse-feel stab: filter starts dark and opens while the note swells in — use for breakdowns, risers into drops and ambient chord washes.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": -10.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 15.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.25, "decay": 0.5, "sustain": 0.0, "release": 0.5 },
+      "pitch_envelope": { "amount_semitones": 1.5, "decay": 0.5 },
+      "filter_envelope": { "amount_octaves": -2.0, "decay": 1.5 },
+      "filter_cutoff": 1400.0,
+      "filter_resonance": 0.5,
+      "gain": 0.5,
+      "monophonic": false
+    }
+  ]
+}

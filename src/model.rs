@@ -1711,11 +1711,17 @@ mod tests {
             description: String::new(),
             oscillators: vec![],
             envelope: Default::default(),
+            pitch_envelope: None,
+            filter_envelope: None,
             filter_cutoff: f32::NAN,
+            filter_resonance: 0.0,
+            lfo: None,
             bit_depth: 99,
             sample_hold: 0,
             gain: 3.0,
             monophonic: false,
+            audition_note: 60,
+            audition_duration: 0.8,
         });
         assert!(p.validate().unwrap_err().contains("preset"));
         p.normalize();

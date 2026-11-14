@@ -13,6 +13,7 @@ use egui::{pos2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 use super::dialogs::Dialog;
 use super::files::PendingAction;
+use super::sidebar::{audition_params, bank_options, library_rows, LibraryBank};
 use super::{arranger, ops, CadenceApp, StatusKind};
 use crate::model::{Instrument, Note, Project, DRUMS};
 use crate::packs::InstrumentPreset;
@@ -175,6 +176,22 @@ impl Ui {
         self.key_mod(key, Modifiers::NONE);
     }
 
+    /// Mouse-wheel scroll, `delta_y` in points (negative scrolls down).
+    fn wheel(&mut self, delta_y: f32) {
+        self.next.events.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta_y),
+            modifiers: Modifiers::NONE,
+        });
+        self.step();
+    }
+
+    /// Types text into the focused widget (e.g. the library search field).
+    fn text(&mut self, s: &str) {
+        self.next.events.push(Event::Text(s.to_owned()));
+        self.step();
+    }
+
     fn pattern(&self, track_idx: usize, pattern_idx: usize) -> &crate::model::Pattern {
         &self.app.project.tracks[track_idx].patterns[pattern_idx]
     }
@@ -198,12 +215,29 @@ fn test_preset() -> InstrumentPreset {
         description: "headless test preset".into(),
         oscillators: vec![Default::default()],
         envelope: Default::default(),
+        pitch_envelope: None,
+        filter_envelope: None,
         filter_cutoff: 8_000.0,
+        filter_resonance: 0.0,
+        lfo: None,
         bit_depth: 12,
         sample_hold: 2,
         gain: 0.8,
         monophonic: false,
+        audition_note: 55,
+        audition_duration: 1.6,
     }
+}
+
+/// A preset variant with its own id/name/description and audition metadata.
+fn preset_with(id: &str, name: &str, desc: &str, note: u8, secs: f32) -> InstrumentPreset {
+    let mut p = test_preset();
+    p.id = id.into();
+    p.name = name.into();
+    p.description = desc.into();
+    p.audition_note = note;
+    p.audition_duration = secs;
+    p
 }
 
 #[test]
@@ -1292,21 +1326,23 @@ fn preset_track_is_embedded_and_portable() {
 fn save_and_open_roundtrip() {
     let mut ui = Ui::demo();
     ui.step();
-    let dir = std::env::temp_dir();
-    let path = dir.join("cadence-gui-roundtrip.cadence");
+    // Unique temp dir per run: concurrent test binaries must not race on
+    // shared /tmp filenames.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("roundtrip.cadence");
     crate::persistence::save_project(&ui.app.project, &path).unwrap();
     ui.app.open_path(path.clone());
     ui.step();
     assert_eq!(ui.app.doc.path.as_deref(), Some(path.as_path()));
     assert!(!ui.app.dirty(), "a just-opened song is clean");
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn midi_export_import_roundtrip() {
     let mut ui = Ui::demo();
     ui.step();
-    let path = std::env::temp_dir().join("cadence-gui-roundtrip.mid");
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("roundtrip.mid");
     ui.app.export_midi_file(path.clone());
     ui.step();
     ui.app.import_midi_file(path.clone());
@@ -1316,14 +1352,15 @@ fn midi_export_import_roundtrip() {
         "MIDI import produced tracks"
     );
     assert!(ui.app.dirty(), "an imported song is unsaved");
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn wav_export_worker_completes() {
     let mut ui = Ui::demo();
     ui.step();
-    let path = std::env::temp_dir().join("cadence-gui-export.wav");
+    // The dir must outlive the async export worker, which writes the file.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("export.wav");
     ui.app.start_wav_export(path.clone());
     assert!(ui.app.export.is_some());
     // The worker renders offline; poll frames until the job reports back.
@@ -1339,7 +1376,6 @@ fn wav_export_worker_completes() {
     assert!(finished, "WAV export finished");
     let meta = std::fs::metadata(&path).expect("wav written");
     assert!(meta.len() > 44, "wav has audio data");
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -1391,4 +1427,230 @@ fn click_with_mods(ui: &mut Ui, pos: Pos2, modifiers: Modifiers) {
         modifiers,
     });
     ui.step();
+}
+
+// ----- instrument library: banks, search, audition metadata ---------------
+
+fn test_catalog() -> crate::packs::PackCatalog {
+    crate::packs::PackCatalog {
+        instruments: vec![
+            preset_with("test-a.kick", "Test Kick", "deep kick thump", 36, 0.7),
+            preset_with("test-a.snare", "Test Snare", "crack snare", 40, 0.6),
+            preset_with("test-b.pad", "Test Pad", "ambient wash", 55, 3.0),
+        ],
+        errors: vec![],
+    }
+}
+
+#[test]
+fn library_bank_and_search_filters() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let catalog = test_catalog();
+    ui.app.catalog = catalog.clone();
+    let state = ui.app.history.state();
+    let tracks = ui.app.project.tracks.len();
+
+    // All banks: every built-in plus every preset.
+    let rows = library_rows(&LibraryBank::All, "", &catalog);
+    assert_eq!(rows.builtins.len(), Instrument::ALL.len());
+    assert_eq!(rows.presets.len(), 3);
+
+    // A single pack bank shows only its own presets.
+    let rows = library_rows(&LibraryBank::Pack("test-a".into()), "", &catalog);
+    assert!(rows.builtins.is_empty());
+    assert_eq!(rows.presets.len(), 2);
+    let rows = library_rows(&LibraryBank::BuiltIn, "", &catalog);
+    assert_eq!(rows.builtins.len(), Instrument::ALL.len());
+    assert!(rows.presets.is_empty());
+
+    // Search hits the name…
+    let rows = library_rows(&LibraryBank::All, "snare", &catalog);
+    assert_eq!(rows.presets.len(), 1);
+    assert_eq!(rows.presets[0].name, "Test Snare");
+    // …the description…
+    let rows = library_rows(&LibraryBank::All, "ambient", &catalog);
+    assert_eq!(rows.presets.len(), 1);
+    assert_eq!(rows.presets[0].id, "test-b.pad");
+    // …and the bank name: "test b" appears only in the pack label
+    // ("Test B test-b"), never in the preset id or text.
+    let rows = library_rows(&LibraryBank::All, "test b", &catalog);
+    assert_eq!(rows.presets.len(), 1);
+    assert_eq!(rows.presets[0].id, "test-b.pad");
+
+    // Bank chooser reports sound counts per bank.
+    let options = bank_options(&catalog);
+    assert_eq!(options[0], (LibraryBank::All, 9));
+    assert_eq!(options[1], (LibraryBank::BuiltIn, Instrument::ALL.len()));
+    assert!(options.contains(&(LibraryBank::Pack("test-a".into()), 2)));
+    assert!(options.contains(&(LibraryBank::Pack("test-b".into()), 1)));
+
+    // Choosing a bank / typing a filter is view state only: the project is
+    // untouched and the song stays clean.
+    ui.app.library_bank = LibraryBank::Pack("test-a".into());
+    ui.app.library_filter = "kick".into();
+    ui.step();
+    assert_eq!(ui.app.project.tracks.len(), tracks);
+    assert_eq!(ui.app.history.state(), state);
+    assert!(!ui.app.dirty());
+}
+
+#[test]
+fn library_bank_repair_after_pack_disappears() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.catalog = test_catalog();
+    ui.app.library_bank = LibraryBank::Pack("test-a".into());
+    ui.app.repair_library_bank();
+    assert_eq!(ui.app.library_bank, LibraryBank::Pack("test-a".into()));
+
+    // The pack is gone from the catalog (e.g. after a reload): fall back to All.
+    ui.app.catalog = crate::packs::PackCatalog::default();
+    ui.app.repair_library_bank();
+    assert_eq!(ui.app.library_bank, LibraryBank::All);
+
+    // All and Built-in never need repair.
+    ui.app.library_bank = LibraryBank::BuiltIn;
+    ui.app.repair_library_bank();
+    assert_eq!(ui.app.library_bank, LibraryBank::BuiltIn);
+}
+
+#[test]
+fn library_reset_clears_search_and_bank() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.library_filter = "kick".into();
+    ui.app.library_bank = LibraryBank::BuiltIn;
+    ui.step();
+    let bank_rect = ui.app.library_rects.bank;
+    assert!(bank_rect.width() > 20.0);
+    // Reset is the right-most widget of the bank row.
+    ui.click(Pos2::new(bank_rect.right() - 28.0, bank_rect.center().y));
+    ui.step();
+    assert_eq!(ui.app.library_filter, "");
+    assert_eq!(ui.app.library_bank, LibraryBank::All);
+}
+
+#[test]
+fn library_controls_stay_above_scrolling_list() {
+    // Enough presets that the instrument list must scroll.
+    let presets: Vec<InstrumentPreset> = (0..40)
+        .map(|i| preset_with(&format!("big.pad-{i}"), &format!("Pad {i}"), "pad", 60, 1.0))
+        .collect();
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.catalog = crate::packs::PackCatalog {
+        instruments: presets,
+        errors: vec![],
+    };
+    ui.step();
+
+    let search = ui.app.library_rects.search;
+    let bank = ui.app.library_rects.bank;
+    let list = ui.app.library_rects.list;
+    assert!(search.width() > 20.0 && bank.width() > 20.0);
+    assert!(list.height() > 40.0);
+    assert!(
+        list.top() >= bank.bottom(),
+        "the list starts below the bank controls"
+    );
+
+    // Wheel-scroll inside the list; the controls must not move.
+    ui.at(list.center());
+    ui.step();
+    for _ in 0..8 {
+        ui.wheel(-240.0);
+    }
+    let scrolled = ui.app.library_rects.scroll;
+    assert!(scrolled.y > 1.0, "the list scrolled down: {scrolled:?}");
+    assert_eq!(ui.app.library_rects.search, search);
+    assert_eq!(ui.app.library_rects.bank, bank);
+
+    // The controls are still live: typing filters the list.
+    ui.click(search.center());
+    ui.text("pad");
+    ui.step();
+    assert_eq!(ui.app.library_filter, "pad");
+}
+
+#[test]
+fn preset_audition_uses_pack_metadata() {
+    // audition_duration is f32 in the preset; compare with a small epsilon.
+    fn assert_params(actual: (u8, f64), pitch: u8, secs: f64) {
+        assert_eq!(actual.0, pitch);
+        assert!((actual.1 - secs).abs() < 1e-6, "{actual:?}");
+    }
+
+    // A pack preset auditions at its declared note and duration.
+    let preset = preset_with("test-a.kick", "Kick", "", 36, 0.7);
+    let mut track = crate::model::create_track(Instrument::Lead);
+    track.preset = Some(preset);
+    assert_params(audition_params(&track, 60), 36, 0.7);
+
+    // A preset serialized without the fields (older packs) gets the
+    // documented defaults: MIDI 60 and 0.8 s.
+    let legacy: InstrumentPreset =
+        serde_json::from_str(r#"{"id":"old.x","name":"X","oscillators":[{}]}"#)
+            .expect("preset without audition metadata still parses");
+    let mut track = crate::model::create_track(Instrument::Lead);
+    track.preset = Some(legacy);
+    assert_params(audition_params(&track, 60), 60, 0.8);
+
+    // Built-ins keep the caller's fallback pitch and 0.7 s preview.
+    let track = crate::model::create_track(Instrument::Bass);
+    assert_params(audition_params(&track, 36), 36, 0.7);
+}
+
+#[test]
+fn new_preset_track_centers_editor_on_audition_note() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let preset = preset_with("test-a.kick", "Kick", "", 33, 0.7);
+    ui.app.add_preset_track(&preset);
+    ui.step();
+
+    // The empty pattern homes on the preset's audition note (A#1), not the
+    // Lead default of C5 — and neighbouring registers are on screen.
+    assert!(
+        ui.app.roll_cell_center(33, 1.0).is_some(),
+        "audition note is visible"
+    );
+    assert!(
+        ui.app.roll_cell_center(36, 1.0).is_some(),
+        "a few semitones up is visible too"
+    );
+    assert!(
+        ui.app.roll_cell_center(72, 1.0).is_none(),
+        "the generic Lead default pitch is not what the editor centered on"
+    );
+}
+
+#[test]
+fn preset_track_with_notes_still_centers_on_note_content() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let preset = preset_with("test-a.pad", "Pad", "", 33, 3.0);
+    ui.app.add_preset_track(&preset);
+    ui.step();
+    let tid = ui.app.project.tracks.last().unwrap().id;
+
+    // Drop a high note into the (previously empty) pattern, then re-enter
+    // the track so the editor re-homes: content wins over audition metadata.
+    ui.app.project.tracks.last_mut().unwrap().patterns[0]
+        .notes
+        .push(Note::new(96, 0.0, 4.0, 0.8));
+    let other = ui.app.project.tracks[0].id;
+    ui.app.select_track(other);
+    ui.step();
+    ui.app.select_track(tid);
+    ui.step();
+
+    assert!(
+        ui.app.roll_cell_center(96, 1.0).is_some(),
+        "the written note is centered"
+    );
+    assert!(
+        ui.app.roll_cell_center(33, 1.0).is_none(),
+        "audition metadata no longer drives the scroll once notes exist"
+    );
 }

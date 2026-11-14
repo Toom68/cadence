@@ -10,8 +10,8 @@ use super::theme::{
     TEXT_DIM, TEXT_FAINT,
 };
 use super::{ops, CadenceApp, Focus, StatusKind, Tab};
-use crate::model::{create_track, Instrument};
-use crate::packs::InstrumentPreset;
+use crate::model::{create_track, note_name, Instrument, Track};
+use crate::packs::{InstrumentPreset, PackCatalog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(super) enum SideTab {
@@ -62,6 +62,143 @@ pub(super) fn preset_summary(p: &InstrumentPreset) -> String {
     parts.join(" · ")
 }
 
+/// Which slice of the instrument library the browser lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum LibraryBank {
+    /// Built-ins plus every loaded pack preset.
+    #[default]
+    All,
+    /// Only the built-in instruments.
+    BuiltIn,
+    /// One pack bank, keyed by preset-id namespace ("psy-bass").
+    Pack(String),
+}
+
+/// Last-frame library chrome geometry. Headless tests aim scroll and click
+/// input with it (mirrors `editor::EditorRects`).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LibraryRects {
+    pub search: Rect,
+    pub bank: Rect,
+    /// Viewport of the scrolling instrument list.
+    pub list: Rect,
+    /// Scroll offset of the instrument list.
+    pub scroll: egui::Vec2,
+}
+
+impl Default for LibraryRects {
+    fn default() -> Self {
+        Self {
+            search: Rect::NOTHING,
+            bank: Rect::NOTHING,
+            list: Rect::NOTHING,
+            scroll: egui::Vec2::ZERO,
+        }
+    }
+}
+
+/// Pack namespace of a preset id ("psy-bass.sub-sine" → "psy-bass").
+pub(super) fn preset_namespace(preset_id: &str) -> &str {
+    preset_id.split('.').next().unwrap_or(preset_id)
+}
+
+/// Display name of a bank filter.
+fn bank_title(bank: &LibraryBank) -> String {
+    match bank {
+        LibraryBank::All => "All".to_owned(),
+        LibraryBank::BuiltIn => "Built-in".to_owned(),
+        LibraryBank::Pack(ns) => pack_title(ns),
+    }
+}
+
+/// Searchable bank label: the readable title plus the raw namespace, so both
+/// "Psy Bass" and "psy-bass" match.
+fn bank_search_text(namespace: &str) -> String {
+    format!("{} {}", pack_title(namespace), namespace)
+}
+
+/// Bank choices for the chooser with their row counts, in display order:
+/// All, Built-in, then each pack namespace in catalog order.
+pub(super) fn bank_options(catalog: &PackCatalog) -> Vec<(LibraryBank, usize)> {
+    let mut packs: Vec<(String, usize)> = Vec::new();
+    for p in &catalog.instruments {
+        let ns = preset_namespace(&p.id);
+        match packs.iter_mut().find(|(n, _)| n == ns) {
+            Some((_, count)) => *count += 1,
+            None => packs.push((ns.to_owned(), 1)),
+        }
+    }
+    let mut options = vec![
+        (
+            LibraryBank::All,
+            Instrument::ALL.len() + catalog.instruments.len(),
+        ),
+        (LibraryBank::BuiltIn, Instrument::ALL.len()),
+    ];
+    options.extend(
+        packs
+            .into_iter()
+            .map(|(ns, count)| (LibraryBank::Pack(ns), count)),
+    );
+    options
+}
+
+/// The library rows visible under a bank filter and search query. Shared by
+/// the list UI and headless tests so the counts cannot drift apart.
+pub(super) struct LibraryRows<'a> {
+    pub builtins: Vec<Instrument>,
+    pub presets: Vec<&'a InstrumentPreset>,
+}
+
+/// `query` is the trimmed, lowercased search text (empty matches everything).
+/// Search hits the preset/built-in name, its description and its bank name.
+pub(super) fn library_rows<'a>(
+    bank: &LibraryBank,
+    query: &str,
+    catalog: &'a PackCatalog,
+) -> LibraryRows<'a> {
+    let text_hit = |fields: &[&str]| {
+        query.is_empty() || fields.iter().any(|f| f.to_lowercase().contains(query))
+    };
+    let builtins = match bank {
+        LibraryBank::All | LibraryBank::BuiltIn => Instrument::ALL
+            .iter()
+            .copied()
+            .filter(|i| text_hit(&[i.name(), i.description(), "Built-in"]))
+            .collect(),
+        LibraryBank::Pack(_) => Vec::new(),
+    };
+    let presets = catalog
+        .instruments
+        .iter()
+        .filter(|p| {
+            let bank_ok = match bank {
+                LibraryBank::All => true,
+                LibraryBank::BuiltIn => false,
+                LibraryBank::Pack(b) => b == preset_namespace(&p.id),
+            };
+            bank_ok
+                && text_hit(&[
+                    p.name.as_str(),
+                    p.description.as_str(),
+                    bank_search_text(preset_namespace(&p.id)).as_str(),
+                    p.id.as_str(),
+                ])
+        })
+        .collect();
+    LibraryRows { builtins, presets }
+}
+
+/// Pitch and duration for a track's library audition. Pack presets carry
+/// `audition_note`/`audition_duration` metadata (MIDI 60 / 0.8 s when the
+/// pack omits them); built-ins keep the historic fallback values.
+pub(super) fn audition_params(track: &Track, fallback_pitch: u8) -> (u8, f64) {
+    match &track.preset {
+        Some(p) => (p.audition_note, f64::from(p.audition_duration)),
+        None => (fallback_pitch, 0.7),
+    }
+}
+
 enum LibraryAction {
     Add(Instrument),
     AddPreset(InstrumentPreset),
@@ -106,12 +243,16 @@ impl CadenceApp {
                     }
                 });
                 ui.add_space(8.0);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| match self.side_tab {
-                        SideTab::Library => self.library_ui(ui),
-                        SideTab::Track => self.inspector_ui(ui),
-                    });
+                match self.side_tab {
+                    // The library manages its own scroll area so the search
+                    // and bank controls stay visible above the list.
+                    SideTab::Library => self.library_ui(ui),
+                    SideTab::Track => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.inspector_ui(ui));
+                    }
+                }
             });
     }
 
@@ -129,12 +270,63 @@ impl CadenceApp {
             });
         });
         ui.add_space(4.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.library_filter)
-                .hint_text("Search instruments…")
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(6.0);
+        self.library_rects.search = ui
+            .add(
+                egui::TextEdit::singleline(&mut self.library_filter)
+                    .hint_text("Search instruments…")
+                    .desired_width(f32::INFINITY),
+            )
+            .rect;
+        ui.add_space(4.0);
+
+        // Bank chooser + reset live above the scrolling list so they stay
+        // reachable however far down the library the user has scrolled.
+        let bank_row = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let options = bank_options(&self.catalog);
+            let count = options
+                .iter()
+                .find(|(b, _)| *b == self.library_bank)
+                .map(|(_, n)| *n);
+            let selected = match count {
+                Some(n) => format!("{} · {n}", bank_title(&self.library_bank)),
+                None => bank_title(&self.library_bank),
+            };
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("library-bank")
+                .width((ui.available_width() - 62.0).max(90.0))
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for (bank, n) in &options {
+                        let on = *bank == self.library_bank;
+                        if ui
+                            .selectable_label(on, format!("{} · {n}", bank_title(bank)))
+                            .clicked()
+                        {
+                            pick = Some(bank.clone());
+                        }
+                    }
+                });
+            let filtered =
+                !self.library_filter.trim().is_empty() || self.library_bank != LibraryBank::All;
+            if ui
+                .add_enabled(
+                    filtered,
+                    egui::Button::new("Reset").min_size(vec2(54.0, 0.0)),
+                )
+                .on_hover_text("Clear the search text and bank filter")
+                .clicked()
+            {
+                self.library_filter.clear();
+                self.library_bank = LibraryBank::All;
+            }
+            pick
+        });
+        self.library_rects.bank = bank_row.response.rect;
+        if let Some(bank) = bank_row.inner {
+            self.library_bank = bank;
+        }
+        ui.add_space(4.0);
         if full {
             ui.label(
                 RichText::new("Track limit reached. Delete a track to add another.")
@@ -142,85 +334,85 @@ impl CadenceApp {
                     .color(CORAL),
             );
         }
-        let filter = self.library_filter.trim().to_lowercase();
-        let matches = |name: &str, desc: &str| {
-            filter.is_empty()
-                || name.to_lowercase().contains(&filter)
-                || desc.to_lowercase().contains(&filter)
-        };
+
+        let query = self.library_filter.trim().to_lowercase();
+        let bank = self.library_bank.clone();
         let mut action = None;
+        let show_pack_headers = matches!(bank, LibraryBank::All);
+        let list_rect = ui.available_rect_before_wrap();
+        let list = egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let rows = library_rows(&bank, &query, &self.catalog);
+                if !rows.builtins.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(theme::kicker_text("BUILT-IN"));
+                    for inst in &rows.builtins {
+                        if let Some(a) = library_row(
+                            ui,
+                            inst.name(),
+                            inst.description(),
+                            theme::rgb(instrument_color(*inst)),
+                            inst.is_drums(),
+                            !full,
+                        ) {
+                            action = Some(if a {
+                                LibraryAction::Add(*inst)
+                            } else {
+                                LibraryAction::Audition(*inst)
+                            });
+                        }
+                    }
+                }
 
-        ui.add_space(2.0);
-        ui.label(theme::kicker_text("BUILT-IN"));
-        for inst in Instrument::ALL {
-            if !matches(inst.name(), inst.description()) {
-                continue;
-            }
-            if let Some(a) = library_row(
-                ui,
-                inst.name(),
-                inst.description(),
-                theme::rgb(instrument_color(inst)),
-                inst.is_drums(),
-                !full,
-            ) {
-                action = Some(if a {
-                    LibraryAction::Add(inst)
-                } else {
-                    LibraryAction::Audition(inst)
-                });
-            }
-        }
+                let mut current_pack = String::new();
+                for preset in rows.presets.iter().copied() {
+                    let title = pack_title(&preset.id);
+                    if show_pack_headers && title != current_pack {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(theme::kicker_text(&format!(
+                                "PACK · {}",
+                                title.to_uppercase()
+                            )));
+                        });
+                        current_pack = title;
+                    }
+                    let tip = format!(
+                        "{}\n\n{}\npreview {} · {:.1} s\nid: {}",
+                        preset.description,
+                        preset_summary(preset),
+                        note_name(preset.audition_note),
+                        preset.audition_duration,
+                        preset.id
+                    );
+                    if let Some(a) = library_row(
+                        ui,
+                        &preset.name,
+                        &tip,
+                        theme::rgb(ops::preset_color(&preset.id)),
+                        false,
+                        !full,
+                    ) {
+                        action = Some(if a {
+                            LibraryAction::AddPreset(preset.clone())
+                        } else {
+                            LibraryAction::AuditionPreset(preset.clone())
+                        });
+                    }
+                }
+                if rows.builtins.is_empty()
+                    && rows.presets.is_empty()
+                    && (!query.is_empty() || bank != LibraryBank::All)
+                {
+                    theme::hint(ui, "No instruments match.");
+                }
 
-        let mut current_pack = String::new();
-        let presets = self.catalog.instruments.clone();
-        for preset in &presets {
-            if !matches(&preset.name, &preset.description) {
-                continue;
-            }
-            let title = pack_title(&preset.id);
-            if title != current_pack {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(theme::kicker_text(&format!(
-                        "PACK · {}",
-                        title.to_uppercase()
-                    )));
-                });
-                current_pack = title;
-            }
-            let tip = format!(
-                "{}\n\n{}\nid: {}",
-                preset.description,
-                preset_summary(preset),
-                preset.id
-            );
-            if let Some(a) = library_row(
-                ui,
-                &preset.name,
-                &tip,
-                theme::rgb(ops::preset_color(&preset.id)),
-                false,
-                !full,
-            ) {
-                action = Some(if a {
-                    LibraryAction::AddPreset(preset.clone())
-                } else {
-                    LibraryAction::AuditionPreset(preset.clone())
-                });
-            }
-        }
-        if !filter.is_empty()
-            && current_pack.is_empty()
-            && !Instrument::ALL
-                .iter()
-                .any(|i| matches(i.name(), i.description()))
-        {
-            theme::hint(ui, "No instruments match your search.");
-        }
-
-        ui.add_space(10.0);
-        self.packs_footer(ui);
+                ui.add_space(10.0);
+                self.packs_footer(ui);
+            });
+        self.library_rects.list = list_rect;
+        self.library_rects.scroll = list.state.offset;
 
         match action {
             Some(LibraryAction::Add(inst)) => self.add_track(inst),
@@ -289,14 +481,15 @@ impl CadenceApp {
         }
     }
 
-    fn audition_instrument(&mut self, track: &crate::model::Track, pitch: u8) {
+    fn audition_instrument(&mut self, track: &Track, pitch: u8) {
         match &self.engine {
             Some(engine) => {
                 if track.instrument.is_drums() && track.preset.is_none() {
                     engine.preview(track, 36, 0.4, 0.9);
                     engine.preview(track, 42, 0.2, 0.6);
                 } else {
-                    engine.preview(track, pitch, 0.7, 0.8);
+                    let (pitch, seconds) = audition_params(track, pitch);
+                    engine.preview(track, pitch, seconds, 0.8);
                 }
             }
             None => self.set_status(

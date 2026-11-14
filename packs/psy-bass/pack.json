@@ -1,0 +1,473 @@
+{
+  "schema_version": 1,
+  "id": "psy-bass",
+  "name": "Psy · Bass",
+  "description": "24 synthesized bass voices for psy/trance: clean subs, rolling lines, tight plucks, resonant acid-style squelch, rubber, detuned Reese, dub, growl and distorted textures. All useful around MIDI 28-52; most are monophonic, a few deliberately poly for chord-bass. Pure synthesis, no samples.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "psy-bass.sub-sine",
+      "audition_note": 30,
+      "audition_duration": 1.0,
+      "name": "Sub Sine",
+      "description": "Clean deep sub: sine fundamental plus an octave-down sine. C1-C2 (MIDI 24-36); the weight of the low end.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.95, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.5, "sustain": 0.8, "release": 0.15 },
+      "filter_cutoff": 800.0,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.sub-square",
+      "audition_note": 30,
+      "audition_duration": 1.0,
+      "name": "Sub Square",
+      "description": "Rounder sub: a filtered square body over a sine octave. Slightly more edge than pure sine. E1-G1 (MIDI 28-31).",
+      "oscillators": [
+        { "waveform": "square", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.3, "sustain": 0.85, "release": 0.12 },
+      "filter_cutoff": 500.0,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.sub-saw",
+      "audition_note": 32,
+      "audition_duration": 1.0,
+      "name": "Sub Saw",
+      "description": "Warm analog-style sub: saw through a gentle low-pass with a sine sub layer. F1-B1 (MIDI 29-35).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.4, "sustain": 0.75, "release": 0.2 },
+      "filter_cutoff": 700.0,
+      "filter_resonance": 0.15,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.psy-roll",
+      "audition_note": 34,
+      "audition_duration": 0.9,
+      "name": "Psy Roll",
+      "description": "Rolling psy bassline patch: detuned saws, resonant filter with a slow LFO sweep. Write 16th-note lines; G1-C2 (MIDI 31-36).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.22, "sustain": 0.25, "release": 0.08 },
+      "lfo": { "waveform": "sine", "rate_hz": 4.0, "pitch_semitones": 0.0, "filter_octaves": 1.2, "amplitude": 0.0 },
+      "filter_cutoff": 1400.0,
+      "filter_resonance": 0.45,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.psy-pump",
+      "audition_note": 36,
+      "audition_duration": 0.9,
+      "name": "Psy Pump",
+      "description": "Pump-modulated psy bass: an amplitude LFO thumps the sustain and a filter LFO adds motion. For four-on-the-floor psy; C2 (MIDI 36).",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.18, "sustain": 0.3, "release": 0.06 },
+      "lfo": { "waveform": "sine", "rate_hz": 5.5, "pitch_semitones": 0.0, "filter_octaves": 0.8, "amplitude": 0.4 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.psy-slide",
+      "audition_note": 33,
+      "audition_duration": 1.2,
+      "name": "Psy Scoop",
+      "description": "Scooped psy bass: each note starts ~7 semitones flat and scoops up to pitch - a pitch-envelope effect, not portamento; resonant filter plus gentle vibrato. F1-C2 (MIDI 29-36).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.4 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.5, "sustain": 0.5, "release": 0.25 },
+      "pitch_envelope": { "amount_semitones": -7.0, "decay": 0.35 },
+      "lfo": { "waveform": "sine", "rate_hz": 6.0, "pitch_semitones": 0.8, "filter_octaves": 0.6, "amplitude": 0.0 },
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.25 },
+      "filter_cutoff": 1600.0,
+      "filter_resonance": 0.5,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.psy-resonant",
+      "audition_note": 33,
+      "audition_duration": 1.2,
+      "name": "Resonant Psy Bass",
+      "description": "Wide resonant psy bass: detuned saws, strong filter LFO movement. Hold notes and let the filter wander; F1-C2 (MIDI 29-36).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.4, "sustain": 0.55, "release": 0.3 },
+      "lfo": { "waveform": "sine", "rate_hz": 3.2, "pitch_semitones": 0.0, "filter_octaves": 1.8, "amplitude": 0.0 },
+      "filter_cutoff": 2400.0,
+      "filter_resonance": 0.6,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.pluck-tight",
+      "audition_note": 31,
+      "audition_duration": 0.7,
+      "name": "Tight Pluck",
+      "description": "Snappy plucked bass: pitch and filter snap down on attack. Good for funk/psy stabs; E1-B1 (MIDI 28-35).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.15, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.25, "sustain": 0.15, "release": 0.07 },
+      "pitch_envelope": { "amount_semitones": 12.0, "decay": 0.09 },
+      "filter_envelope": { "amount_octaves": 3.5, "decay": 0.12 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.pluck-round",
+      "audition_note": 38,
+      "audition_duration": 0.9,
+      "name": "Round Pluck",
+      "description": "Softer round pluck: triangle body with a gentle pitch drop. Deliberately polyphonic for warm chord-bass fills; C2-E2 (MIDI 36-40).",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.3, "sustain": 0.2, "release": 0.1 },
+      "pitch_envelope": { "amount_semitones": 7.0, "decay": 0.12 },
+      "filter_cutoff": 1200.0,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "psy-bass.pluck-stab",
+      "audition_note": 41,
+      "audition_duration": 0.6,
+      "name": "Pluck Stab",
+      "description": "Hollow plucky stab: narrow pulse plus sub triangle, fast filter snap and light grit. Psy stabs on the offbeat; F2 (MIDI 41).",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.3 },
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.18, "sustain": 0.1, "release": 0.05 },
+      "pitch_envelope": { "amount_semitones": 10.0, "decay": 0.07 },
+      "filter_envelope": { "amount_octaves": 4.0, "decay": 0.09 },
+      "filter_cutoff": 2400.0,
+      "filter_resonance": 0.4,
+      "bit_depth": 16,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.acid-line",
+      "audition_note": 38,
+      "audition_duration": 1.2,
+      "name": "Acid Line",
+      "description": "Synthesized acid-style bass: saw through a squelchy resonant low-pass with a slow filter LFO. Not a sample or clone. Gate notes short for classic squelch stabs; C2-F2 (MIDI 36-41).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.3, "sustain": 0.6, "release": 0.12 },
+      "lfo": { "waveform": "sine", "rate_hz": 1.5, "pitch_semitones": 0.0, "filter_octaves": 0.4, "amplitude": 0.0 },
+      "filter_cutoff": 700.0,
+      "filter_resonance": 0.75,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.acid-squelch",
+      "audition_note": 31,
+      "audition_duration": 1.2,
+      "name": "Acid Squelch",
+      "description": "Resonant acid squelch with a wobbling filter LFO. Push resonance for the classic squawk; G1 (MIDI 31).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.2, "frequency_ratio": 1.5, "detune_cents": 0.0, "pulse_width": 0.25 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.35, "sustain": 0.55, "release": 0.15 },
+      "lfo": { "waveform": "triangle", "rate_hz": 5.5, "pitch_semitones": 0.0, "filter_octaves": 1.4, "amplitude": 0.0 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.18 },
+      "filter_cutoff": 900.0,
+      "filter_resonance": 0.85,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.acid-bite",
+      "audition_note": 38,
+      "audition_duration": 0.7,
+      "name": "Acid Bite",
+      "description": "Shorter biting acid: square/saw stack, fast filter snap and light grit. Rhythmic 16th squelches; D2 (MIDI 38).",
+      "oscillators": [
+        { "waveform": "square", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.25, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.22, "sustain": 0.3, "release": 0.08 },
+      "pitch_envelope": { "amount_semitones": 5.0, "decay": 0.15 },
+      "filter_envelope": { "amount_octaves": 2.5, "decay": 0.1 },
+      "filter_cutoff": 1600.0,
+      "filter_resonance": 0.7,
+      "bit_depth": 14,
+      "sample_hold": 2,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.acid-deep",
+      "audition_note": 35,
+      "audition_duration": 1.2,
+      "name": "Acid Deep",
+      "description": "Deep resonant acid: sub-octave saw through a heavily resonant filter. Dark squelch for low lines; A1-D2 (MIDI 33-38).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.8, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.45, "sustain": 0.6, "release": 0.2 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.22 },
+      "filter_cutoff": 550.0,
+      "filter_resonance": 0.8,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.rubber",
+      "audition_note": 40,
+      "audition_duration": 0.7,
+      "name": "Rubber Bass",
+      "description": "Rubbery plucky bass: fast pitch drop and filter snap suit syncopated octave-hop lines. Short envelope; C2-G2 (MIDI 36-43).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.16, "sustain": 0.2, "release": 0.06 },
+      "pitch_envelope": { "amount_semitones": 9.0, "decay": 0.12 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.1 },
+      "filter_cutoff": 2000.0,
+      "filter_resonance": 0.25,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.rubber-bite",
+      "audition_note": 41,
+      "audition_duration": 0.6,
+      "name": "Rubber Bite",
+      "description": "Harsher rubber stab: bigger pitch drop, faster filter snap and grit. Aggressive psy stabs; F2 (MIDI 41).",
+      "oscillators": [
+        { "waveform": "square", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.12, "sustain": 0.15, "release": 0.05 },
+      "pitch_envelope": { "amount_semitones": 14.0, "decay": 0.08 },
+      "filter_envelope": { "amount_octaves": 3.0, "decay": 0.07 },
+      "filter_cutoff": 3000.0,
+      "filter_resonance": 0.35,
+      "bit_depth": 12,
+      "sample_hold": 2,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.reese",
+      "audition_note": 33,
+      "audition_duration": 1.4,
+      "name": "Reese Bass",
+      "description": "Detuned-saw Reese bass: beating pairs plus a sine anchor. Deliberately polyphonic for stacked chord-bass stabs; C1-E2 (MIDI 24-40).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -10.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 10.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.01, "decay": 0.5, "sustain": 0.7, "release": 0.3 },
+      "filter_cutoff": 1200.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-bass.reese-sub",
+      "audition_note": 33,
+      "audition_duration": 1.4,
+      "name": "Reese Sub",
+      "description": "Lower, wider Reese: octave-down detuned saws with a sine anchor. Monophonic; G1-B1 (MIDI 31-35).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": -15.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 15.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.6, "sustain": 0.75, "release": 0.35 },
+      "filter_cutoff": 900.0,
+      "filter_resonance": 0.2,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.dub",
+      "audition_note": 36,
+      "audition_duration": 1.6,
+      "name": "Dub Bass",
+      "description": "Dubby bass: the filter slowly opens after note-on and the long release leaves space for echoes. C1-F2 (MIDI 24-41).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.02, "decay": 0.6, "sustain": 0.6, "release": 0.5 },
+      "filter_envelope": { "amount_octaves": -2.5, "decay": 1.2 },
+      "filter_cutoff": 1100.0,
+      "filter_resonance": 0.35,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.dub-space",
+      "audition_note": 40,
+      "audition_duration": 2.0,
+      "name": "Dub Space",
+      "description": "Spacious poly dub bass: slow filter swell, drift LFO and a long release. Deliberately polyphonic for dub chords; C2-G2 (MIDI 36-43).",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.35, "frequency_ratio": 1.0, "detune_cents": 4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.03, "decay": 0.8, "sustain": 0.65, "release": 0.8 },
+      "lfo": { "waveform": "sine", "rate_hz": 0.6, "pitch_semitones": 0.0, "filter_octaves": 0.8, "amplitude": 0.0 },
+      "filter_envelope": { "amount_octaves": -3.0, "decay": 1.5 },
+      "filter_cutoff": 1500.0,
+      "filter_resonance": 0.4,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "psy-bass.growl",
+      "audition_note": 30,
+      "audition_duration": 1.0,
+      "name": "Growl Bass",
+      "description": "Detuned dissonant growl: saws 60 cents apart plus grit. Aggressive psy low end; E1-A1 (MIDI 28-33).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": -30.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 30.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.2, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.35, "sustain": 0.6, "release": 0.15 },
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.2 },
+      "filter_cutoff": 900.0,
+      "filter_resonance": 0.5,
+      "bit_depth": 10,
+      "sample_hold": 2,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.growl-fuzz",
+      "audition_note": 36,
+      "audition_duration": 1.0,
+      "name": "Growl Fuzz",
+      "description": "Fuzzed growl bass: crushed square/saw stack with a noise edge on attack. Distorted texture, no real distortion unit; C2 (MIDI 36).",
+      "oscillators": [
+        { "waveform": "square", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.5, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.4 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.3, "sustain": 0.65, "release": 0.12 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.12 },
+      "filter_cutoff": 1400.0,
+      "filter_resonance": 0.55,
+      "bit_depth": 8,
+      "sample_hold": 4,
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.dist-saw",
+      "audition_note": 33,
+      "audition_duration": 1.1,
+      "name": "Distorted Saw Bass",
+      "description": "Heavy textured bass: stacked detuned saws crushed to 8 bits with a sub square. DJ/psy texture; F1-C2 (MIDI 29-36).",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -15.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 15.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.4, "sustain": 0.7, "release": 0.2 },
+      "filter_cutoff": 1000.0,
+      "filter_resonance": 0.4,
+      "bit_depth": 8,
+      "sample_hold": 3,
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "psy-bass.fuzz-bass",
+      "audition_note": 34,
+      "audition_duration": 1.2,
+      "name": "Fuzz Bass",
+      "description": "Fuzzy wandering bass: square grit, noise edge, scooped pitch and a filter LFO. Psy-fuzz textures; G1-D2 (MIDI 31-38).",
+      "oscillators": [
+        { "waveform": "square", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.4 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.6 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.5, "sustain": 0.6, "release": 0.25 },
+      "pitch_envelope": { "amount_semitones": -5.0, "decay": 0.3 },
+      "lfo": { "waveform": "triangle", "rate_hz": 7.0, "pitch_semitones": 0.0, "filter_octaves": 0.9, "amplitude": 0.0 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.45,
+      "bit_depth": 10,
+      "sample_hold": 2,
+      "gain": 0.7,
+      "monophonic": true
+    }
+  ]
+}

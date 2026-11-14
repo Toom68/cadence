@@ -3,7 +3,7 @@
 Cadence is a focused, multi-track songwriting studio for macOS and Windows — a native Rust desktop app. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs across multiple instrument tracks, mix built-in synthesized instruments with per-track effects, and export WAV or MIDI.
 
 - **Native Rust desktop app** — an eframe/egui interface driven by a CPAL audio engine; no Electron, no web runtime, no Node.js needed to build or run
-- **Six built-in instruments plus JSON packs** — synthesized in Rust: 6 built-ins, 10 bundled 8-bit pack presets, and unlimited user-installed JSON packs (pure JSON, no rebuild); no samples or binary plugins required
+- **144 sounds plus JSON packs** — synthesized in Rust: 6 built-ins and 138 bundled pack presets across eight banks (10 chiptune `8-bit` sounds and 128 experimental `psy-*` instruments), plus unlimited user-installed JSON packs (pure JSON, no rebuild); no samples or binary plugins required
 - **Local-first** — projects are plain JSON `.cadence` files; an automatic recovery copy protects against lost work; the app works fully offline after building
 
 ## Requirements
@@ -110,7 +110,7 @@ A `.cadence` file is a plain-text JSON document describing tempo, swing, song le
 
 ## Limitations
 
-- **Built-in synthesizers and JSON packs — no binary plugin hosting yet.** Sounds are synthesized in-app: six built-in timbres, ten bundled 8-bit pack presets, and optional user-installed JSON instrument packs (see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md)). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
+- **Built-in synthesizers and JSON packs — no binary plugin hosting yet.** Sounds are synthesized in-app: six built-in timbres, 138 bundled pack presets (ten `8-bit` chiptune sounds and 128 experimental `psy-*` instruments in seven banks), and optional user-installed JSON instrument packs (see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md)). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
 - **Packages are not distribution-signed and Windows is unverified at runtime.** macOS builds are ad-hoc signed only and Windows builds are unsigned — no Developer ID, notarization, or Authenticode, so platform security warnings can appear when sharing builds. The Windows x64 exe builds and packages cleanly (GNU cross-build; MSVC path in CI) but has not been executed on Windows or Wine — Windows 10+ is the expected target per Rust's platform support.
 - **No audio recording or audio-file import.** Cadence is a pattern-based MIDI-style sequencer — you compose notes, you don't record takes.
 - Fixed sixteenth-note grid (1/16 snap); positions are stored in sixteenth steps.

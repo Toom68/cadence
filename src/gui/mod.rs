@@ -119,6 +119,10 @@ pub struct CadenceApp {
     recovery_offered: bool,
     side_tab: sidebar::SideTab,
     library_filter: String,
+    /// Bank filter for the instrument library (view state only, never saved).
+    library_bank: sidebar::LibraryBank,
+    /// Last-frame library chrome geometry for headless tests.
+    library_rects: sidebar::LibraryRects,
     catalog: crate::packs::PackCatalog,
     /// Fingerprint of the packs dir at the last catalog refresh.
     pack_stamp: u64,
@@ -186,6 +190,8 @@ impl CadenceApp {
             recovery_offered: false,
             side_tab: sidebar::SideTab::default(),
             library_filter: String::new(),
+            library_bank: sidebar::LibraryBank::default(),
+            library_rects: sidebar::LibraryRects::default(),
             catalog: if io_enabled {
                 crate::packs::load_catalog()
             } else {
@@ -635,6 +641,22 @@ impl CadenceApp {
     fn refresh_pack_catalog(&mut self) {
         if self.io_enabled {
             self.catalog = crate::packs::load_catalog();
+            self.repair_library_bank();
+        }
+    }
+
+    /// A bank filter naming a pack that no longer loads falls back to All.
+    /// View state only — the song and its dirty flag are untouched.
+    fn repair_library_bank(&mut self) {
+        if let sidebar::LibraryBank::Pack(ns) = &self.library_bank {
+            let alive = self
+                .catalog
+                .instruments
+                .iter()
+                .any(|p| sidebar::preset_namespace(&p.id) == ns.as_str());
+            if !alive {
+                self.library_bank = sidebar::LibraryBank::All;
+            }
         }
     }
 

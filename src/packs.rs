@@ -1,11 +1,12 @@
 //! Data-driven instrument packs.
 //!
 //! Instrument packs are pure JSON documents (`schema_version` 1) describing
-//! synthesis presets: oscillators, an ADSR-style envelope, filter cutoff, bit
-//! depth, sample-and-hold and output gain. Packs contain no executable code and
-//! no audio samples, so adding new sounds never requires a Rust change or a
-//! rebuild: drop a `.json` pack into the user pack directory (or ship one under
-//! `packs/`) and the app picks it up on *Reload Packs*.
+//! synthesis presets: oscillators, optional oscillator/pitch/filter/LFO motion,
+//! a resonant low-pass filter, an ADSR-style envelope, bit depth,
+//! sample-and-hold and output gain. Packs contain no executable code and no audio
+//! samples, so adding new sounds never requires a Rust change or a rebuild: drop
+//! a `.json` pack into the user pack directory (or ship one under `packs/`) and
+//! the app picks it up on *Reload Packs*.
 //!
 //! # Pipeline
 //!
@@ -25,8 +26,9 @@
 //! Embedded packs ship inside the binary via `include_str!`.
 //!
 //! JSON is strict: unknown fields are rejected at parse time so typos like
-//! `samplehold` fail loudly instead of being silently ignored. Add new fields
-//! only together with a `schema_version` bump.
+//! `samplehold` fail loudly instead of being silently ignored. Schema version 1
+//! stays backward-compatible: new synthesis controls must be optional and default
+//! to the legacy sound when omitted.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -95,7 +97,8 @@ pub enum Waveform {
 /// Valid ranges (enforced by [`validate_preset`]):
 /// `level` 0.0..=1.0, `frequency_ratio` 0.125..=16.0 (1.0 = unison),
 /// `detune_cents` -100.0..=100.0, `pulse_width` 0.05..=0.95 (fraction of the
-/// cycle the pulse stays high; 0.5 = 50 % duty, only used by [`Waveform::Pulse`]).
+/// cycle the pulse stays high; 0.5 = 50 % duty, only used by [`Waveform::Pulse`]),
+/// optional `decay` 0.005..=20.0 seconds as a T60 layer fade.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OscillatorSpec {
@@ -104,6 +107,8 @@ pub struct OscillatorSpec {
     pub frequency_ratio: f32,
     pub detune_cents: f32,
     pub pulse_width: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decay: Option<f32>,
 }
 
 impl Default for OscillatorSpec {
@@ -114,6 +119,7 @@ impl Default for OscillatorSpec {
             frequency_ratio: 1.0,
             detune_cents: 0.0,
             pulse_width: 0.5,
+            decay: None,
         }
     }
 }
@@ -143,6 +149,74 @@ impl Default for Envelope {
     }
 }
 
+/// Deterministic free-running LFO shape for optional pitch, filter and tremolo modulation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LfoWaveform {
+    #[default]
+    Sine,
+    Triangle,
+}
+
+/// Pitch sweep: an initial semitone offset decaying exponentially to zero.
+/// `decay` is T60: the offset reaches 0.001 of its starting value at that time.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PitchEnvelope {
+    pub amount_semitones: f32,
+    pub decay: f32,
+}
+
+impl Default for PitchEnvelope {
+    fn default() -> Self {
+        Self {
+            amount_semitones: 0.0,
+            decay: 0.2,
+        }
+    }
+}
+
+/// Filter sweep in log2 cutoff space, decaying exponentially to the base cutoff.
+/// Negative amounts start below the base cutoff and open toward it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilterEnvelope {
+    pub amount_octaves: f32,
+    pub decay: f32,
+}
+
+impl Default for FilterEnvelope {
+    fn default() -> Self {
+        Self {
+            amount_octaves: 0.0,
+            decay: 0.5,
+        }
+    }
+}
+
+/// Free-Hz note-local LFO. Pitch/filter outputs are bipolar; amplitude is tremolo depth.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LfoSpec {
+    pub waveform: LfoWaveform,
+    pub rate_hz: f32,
+    pub pitch_semitones: f32,
+    pub filter_octaves: f32,
+    pub amplitude: f32,
+}
+
+impl Default for LfoSpec {
+    fn default() -> Self {
+        Self {
+            waveform: LfoWaveform::Sine,
+            rate_hz: 1.0,
+            pitch_semitones: 0.0,
+            filter_octaves: 0.0,
+            amplitude: 0.0,
+        }
+    }
+}
+
 /// A data-driven instrument preset that can be embedded in a project or loaded
 /// from a pack. Only `id`, `name` and a non-empty `oscillators` list are
 /// required in JSON; everything else has a sane default.
@@ -151,9 +225,13 @@ impl Default for Envelope {
 /// (lowercase `a-z`, `0-9`, `-`, `_`, `.`, must contain a `.`).
 ///
 /// Valid ranges: `filter_cutoff` 100.0..=20000.0 Hz,
-/// `bit_depth` 4..=24 (24 = full quality, lower values crunch),
-/// `sample_hold` 1..=64 (1 = every sample, higher = sample-and-hold grit),
-/// `gain` 0.0..=1.0, at most [`MAX_OSCILLATORS`] oscillators.
+/// `filter_resonance` 0.0..=0.95, `bit_depth` 4..=24 (24 = full quality, lower
+/// values crunch), `sample_hold` 1..=64 (1 = every sample, higher =
+/// sample-and-hold grit), `gain` 0.0..=1.0, at most [`MAX_OSCILLATORS`]
+/// oscillators, `audition_note` 0..=127 and `audition_duration` 0.1..=8.0 s.
+/// Pitch/filter envelopes and oscillator decays use T60 semantics; LFO rates
+/// are unsynced Hz and tremolo depth never amplifies the signal. The audition
+/// fields only steer library preview centering and never reach the audio path.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct InstrumentPreset {
@@ -165,8 +243,16 @@ pub struct InstrumentPreset {
     pub oscillators: Vec<OscillatorSpec>,
     #[serde(default)]
     pub envelope: Envelope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_envelope: Option<PitchEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_envelope: Option<FilterEnvelope>,
     #[serde(default = "default_filter_cutoff")]
     pub filter_cutoff: f32,
+    #[serde(default, skip_serializing_if = "is_default_filter_resonance")]
+    pub filter_resonance: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lfo: Option<LfoSpec>,
     #[serde(default = "default_bit_depth")]
     pub bit_depth: u8,
     #[serde(default = "default_sample_hold")]
@@ -175,10 +261,39 @@ pub struct InstrumentPreset {
     pub gain: f32,
     #[serde(default)]
     pub monophonic: bool,
+    /// MIDI note the library preview/audition centres on (0..=127, default 60).
+    /// Preview metadata only: it never affects the rendered instrument signal.
+    #[serde(
+        default = "default_audition_note",
+        skip_serializing_if = "is_default_audition_note"
+    )]
+    pub audition_note: u8,
+    /// Seconds the library preview/audition holds the note (0.1..=8.0, default
+    /// 0.8). Preview metadata only, like [`audition_note`](Self::audition_note).
+    #[serde(
+        default = "default_audition_duration",
+        skip_serializing_if = "is_default_audition_duration"
+    )]
+    pub audition_duration: f32,
 }
 
 fn default_filter_cutoff() -> f32 {
     20_000.0
+}
+fn is_default_filter_resonance(value: &f32) -> bool {
+    *value == 0.0
+}
+fn default_audition_note() -> u8 {
+    60
+}
+fn is_default_audition_note(value: &u8) -> bool {
+    *value == 60
+}
+fn default_audition_duration() -> f32 {
+    0.8
+}
+fn is_default_audition_duration(value: &f32) -> bool {
+    *value == 0.8
 }
 fn default_bit_depth() -> u8 {
     24
@@ -230,7 +345,16 @@ pub struct PackCatalog {
 }
 
 /// Packs compiled into the binary. Add future bundled packs here.
-const EMBEDDED_PACKS: &[(&str, &str)] = &[("8-bit", include_str!("../packs/8-bit/pack.json"))];
+const EMBEDDED_PACKS: &[(&str, &str)] = &[
+    ("8-bit", include_str!("../packs/8-bit/pack.json")),
+    ("psy-rhythm", include_str!("../packs/psy-rhythm/pack.json")),
+    ("psy-bass", include_str!("../packs/psy-bass/pack.json")),
+    ("psy-keys", include_str!("../packs/psy-keys/pack.json")),
+    ("psy-brass", include_str!("../packs/psy-brass/pack.json")),
+    ("psy-leads", include_str!("../packs/psy-leads/pack.json")),
+    ("psy-arps", include_str!("../packs/psy-arps/pack.json")),
+    ("psy-space", include_str!("../packs/psy-space/pack.json")),
+];
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -277,12 +401,55 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         0.005,
         20.0,
     )?;
+    if let Some(env) = &p.pitch_envelope {
+        let env_base = field(base, "pitch_envelope");
+        check_range(
+            &field(&env_base, "amount_semitones"),
+            env.amount_semitones,
+            -48.0,
+            48.0,
+        )?;
+        check_range(&field(&env_base, "decay"), env.decay, 0.005, 10.0)?;
+    }
+    if let Some(env) = &p.filter_envelope {
+        let env_base = field(base, "filter_envelope");
+        check_range(
+            &field(&env_base, "amount_octaves"),
+            env.amount_octaves,
+            -6.0,
+            6.0,
+        )?;
+        check_range(&field(&env_base, "decay"), env.decay, 0.005, 20.0)?;
+    }
     check_range(
         &field(base, "filter_cutoff"),
         p.filter_cutoff,
         100.0,
         20_000.0,
     )?;
+    check_range(
+        &field(base, "filter_resonance"),
+        p.filter_resonance,
+        0.0,
+        0.95,
+    )?;
+    if let Some(lfo) = &p.lfo {
+        let lfo_base = field(base, "lfo");
+        check_range(&field(&lfo_base, "rate_hz"), lfo.rate_hz, 0.05, 20.0)?;
+        check_range(
+            &field(&lfo_base, "pitch_semitones"),
+            lfo.pitch_semitones,
+            0.0,
+            12.0,
+        )?;
+        check_range(
+            &field(&lfo_base, "filter_octaves"),
+            lfo.filter_octaves,
+            0.0,
+            4.0,
+        )?;
+        check_range(&field(&lfo_base, "amplitude"), lfo.amplitude, 0.0, 1.0)?;
+    }
     check_range_int(&field(base, "bit_depth"), p.bit_depth, 4, 24, "bit depth")?;
     check_range_u64(
         &field(base, "sample_hold"),
@@ -292,6 +459,19 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         "sample hold",
     )?;
     check_range(&field(base, "gain"), p.gain, 0.0, 1.0)?;
+    check_range_int(
+        &field(base, "audition_note"),
+        p.audition_note,
+        0,
+        127,
+        "audition note",
+    )?;
+    check_range(
+        &field(base, "audition_duration"),
+        p.audition_duration,
+        0.1,
+        8.0,
+    )?;
     Ok(())
 }
 
@@ -310,6 +490,9 @@ fn validate_oscillator(osc: &OscillatorSpec, base: &str) -> Result<(), String> {
         100.0,
     )?;
     check_range(&field(base, "pulse_width"), osc.pulse_width, 0.05, 0.95)?;
+    if let Some(decay) = osc.decay {
+        check_range(&field(base, "decay"), decay, 0.005, 20.0)?;
+    }
     Ok(())
 }
 
@@ -552,6 +735,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
                     frequency_ratio: 1.0,
                     detune_cents: 0.0,
                     pulse_width: 0.25,
+                    decay: None,
                 },
                 OscillatorSpec {
                     waveform: Waveform::Sine,
@@ -559,6 +743,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
                     frequency_ratio: 2.0,
                     detune_cents: 0.0,
                     pulse_width: 0.5,
+                    decay: None,
                 },
             ],
             envelope: Envelope {
@@ -567,11 +752,17 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
                 sustain: 0.0,
                 release: 0.08,
             },
+            pitch_envelope: None,
+            filter_envelope: None,
             filter_cutoff: 4_000.0,
+            filter_resonance: 0.0,
+            lfo: None,
             bit_depth: 8,
             sample_hold: 4,
             gain: 0.8,
             monophonic: false,
+            audition_note: 60,
+            audition_duration: 0.8,
         }],
     };
     validate_pack(&pack)?;
@@ -916,6 +1107,7 @@ mod tests {
                 frequency_ratio: 1.0,
                 detune_cents: 0.0,
                 pulse_width: 0.25,
+                decay: None,
             }],
             envelope: Envelope {
                 attack: 0.005,
@@ -923,11 +1115,17 @@ mod tests {
                 sustain: 0.3,
                 release: 0.08,
             },
+            pitch_envelope: None,
+            filter_envelope: None,
             filter_cutoff: 4_000.0,
+            filter_resonance: 0.0,
+            lfo: None,
             bit_depth: 8,
             sample_hold: 4,
             gain: 0.8,
             monophonic: true,
+            audition_note: 60,
+            audition_duration: 0.8,
         }
     }
 
@@ -960,9 +1158,34 @@ mod tests {
         assert_eq!(preset.sample_hold, 1);
         assert_eq!(preset.gain, 0.9);
         assert_eq!(preset.filter_cutoff, 20_000.0);
+        assert_eq!(preset.filter_resonance, 0.0);
+        assert_eq!(preset.pitch_envelope, None);
+        assert_eq!(preset.filter_envelope, None);
+        assert_eq!(preset.lfo, None);
+        assert_eq!(preset.audition_note, 60);
+        assert_eq!(preset.audition_duration, 0.8);
         assert!(!preset.monophonic);
         assert_eq!(preset.oscillators[0].waveform, Waveform::Saw);
+        assert_eq!(preset.oscillators[0].decay, None);
         assert!(validate_preset(&preset).is_ok());
+
+        // Explicit audition metadata parses and round-trips.
+        let json = r#"{
+            "id": "a.b",
+            "name": "Cue",
+            "oscillators": [{}],
+            "audition_note": 36,
+            "audition_duration": 1.5
+        }"#;
+        let preset: InstrumentPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(preset.audition_note, 36);
+        assert_eq!(preset.audition_duration, 1.5);
+        assert!(validate_preset(&preset).is_ok());
+        let text = serde_json::to_string(&preset).unwrap();
+        assert!(text.contains("\"audition_note\":36"), "{text}");
+        assert!(text.contains("\"audition_duration\":1.5"), "{text}");
+        let back: InstrumentPreset = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, preset);
 
         let pack_json =
             r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","oscillators":[{}]}]}"#;
@@ -1021,17 +1244,97 @@ mod tests {
                 |p| p.oscillators[0].pulse_width = 1.0,
                 "oscillators[0].pulse_width",
             ),
+            (
+                |p| p.oscillators[0].decay = Some(0.001),
+                "oscillators[0].decay",
+            ),
             (|p| p.envelope.attack = 6.0, "envelope.attack"),
             (|p| p.envelope.decay = -1.0, "envelope.decay"),
             (|p| p.envelope.sustain = 1.5, "envelope.sustain"),
             (|p| p.envelope.release = 0.001, "envelope.release"),
+            (
+                |p| {
+                    p.pitch_envelope = Some(PitchEnvelope {
+                        amount_semitones: 49.0,
+                        decay: 0.2,
+                    })
+                },
+                "pitch_envelope.amount_semitones",
+            ),
+            (
+                |p| {
+                    p.pitch_envelope = Some(PitchEnvelope {
+                        amount_semitones: 0.0,
+                        decay: 0.001,
+                    })
+                },
+                "pitch_envelope.decay",
+            ),
+            (
+                |p| {
+                    p.filter_envelope = Some(FilterEnvelope {
+                        amount_octaves: -7.0,
+                        decay: 0.5,
+                    })
+                },
+                "filter_envelope.amount_octaves",
+            ),
+            (
+                |p| {
+                    p.filter_envelope = Some(FilterEnvelope {
+                        amount_octaves: 0.0,
+                        decay: 30.0,
+                    })
+                },
+                "filter_envelope.decay",
+            ),
             (|p| p.filter_cutoff = 50.0, "filter_cutoff"),
             (|p| p.filter_cutoff = 30_000.0, "filter_cutoff"),
+            (|p| p.filter_resonance = 1.0, "filter_resonance"),
+            (
+                |p| {
+                    p.lfo = Some(LfoSpec {
+                        rate_hz: 0.01,
+                        ..Default::default()
+                    })
+                },
+                "lfo.rate_hz",
+            ),
+            (
+                |p| {
+                    p.lfo = Some(LfoSpec {
+                        pitch_semitones: 13.0,
+                        ..Default::default()
+                    })
+                },
+                "lfo.pitch_semitones",
+            ),
+            (
+                |p| {
+                    p.lfo = Some(LfoSpec {
+                        filter_octaves: 5.0,
+                        ..Default::default()
+                    })
+                },
+                "lfo.filter_octaves",
+            ),
+            (
+                |p| {
+                    p.lfo = Some(LfoSpec {
+                        amplitude: 1.1,
+                        ..Default::default()
+                    })
+                },
+                "lfo.amplitude",
+            ),
             (|p| p.bit_depth = 3, "bit_depth"),
             (|p| p.bit_depth = 25, "bit_depth"),
             (|p| p.sample_hold = 0, "sample_hold"),
             (|p| p.sample_hold = 65, "sample_hold"),
             (|p| p.gain = 1.5, "gain"),
+            (|p| p.audition_note = 128, "audition_note"),
+            (|p| p.audition_duration = 0.05, "audition_duration"),
+            (|p| p.audition_duration = 8.5, "audition_duration"),
         ];
         for (mutate, path) in cases {
             let mut p = valid_preset();
@@ -1049,6 +1352,25 @@ mod tests {
         let mut p = valid_preset();
         p.filter_cutoff = f32::INFINITY;
         assert!(validate_preset(&p).unwrap_err().contains("finite"));
+        let mut p = valid_preset();
+        p.pitch_envelope = Some(PitchEnvelope {
+            amount_semitones: f32::NAN,
+            decay: 0.2,
+        });
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("pitch_envelope.amount_semitones") && err.contains("finite"));
+        let mut p = valid_preset();
+        p.audition_duration = f32::INFINITY;
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("audition_duration") && err.contains("finite"));
+        // Audition note is an integer field: JSON floats/strings/out-of-u8-range
+        // values all fail at parse time.
+        for bad in ["60.5", "\"60\"", "-1", "300"] {
+            parse_pack(&format!(
+                r#"{{"id":"a","name":"P","instruments":[{{"id":"a.b","name":"B","oscillators":[{{}}],"audition_note":{bad}}}]}}"#
+            ))
+            .unwrap_err();
+        }
     }
 
     #[test]
@@ -1135,6 +1457,52 @@ mod tests {
         assert!(pack.instruments[0].id.starts_with("p."));
     }
 
+    /// Total presets served by the embedded packs alone.
+    fn embedded_preset_count() -> usize {
+        EMBEDDED_PACKS
+            .iter()
+            .map(|(_, json)| parse_pack(json).unwrap().instruments.len())
+            .sum()
+    }
+
+    #[test]
+    fn embedded_packs_are_valid_unique_and_ordered() {
+        // Every bundled pack must parse and validate through the same path as
+        // user packs; a broken embedded pack would surface as a catalog error.
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0;
+        for (label, json) in EMBEDDED_PACKS {
+            let pack = parse_pack(json)
+                .unwrap_or_else(|err| panic!("embedded pack '{label}' must parse: {err}"));
+            for preset in &pack.instruments {
+                assert!(
+                    seen.insert(preset.id.clone()),
+                    "duplicate embedded preset id {}",
+                    preset.id
+                );
+            }
+            total += pack.instruments.len();
+        }
+        // 10 eight-bit + 128 psy-bank presets.
+        assert_eq!(total, 138, "embedded preset total changed");
+        assert_eq!(seen.len(), total);
+
+        // The catalog serves the embedded bank in EMBEDDED_PACKS order with
+        // no problems on an empty user dir.
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = load_catalog_from(dir.path());
+        assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
+        assert_eq!(catalog.instruments.len(), total);
+        let mut cursor = 0;
+        for (_, json) in EMBEDDED_PACKS {
+            let pack = parse_pack(json).unwrap();
+            for preset in &pack.instruments {
+                assert_eq!(&catalog.instruments[cursor], preset);
+                cursor += 1;
+            }
+        }
+    }
+
     #[test]
     fn bundled_8bit_pack_is_valid() {
         let pack = parse_pack(include_str!("../packs/8-bit/pack.json")).unwrap();
@@ -1147,6 +1515,32 @@ mod tests {
             .instruments
             .iter()
             .all(|p| p.id.starts_with("eight-bit.")));
+    }
+
+    #[test]
+    fn bundled_psy_packs_are_valid_with_expected_counts() {
+        let expected: [(&str, usize); 7] = [
+            ("psy-rhythm", 24),
+            ("psy-bass", 24),
+            ("psy-keys", 16),
+            ("psy-brass", 16),
+            ("psy-leads", 16),
+            ("psy-arps", 16),
+            ("psy-space", 16),
+        ];
+        for (label, count) in expected {
+            let json = EMBEDDED_PACKS
+                .iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, json)| *json)
+                .unwrap_or_else(|| panic!("embedded pack '{label}' missing"));
+            let pack = parse_pack(json).unwrap();
+            assert_eq!(pack.id, label);
+            assert_eq!(pack.instruments.len(), count, "{label} preset count");
+            let ids: std::collections::HashSet<_> =
+                pack.instruments.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(ids.len(), count, "{label} preset ids must be unique");
+        }
     }
 
     #[test]
@@ -1267,6 +1661,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("unknown field `hold`"), "{err}");
+        // New optional nested controls stay strict too.
+        let err = parse_pack(
+            r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","oscillators":[{}],"pitch_envelope":{"amount_semitones":1,"curve":"linear"}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown field `curve`"), "{err}");
+        let err = parse_pack(
+            r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","oscillators":[{}],"lfo":{"shape":"square"}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown field `shape`"), "{err}");
     }
 
     #[test]
@@ -1292,12 +1697,23 @@ mod tests {
 
         let catalog = load_catalog_from(dir.path());
         assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
-        // The whole embedded pack is replaced, keeping its slot: exactly the
-        // two user instruments, in order, and no embedded leftovers.
-        assert_eq!(catalog.instruments.len(), 2);
+        // The whole embedded pack is replaced, keeping its (first) slot:
+        // exactly the two user instruments, in order, then the rest of the
+        // embedded bank.
+        let eight_bit = parse_pack(EMBEDDED_PACKS[0].1).unwrap();
+        assert_eq!(eight_bit.id, "eight-bit");
+        assert_eq!(
+            catalog.instruments.len(),
+            embedded_preset_count() - eight_bit.instruments.len() + 2
+        );
         assert_eq!(catalog.instruments[0].name, "Custom Lead");
         assert_eq!(catalog.instruments[0].bit_depth, 12);
         assert_eq!(catalog.instruments[1].name, "Brand New");
+        // The other embedded packs still serve their presets.
+        assert!(catalog
+            .instruments
+            .iter()
+            .any(|p| p.id.starts_with("psy-rhythm.")));
         assert!(!catalog
             .instruments
             .iter()
@@ -1383,7 +1799,7 @@ mod tests {
     fn catalog_missing_dir_still_has_embedded() {
         let catalog = load_catalog_from(Path::new("/definitely/not/a/real/dir"));
         assert!(catalog.errors.is_empty());
-        assert!(catalog.instruments.len() >= 8);
+        assert_eq!(catalog.instruments.len(), embedded_preset_count());
     }
 
     #[test]
