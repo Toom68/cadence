@@ -1,0 +1,51 @@
+[package]
+name = "cadence-studio"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Cadence: a native offline music sequencer for writing songs"
+publish = false
+default-run = "cadence"
+build = "build.rs"
+
+[lib]
+name = "cadence_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cadence"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "=0.33.3", features = ["persistence"] }
+egui = "=0.33.3"
+cpal = "=0.16.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+hound = "3.5.1"
+midly = "0.5.3"
+rfd = "0.15.4"
+directories = "6.0.0"
+crossbeam-channel = "0.5.15"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[build-dependencies]
+winresource = "0.1.20"
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = "symbols"
+panic = "unwind"

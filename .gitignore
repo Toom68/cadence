@@ -1,0 +1,9 @@
+/target/
+/dist/
+/node_modules/
+*.wav
+!/tests/fixtures/*.wav
+*.tmp
+.DS_Store
+*.log
+/.devin/config.local.json

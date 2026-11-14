@@ -1,0 +1,13 @@
+# Windows x64 release binaries are statically linked against the MSVC CRT so the
+# portable .exe runs on a clean Windows install without the VC++ redistributable.
+# Scoped to the Windows MSVC target only; macOS/Linux builds are unaffected.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# GNU cross-build (macOS/Linux -> Windows x64). Requires the mingw-w64 toolchain
+# on PATH (e.g. `brew install mingw-w64`, binaries named x86_64-w64-mingw32-*).
+# +crt-static links the mingw CRT statically; Rust already links libstdc++ and
+# winpthread statically for this target. The MSVC target above is untouched.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]

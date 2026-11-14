@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "my-pack",
+  "name": "My Pack",
+  "description": "A new instrument pack. Edit the instruments below, then validate and install.",
+  "author": "",
+  "instruments": [
+    {
+      "id": "my-pack.preset",
+      "name": "My Pack",
+      "description": "TODO: describe this preset.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.25 },
+        { "waveform": "sine", "level": 0.4, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.12, "sustain": 0.0, "release": 0.08 },
+      "filter_cutoff": 4000.0,
+      "bit_depth": 8,
+      "sample_hold": 4,
+      "gain": 0.8,
+      "monophonic": false
+    }
+  ]
+}

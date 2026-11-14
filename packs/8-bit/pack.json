@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "id": "eight-bit",
+  "name": "8-Bit",
+  "description": "Lo-fi chiptune sounds: pulse, square, triangle and noise crushed to 4-8 bits with sample-and-hold grit. Pure synthesis, no samples.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "eight-bit.pulse-lead",
+      "name": "Pulse Lead",
+      "description": "Narrow-pulse chiptune lead with a sub octave. Monophonic and bitcrushed; cuts through mixes.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.25 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.18, "sustain": 0.3, "release": 0.12 },
+      "filter_cutoff": 6500.0,
+      "bit_depth": 8,
+      "sample_hold": 2,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "eight-bit.square-lead",
+      "name": "Square Lead",
+      "description": "Bold 50% square lead a fifth below the pulse lead; louder, brighter, still monophonic.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.75, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.35, "frequency_ratio": 0.5, "detune_cents": -4.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.15, "sustain": 0.5, "release": 0.1 },
+      "filter_cutoff": 7500.0,
+      "bit_depth": 8,
+      "sample_hold": 1,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "eight-bit.triangle-bass",
+      "name": "Triangle Bass",
+      "description": "Deep triangle bass with a sine sub an octave down. Round 8-bit low end for driving lines.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.9, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.28, "sustain": 0.45, "release": 0.09 },
+      "filter_cutoff": 900.0,
+      "bit_depth": 6,
+      "sample_hold": 4,
+      "gain": 0.9,
+      "monophonic": true
+    },
+    {
+      "id": "eight-bit.arp-pluck",
+      "name": "Arpeggio Pluck",
+      "description": "Short square pluck with a twelfth harmonic; built for fast arpeggios and chiptune runs.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.125 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.22, "sustain": 0.0, "release": 0.05 },
+      "filter_cutoff": 5200.0,
+      "bit_depth": 8,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "eight-bit.bitcrushed-pad",
+      "name": "Bitcrushed Pad",
+      "description": "Slow detuned saw pad crushed to 4 bits and held at 16 samples; lo-fi shimmer for chords.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.4, "decay": 0.6, "sustain": 0.8, "release": 1.4 },
+      "filter_cutoff": 2400.0,
+      "bit_depth": 4,
+      "sample_hold": 16,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "eight-bit.hollow-keys",
+      "name": "Hollow Keys",
+      "description": "Bell-like pulse and triangle keys with a hollow midrange; vintage electric-piano feel.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.4, "sustain": 0.3, "release": 0.25 },
+      "filter_cutoff": 3400.0,
+      "bit_depth": 6,
+      "sample_hold": 2,
+      "gain": 0.8,
+      "monophonic": false
+    },
+    {
+      "id": "eight-bit.chip-bell",
+      "name": "Chip Bell",
+      "description": "Sine bell with a 4x harmonic and a thin pulse edge; classic 8-bit chime.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.15, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.1 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.5, "sustain": 0.1, "release": 0.3 },
+      "filter_cutoff": 9000.0,
+      "bit_depth": 8,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "eight-bit.noise-hat",
+      "name": "Noise Hat",
+      "description": "Crunchy 8-bit noise hat for percussion; layer it with any kit or use it alone.",
+      "oscillators": [
+        { "waveform": "noise", "level": 1.0, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.06, "sustain": 0.0, "release": 0.02 },
+      "filter_cutoff": 14000.0,
+      "bit_depth": 8,
+      "sample_hold": 1,
+      "gain": 0.6,
+      "monophonic": true
+    },
+    {
+      "id": "eight-bit.laser-zap",
+      "name": "Laser Zap",
+      "description": "Thin 10%-pulse zap with a noise edge; great for lasers, zaps and risers.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.1 },
+        { "waveform": "noise", "level": 0.25, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.12, "sustain": 0.0, "release": 0.04 },
+      "filter_cutoff": 6000.0,
+      "bit_depth": 4,
+      "sample_hold": 8,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "eight-bit.game-over",
+      "name": "Game Over",
+      "description": "Detuned square and triangle octaves for retro stingers and game-over jingles.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.5, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.25, "frequency_ratio": 0.5, "detune_cents": 6.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.005, "decay": 0.6, "sustain": 0.4, "release": 0.4 },
+      "filter_cutoff": 5000.0,
+      "bit_depth": 8,
+      "sample_hold": 2,
+      "gain": 0.8,
+      "monophonic": false
+    }
+  ]
+}

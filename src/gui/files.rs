@@ -1,0 +1,476 @@
+//! Document and file workflows: open/save/save-as, the unsaved-changes guard,
+//! MIDI import/export, the WAV export worker and instrument-pack install.
+//!
+//! Everything here is reachable from the menu/shortcuts in `mod.rs` and the
+//! library footer in `sidebar.rs`. Native dialogs (rfd) and recovery I/O only
+//! run when `io_enabled` is set; the explicit path helpers stay usable in
+//! headless tests.
+
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use egui::Context;
+
+use super::dialogs::Dialog;
+use super::{CadenceApp, StatusKind};
+use crate::model::Project;
+use crate::persistence;
+
+/// How often the user pack folder is re-scanned for dropped-in packs.
+const PACK_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The open song file plus the history state it was last saved at.
+///
+/// `saved_state` mirrors `History::state()` after a successful save or load;
+/// `dirty()` in `mod.rs` compares it to the live state, so undoing back to the
+/// saved point correctly reads as clean.
+#[derive(Debug)]
+pub(super) struct Document {
+    pub(super) path: Option<PathBuf>,
+    pub(super) saved_state: Option<u64>,
+}
+
+/// A file action that may need an unsaved-changes decision first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PendingAction {
+    /// New empty song.
+    New,
+    /// New song from the built-in demo.
+    Demo,
+    /// Open a `.cadence` file.
+    Open,
+    /// Import a Standard MIDI File as a new song.
+    ImportMidi,
+    /// Quit the app.
+    Quit,
+}
+
+/// A WAV export running on a worker thread.
+///
+/// The [`Project`] was cloned when the export started, so edits made while it
+/// renders do not change the output. Progress arrives through a shared atomic
+/// and the final `Result` through a channel; [`CadenceApp::poll_export`] picks
+/// it up once per frame.
+pub(super) struct ExportJob {
+    rx: crossbeam_channel::Receiver<Result<(), String>>,
+    progress: Arc<AtomicU32>,
+    path: PathBuf,
+}
+
+impl ExportJob {
+    /// Render progress reported by the worker, 0.0..=1.0.
+    pub(super) fn progress(&self) -> f32 {
+        f32::from_bits(self.progress.load(Ordering::Relaxed))
+    }
+}
+
+impl CadenceApp {
+    // ----- pending actions -------------------------------------------------
+
+    /// Entry point for actions that replace the song (or quit): ask before
+    /// discarding unsaved changes, otherwise run immediately.
+    pub(super) fn request(&mut self, action: PendingAction) {
+        if self.dirty() {
+            self.dialog = Dialog::Unsaved(action);
+        } else {
+            self.run_pending_action(action);
+        }
+    }
+
+    /// Runs a pending action after a save/discard decision (or right away when
+    /// the document is clean). Called by the unsaved-changes dialog.
+    pub(super) fn run_pending_action(&mut self, action: PendingAction) {
+        match action {
+            PendingAction::New => {
+                self.replace_project(Project::empty(), None, true);
+                self.set_status(StatusKind::Success, "Started a new song.");
+            }
+            PendingAction::Demo => {
+                self.replace_project(Project::demo(), None, true);
+                self.set_status(
+                    StatusKind::Info,
+                    "Loaded the demo song. Use Save As… to keep your own version.",
+                );
+            }
+            PendingAction::Open => self.open_dialog(),
+            PendingAction::ImportMidi => self.import_midi_dialog(),
+            PendingAction::Quit => self.allow_close = true,
+        }
+    }
+
+    // ----- open / save -----------------------------------------------------
+
+    /// Loads `path` as the current song. Used for the launch file and the
+    /// open picker; on error the current project is kept and the problem is
+    /// shown in the status bar.
+    pub(super) fn open_path(&mut self, path: PathBuf) {
+        match persistence::load_project(&path) {
+            Ok(project) => {
+                let shown = path.display().to_string();
+                self.replace_project(project, Some(path), true);
+                self.set_status(StatusKind::Success, format!("Opened {shown}."));
+            }
+            Err(err) => self.set_status(StatusKind::Error, err),
+        }
+    }
+
+    /// Open…: pick a `.cadence` file. Cancelling changes nothing.
+    fn open_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Cadence song", &[persistence::PROJECT_EXTENSION])
+            .pick_file()
+        else {
+            return;
+        };
+        self.open_path(path);
+    }
+
+    /// Save: write to the current file, or ask where when the song is untitled.
+    pub(super) fn save(&mut self) {
+        self.save_current();
+    }
+
+    /// Attempts to save the song. Returns true only when the project was
+    /// written to disk; false on picker cancel or write failure (the status
+    /// bar explains which, and the dirty flag/pending action are preserved).
+    pub(super) fn save_current(&mut self) -> bool {
+        match self.doc.path.clone() {
+            Some(path) => self.save_to(path),
+            None => self.save_as(),
+        }
+    }
+
+    /// Save As…: pick a `.cadence` path and write there. Returns false when the
+    /// picker is cancelled or the write fails.
+    pub(super) fn save_as(&mut self) -> bool {
+        if !self.dialogs_available() {
+            return false;
+        }
+        let name = file_stem(&self.project.name);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Cadence song", &[persistence::PROJECT_EXTENSION])
+            .set_file_name(format!("{name}.{}", persistence::PROJECT_EXTENSION))
+            .save_file()
+        else {
+            return false;
+        };
+        self.save_to(path)
+    }
+
+    /// Writes the project atomically and marks the document clean. On success
+    /// `saved_state` tracks the current history state and the recovery
+    /// autosave is cleared; on failure nothing changes.
+    fn save_to(&mut self, path: PathBuf) -> bool {
+        let path = persistence::with_project_extension(&path);
+        match persistence::save_project(&self.project, &path) {
+            Ok(()) => {
+                self.doc.path = Some(path.clone());
+                self.doc.saved_state = Some(self.history.state());
+                if self.io_enabled {
+                    let _ = persistence::clear_recovery();
+                }
+                self.set_status(StatusKind::Success, format!("Saved {}.", path.display()));
+                true
+            }
+            Err(err) => {
+                self.set_status(StatusKind::Error, err);
+                false
+            }
+        }
+    }
+
+    // ----- recovery --------------------------------------------------------
+
+    /// On launch, offer the crash-recovery autosave when a valid one exists.
+    /// A damaged autosave is never loaded: persistence moves it aside and the
+    /// reason is shown as a status warning instead.
+    pub(super) fn check_recovery(&mut self) {
+        if !self.io_enabled || self.recovery_offered {
+            return;
+        }
+        match persistence::load_recovery() {
+            Ok(Some(project)) => {
+                self.recovery_offered = true;
+                self.dialog = Dialog::Recovery(project);
+            }
+            Ok(None) => {}
+            Err(err) => self.set_status(StatusKind::Warning, err),
+        }
+    }
+
+    // ----- WAV export ------------------------------------------------------
+
+    /// Export WAV…: pick a `.wav` target, then render on a worker thread so the
+    /// interface stays responsive. The render uses a snapshot of the project.
+    pub(super) fn export_wav_dialog(&mut self) {
+        if self.export.is_some() {
+            self.set_status(
+                StatusKind::Info,
+                "A WAV export is already running — watch the progress in the status bar.",
+            );
+            return;
+        }
+        if !self.dialogs_available() {
+            return;
+        }
+        let name = file_stem(&self.project.name);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav"])
+            .set_file_name(format!("{name}.wav"))
+            .save_file()
+        else {
+            return;
+        };
+        self.start_wav_export(path);
+    }
+
+    /// Spawns the offline render on a worker thread. The `.wav` extension is
+    /// enforced here (`Path::with_extension` also turns a picked
+    /// `song.cadence` into `song.wav`, so a song file is never overwritten).
+    /// Progress flows through a shared atomic and the final result through a
+    /// channel polled by [`CadenceApp::poll_export`].
+    pub(super) fn start_wav_export(&mut self, path: PathBuf) {
+        if self.export.is_some() {
+            self.set_status(StatusKind::Info, "A WAV export is already running.");
+            return;
+        }
+        let path = path.with_extension("wav");
+        let project = self.project.clone();
+        let render_path = path.clone();
+        let progress = Arc::new(AtomicU32::new(0));
+        let report = progress.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = crate::audio::export_wav(&project, &render_path, move |p| {
+                report.store(p.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            });
+            let _ = tx.send(result);
+        });
+        let shown = path.display().to_string();
+        self.export = Some(ExportJob { rx, progress, path });
+        self.set_status(StatusKind::Info, format!("Exporting WAV to {shown}…"));
+    }
+
+    /// Picks up a finished WAV export (called once per frame). Keeps the GUI
+    /// responsive while the worker renders; the status bar shows live progress.
+    pub(super) fn poll_export(&mut self) {
+        let finished = match &self.export {
+            Some(job) => match job.rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(crossbeam_channel::TryRecvError::Empty) => None,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    Some(Err("The export worker stopped unexpectedly.".to_owned()))
+                }
+            },
+            None => return,
+        };
+        let Some(result) = finished else { return };
+        let path = self.export.take().map(|job| job.path).unwrap_or_default();
+        match result {
+            Ok(()) => self.set_status(
+                StatusKind::Success,
+                format!("Exported WAV: {}", path.display()),
+            ),
+            Err(err) => self.set_status(StatusKind::Error, format!("WAV export failed: {err}")),
+        }
+    }
+
+    // ----- MIDI exchange ---------------------------------------------------
+
+    /// Export MIDI…: encode the project and write a `.mid` file.
+    pub(super) fn export_midi_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let name = file_stem(&self.project.name);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("MIDI file", &["mid", "midi"])
+            .set_file_name(format!("{name}.mid"))
+            .save_file()
+        else {
+            return;
+        };
+        self.export_midi_file(path);
+    }
+
+    /// Encodes and writes the MIDI export (`.mid` extension enforced, so a
+    /// picked `song.cadence` becomes `song.mid` and is never overwritten).
+    /// Helper path usable without dialogs.
+    pub(super) fn export_midi_file(&mut self, path: PathBuf) {
+        let path = path.with_extension("mid");
+        let bytes = match crate::midi::export_midi(&self.project) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.set_status(StatusKind::Error, format!("Could not export MIDI: {err}"));
+                return;
+            }
+        };
+        match persistence::write_file_atomic(&path, &bytes) {
+            Ok(()) => self.set_status(
+                StatusKind::Success,
+                format!("Exported MIDI: {}", path.display()),
+            ),
+            Err(err) => self.set_status(StatusKind::Error, err),
+        }
+    }
+
+    /// Import MIDI…: pick a `.mid`/`.midi` file and replace the song with it.
+    /// Reached through [`PendingAction::ImportMidi`], so unsaved changes are
+    /// confirmed first.
+    pub(super) fn import_midi_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("MIDI file", &["mid", "midi"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_midi_file(path);
+    }
+
+    /// Reads and imports a Standard MIDI File as a new untitled project.
+    /// Oversize and malformed files are rejected with a status message; on
+    /// success the song is dirty so it is never lost silently.
+    pub(super) fn import_midi_file(&mut self, path: PathBuf) {
+        let result = read_file_capped(&path, crate::midi::MAX_MIDI_BYTES as u64)
+            .and_then(|bytes| crate::midi::import_midi(&bytes));
+        match result {
+            Ok(project) => {
+                let name = project.name.clone();
+                self.replace_project(project, None, false);
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Imported “{name}” from MIDI. Use Save As… to keep it."),
+                );
+            }
+            Err(err) => self.set_status(StatusKind::Error, format!("Could not import MIDI: {err}")),
+        }
+    }
+
+    // ----- instrument packs -------------------------------------------------
+
+    /// Import Pack…: validate and install a JSON instrument pack, then reload
+    /// the library catalog.
+    pub(super) fn import_pack_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Instrument pack", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.install_pack_file(path);
+    }
+
+    /// Validates `path` as a pack and installs it into the user pack folder.
+    /// Helper path usable without dialogs (e.g. tests).
+    pub(super) fn install_pack_file(&mut self, path: PathBuf) {
+        match crate::packs::install_pack(&path) {
+            Ok(installed) => {
+                self.reload_packs(true);
+                self.set_status(
+                    StatusKind::Success,
+                    format!(
+                        "Installed pack to {}. Its instruments are in the library now.",
+                        installed.display()
+                    ),
+                );
+            }
+            Err(err) => {
+                self.set_status(StatusKind::Error, format!("Could not install pack: {err}"))
+            }
+        }
+    }
+
+    /// Re-reads the user pack folder about every [`PACK_SCAN_INTERVAL`] so
+    /// packs dropped into it appear without pressing Reload. Driven from
+    /// [`CadenceApp::dialogs`]; the timestamp lives in egui temp data so no
+    /// extra app field is needed.
+    pub(super) fn poll_pack_dir(&mut self, ctx: &Context) {
+        if !self.io_enabled {
+            return;
+        }
+        let id = egui::Id::new("cadence-pack-dir-scan");
+        let now = Instant::now();
+        let last = ctx.data_mut(|d| d.get_temp::<Instant>(id));
+        if last.is_some_and(|t| now.saturating_duration_since(t) < PACK_SCAN_INTERVAL) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(id, now));
+        ctx.request_repaint_after(PACK_SCAN_INTERVAL);
+        self.reload_packs(false);
+    }
+
+    // ----- helpers ---------------------------------------------------------
+
+    /// Native file dialogs only exist in the desktop app; in headless mode we
+    /// explain instead of silently doing nothing.
+    fn dialogs_available(&mut self) -> bool {
+        if self.io_enabled {
+            return true;
+        }
+        self.set_status(
+            StatusKind::Warning,
+            "File dialogs are only available in the desktop app.",
+        );
+        false
+    }
+}
+
+/// Project name made safe to use as a file name.
+fn file_stem(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.');
+    if cleaned.is_empty() {
+        "untitled".to_owned()
+    } else {
+        cleaned.to_owned()
+    }
+}
+
+/// Reads a file refusing anything over `max` bytes (checked before and during
+/// the read so a growing file cannot slip past the cap).
+fn read_file_capped(path: &Path, max: u64) -> Result<Vec<u8>, String> {
+    let shown = path.display();
+    let meta = std::fs::metadata(path).map_err(|err| format!("Could not open {shown}: {err}"))?;
+    if !meta.is_file() {
+        return Err(format!("{shown} is not a file."));
+    }
+    if meta.len() > max {
+        return Err(format!(
+            "{shown} is too large ({:.1} MB, limit {:.1} MB).",
+            meta.len() as f64 / (1024.0 * 1024.0),
+            max as f64 / (1024.0 * 1024.0)
+        ));
+    }
+    let file = File::open(path).map_err(|err| format!("Could not open {shown}: {err}"))?;
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("Could not read {shown}: {err}"))?;
+    if bytes.len() as u64 > max {
+        return Err(format!("{shown} is too large."));
+    }
+    Ok(bytes)
+}
