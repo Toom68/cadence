@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "id": "one-shots",
+  "name": "One-Shots",
+  "description": "Transition and SFX one-shots: risers, downlifters, impacts, noise sweeps, zaps, alarms, crackle, sub drops, glitch stutters, shimmer tails and whooshes. Designed as short events - most use a zero-ish sustain, fast envelopes and brief audition previews. Pure synthesis, no samples.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "one-shots.riser",
+      "audition_note": 60,
+      "audition_duration": 2.6,
+      "name": "Riser",
+      "description": "Tension builder: noise and a quiet saw/sine wash whose pitch climbs an octave into the note while a dark filter sweeps open. Hold or repeat into a drop.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.62, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 3.2 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 2.8 },
+        { "waveform": "sine", "level": 0.16, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.6 }
+      ],
+      "envelope": { "attack": 0.06, "decay": 0.55, "sustain": 0.55, "release": 0.8 },
+      "pitch_envelope": { "amount_semitones": -12.0, "decay": 1.3 },
+      "filter_envelope": { "amount_octaves": -4.5, "decay": 1.9 },
+      "filter_cutoff": 7000.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.68,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.impact",
+      "audition_note": 38,
+      "audition_duration": 2.0,
+      "name": "Downlifter Impact",
+      "description": "Cinematic downlifter: sine sub layers whose pitch falls from far above the note, a noise click on the transient and a long sub tail. Trigger at the drop for maximum weight.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.4 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.0 },
+        { "waveform": "noise", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.1 },
+        { "waveform": "triangle", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.3 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.5, "sustain": 0.08, "release": 0.55 },
+      "pitch_envelope": { "amount_semitones": 30.0, "decay": 0.22 },
+      "filter_cutoff": 2800.0,
+      "filter_resonance": 0.2,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "one-shots.noise-down",
+      "audition_note": 60,
+      "audition_duration": 1.1,
+      "name": "Noise Sweep Down",
+      "description": "Falling transition sweep: bright noise over a quiet saw, pitch dropping and the filter slamming from wide open to dark. Good for exits and downlifter transitions.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.5 },
+        { "waveform": "saw", "level": 0.22, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.6 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.45, "sustain": 0.05, "release": 0.3 },
+      "pitch_envelope": { "amount_semitones": 14.0, "decay": 0.45 },
+      "filter_envelope": { "amount_octaves": 4.2, "decay": 0.5 },
+      "filter_cutoff": 9500.0,
+      "filter_resonance": 0.32,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.72,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.reverse-cymbal",
+      "audition_note": 60,
+      "audition_duration": 1.5,
+      "name": "Reverse Cymbal",
+      "description": "Swelling cymbal wash: layered noise (one darker layer via a lower noise rate) with a slow attack and an abrupt release. Trigger just before the hit for a classic reverse-cymbal lead-in.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.4, "frequency_ratio": 0.25, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.1, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.55, "decay": 0.35, "sustain": 0.75, "release": 0.09 },
+      "filter_cutoff": 10500.0,
+      "filter_resonance": 0.28,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.laser-zap",
+      "audition_note": 74,
+      "audition_duration": 0.45,
+      "name": "Laser Zap",
+      "description": "Short sci-fi zap: detuned pulses with a fast downward chirp, filter snap and a quick pitch LFO warble. Perfect for UI bleeps, laser tags and cartoon hits.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.65, "frequency_ratio": 1.5, "detune_cents": -4.0, "pulse_width": 0.18 },
+        { "waveform": "square", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.1, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.04 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.24, "sustain": 0.05, "release": 0.06 },
+      "pitch_envelope": { "amount_semitones": 18.0, "decay": 0.12 },
+      "filter_envelope": { "amount_octaves": 2.2, "decay": 0.08 },
+      "filter_cutoff": 5800.0,
+      "filter_resonance": 0.45,
+      "lfo": { "waveform": "sine", "rate_hz": 9.0, "pitch_semitones": 2.0, "filter_octaves": 0.8, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.72,
+      "monophonic": true
+    },
+    {
+      "id": "one-shots.alarm",
+      "audition_note": 76,
+      "audition_duration": 0.5,
+      "name": "Alarm Beep",
+      "description": "Utilitarian alarm beep: hollow square stack with a sine ping and a triangle LFO pulsing the amplitude. Short and clean; stack repeats for siren patterns.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.22, "sustain": 0.35, "release": 0.05 },
+      "lfo": { "waveform": "triangle", "rate_hz": 5.0, "pitch_semitones": 0.0, "filter_octaves": 0.0, "amplitude": 0.55 },
+      "filter_cutoff": 4200.0,
+      "filter_resonance": 0.12,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.crackle",
+      "audition_note": 60,
+      "audition_duration": 0.5,
+      "name": "Vinyl Crackle",
+      "description": "Texture one-shot: dark stepped noise through a resonant band-ish low-pass with a very fast decay. Drop short hits under beats for vinyl-style grit, or layer as a bed.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.7, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.55 },
+        { "waveform": "noise", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.12 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.22, "sustain": 0.04, "release": 0.05 },
+      "filter_cutoff": 3400.0,
+      "filter_resonance": 0.45,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.sub-drop",
+      "audition_note": 36,
+      "audition_duration": 1.3,
+      "name": "Sub Drop",
+      "description": "808-style sub drop: paired sines whose pitch falls from well above the note into a deep tail. Play low (C1-C2) for club weight.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.1 },
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.8 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.7, "sustain": 0.25, "release": 0.35 },
+      "pitch_envelope": { "amount_semitones": 20.0, "decay": 0.32 },
+      "filter_cutoff": 380.0,
+      "filter_resonance": 0.1,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.85,
+      "monophonic": true
+    },
+    {
+      "id": "one-shots.glitch",
+      "audition_note": 62,
+      "audition_duration": 0.45,
+      "name": "Glitch Stutter",
+      "description": "Controlled glitch hit: detuned pulses at inharmonic ratios with a quick pitch snap, crushed slightly by bit depth and sample-and-hold for steppy charm without full lo-fi.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.3 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.5, "detune_cents": 12.0, "pulse_width": 0.62 },
+        { "waveform": "square", "level": 0.22, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.3, "sustain": 0.08, "release": 0.07 },
+      "pitch_envelope": { "amount_semitones": 8.0, "decay": 0.1 },
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.12 },
+      "filter_cutoff": 5200.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 20,
+      "sample_hold": 6,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.shimmer",
+      "audition_note": 74,
+      "audition_duration": 3.0,
+      "name": "Shimmer Tail",
+      "description": "Ethereal tail: stacked high sine partials at inharmonic ratios with staggered long decays, slow attack and a slow tremolo. Use as an ambient outro or transition pad hit.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 2.4 },
+        { "waveform": "sine", "level": 0.32, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.5 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 3.02, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.9 },
+        { "waveform": "sine", "level": 0.12, "frequency_ratio": 4.98, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.3, "decay": 0.7, "sustain": 0.35, "release": 2.2 },
+      "filter_cutoff": 13000.0,
+      "filter_resonance": 0.18,
+      "lfo": { "waveform": "sine", "rate_hz": 0.4, "pitch_semitones": 0.5, "filter_octaves": 0.0, "amplitude": 0.25 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.62,
+      "monophonic": false
+    },
+    {
+      "id": "one-shots.impact-hit",
+      "audition_note": 42,
+      "audition_duration": 0.7,
+      "name": "Impact Hit",
+      "description": "Short percussive hit: a noise click transient over a fast-decaying sine thump with a quick downward pitch snap and a faint high triangle tick. Snappy transitions and hits.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.07 },
+        { "waveform": "sine", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.8 },
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "triangle", "level": 0.15, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.12 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.32, "sustain": 0.04, "release": 0.09 },
+      "pitch_envelope": { "amount_semitones": 12.0, "decay": 0.14 },
+      "filter_cutoff": 3200.0,
+      "filter_resonance": 0.18,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.82,
+      "monophonic": true
+    },
+    {
+      "id": "one-shots.whoosh",
+      "audition_note": 60,
+      "audition_duration": 1.0,
+      "name": "Whoosh",
+      "description": "Fast transition whoosh: noise over a quiet saw with a dark-to-open filter sweep and a slight upward pitch drift. Shorter and brighter than the riser - for quick scene changes.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.8, "frequency_ratio": 0.8, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.1 },
+        { "waveform": "saw", "level": 0.22, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.14, "decay": 0.4, "sustain": 0.12, "release": 0.28 },
+      "pitch_envelope": { "amount_semitones": -7.0, "decay": 0.55 },
+      "filter_envelope": { "amount_octaves": -3.5, "decay": 0.5 },
+      "filter_cutoff": 7500.0,
+      "filter_resonance": 0.3,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.68,
+      "monophonic": false
+    }
+  ]
+}

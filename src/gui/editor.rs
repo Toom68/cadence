@@ -5,17 +5,14 @@
 use std::collections::BTreeSet;
 
 use egui::{
-    pos2, vec2, Align, Align2, Color32, CursorIcon, FontId, Layout, Margin, PointerButton, Pos2,
-    Rect, RichText, Sense, Shape, Stroke, StrokeKind, Ui,
+    pos2, vec2, Align, Align2, Color32, Context, CornerRadius, CursorIcon, Event, FontId, Key,
+    Layout, Margin, PointerButton, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Ui,
 };
 
 use super::arranger::snap_floor;
-use super::theme::{
-    self, BORDER, BORDER_SOFT, CANVAS, CANVAS_ALT, CORAL, GRID_BAR, GRID_BEAT, GRID_FAINT, INK,
-    LIME, PANEL, PERIWINKLE, TEXT, TEXT_DIM, TEXT_FAINT,
-};
+use super::theme;
 use super::{ops, sidebar, CadenceApp, StatusKind};
-use crate::model::{note_name, Note, Pattern, Track, DRUMS};
+use crate::model::{note_name, ChordQuality, Note, Pattern, SongKey, Track, NOTE_NAMES};
 
 const KEYS_W: f32 = 66.0;
 const DRUM_LABEL_W: f32 = 132.0;
@@ -28,6 +25,108 @@ const MAX_PPS: f32 = 64.0;
 const FIRST_PITCH: u8 = 0;
 const LAST_PITCH: u8 = 127;
 const PITCHES: usize = (LAST_PITCH - FIRST_PITCH + 1) as usize;
+/// Octave bounds for computer-keyboard audition: octave `o` covers MIDI
+/// `(o + 1) * 12 ..= (o + 1) * 12 + 11`, so 0..=8 keeps the whole row inside
+/// 0..=127 while still reaching C0 for bass.
+const KB_OCTAVE_MIN: i32 = 0;
+const KB_OCTAVE_MAX: i32 = 8;
+
+/// The 12 mapped computer keys by chromatic index (0 = C … 11 = B) — the
+/// FL-Studio two-row layout: white keys `Z X C V B N M` on the bottom row and
+/// black keys `S D G H J` filling the gaps of the row above. `L` stays free
+/// for the loop shortcut; `Q`/`W` shift the octave instead of playing.
+const KB_KEYS: [Key; 12] = [
+    Key::Z,
+    Key::S,
+    Key::X,
+    Key::D,
+    Key::C,
+    Key::V,
+    Key::G,
+    Key::B,
+    Key::H,
+    Key::N,
+    Key::J,
+    Key::M,
+];
+/// White-key pitch classes per octave (C D E F G A B) for the Keys tab.
+const KB_WHITE_PCS: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
+/// `(black pitch class, index of the white key it follows)` — C# after C,
+/// D# after D, F# after F, G# after G, A# after A.
+const KB_BLACKS: [(u8, usize); 5] = [(1, 0), (3, 1), (6, 3), (8, 4), (10, 5)];
+
+/// Chromatic index (0 = C … 11 = B) of a computer key in the two-row
+/// performance layout, or `None` for unmapped keys.
+pub(super) fn kb_key_index(key: Key) -> Option<usize> {
+    KB_KEYS.iter().position(|&k| k == key)
+}
+
+/// MIDI pitch of `key` in `octave` (octave numbering like
+/// [`ops::chord_notes`]: C4 = MIDI 60). `None` for unmapped keys and for
+/// pitches outside 0..=127 — high/low octaves simply fall off the end of the
+/// keyboard instead of wrapping.
+pub(super) fn key_to_pitch(key: Key, octave: i32) -> Option<u8> {
+    let pc = kb_key_index(key)? as i32;
+    u8::try_from((octave + 1) * 12 + pc)
+        .ok()
+        .filter(|&p| p <= ops::MAX_PITCH)
+}
+
+/// Drum piece pitches the computer keyboard maps onto: the track's drum rows
+/// sorted ascending, deduplicated and capped at the 12 mapped keys.
+pub(super) fn drum_keyboard_pitches(track: &Track) -> Vec<u8> {
+    let mut pitches: Vec<u8> = track.drum_rows().iter().map(|(p, _)| *p).collect();
+    pitches.sort_unstable();
+    pitches.dedup();
+    pitches.truncate(KB_KEYS.len());
+    pitches
+}
+
+/// Chromatic indices (0 = C … 11 = B) of the computer keys currently held —
+/// for the on-screen keyboard strip and drum-row highlights. Cmd/Ctrl/Alt
+/// held presses don't count (they're shortcuts); Shift still counts since it
+/// only transposes the pitch.
+pub(super) fn held_keyboard_keys(ctx: &Context) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    let (keys_down, modifiers) = ctx.input(|i| (i.keys_down.clone(), i.modifiers));
+    if modifiers.command || modifiers.ctrl || modifiers.alt {
+        return out;
+    }
+    for key in keys_down {
+        if let Some(index) = kb_key_index(key) {
+            out.insert(index);
+        }
+    }
+    out
+}
+
+/// Pitch classes (0 = C … 11 = B) belonging to `key`'s scale — its seven
+/// diatonic degrees — for the scale-highlight row tint.
+pub(super) fn scale_pitch_classes(key: SongKey) -> [bool; 12] {
+    let mut pcs = [false; 12];
+    for degree in 0..7 {
+        pcs[key.degree_root(degree) as usize] = true;
+    }
+    pcs
+}
+
+/// Octave the computer keyboard and chord strip centre on for `track`: the
+/// octave holding its audition pitch — the same centring the arpeggiator
+/// dialog uses (`ArpDraft::new` derives its octave the same way).
+fn kb_home_octave(track: &Track) -> i32 {
+    let pitch = sidebar::audition_params(track, track.instrument.default_pitch()).0;
+    ((i32::from(pitch) / 12) - 1).clamp(KB_OCTAVE_MIN, KB_OCTAVE_MAX)
+}
+
+/// Label for the strum-spacing combo, matching its item text.
+fn chord_spacing_label(spacing: f64) -> &'static str {
+    match spacing {
+        s if s <= 0.0 => "Block",
+        s if (s - 0.25).abs() < 1e-6 => "1/64",
+        s if (s - 0.5).abs() < 1e-6 => "1/32",
+        _ => "1/16",
+    }
+}
 
 #[derive(Debug, Clone)]
 struct NoteDrag {
@@ -73,6 +172,8 @@ struct EditorRects {
     vel: Rect,
     keys: Rect,
     ruler: Rect,
+    /// Computer-keyboard strip under the piano roll (melodic editor only).
+    kb: Rect,
     /// Drum label column (drum editor only).
     labels: Rect,
 }
@@ -84,6 +185,7 @@ impl Default for EditorRects {
             vel: Rect::NOTHING,
             keys: Rect::NOTHING,
             ruler: Rect::NOTHING,
+            kb: Rect::NOTHING,
             labels: Rect::NOTHING,
         }
     }
@@ -123,6 +225,25 @@ pub(super) struct EditorView {
     right_erase: bool,
     drum_paint: Option<bool>,
     vel_drag: Option<Vec<u64>>,
+    /// Computer-keyboard octave: the octave of the Z key's C (C4 = 4),
+    /// re-centred on each track's home octave.
+    pub kb_octave: i32,
+    /// Chord-strip disclosure and stamping options — session view state,
+    /// never part of the song.
+    pub chord_open: bool,
+    /// `None` keeps each diatonic chord's scale-degree quality.
+    pub chord_quality: Option<ChordQuality>,
+    pub chord_direction: ops::StrumDirection,
+    /// Strum spacing in steps; `0.0` stamps a block chord.
+    pub chord_spacing: f64,
+    /// Tints piano-roll rows whose pitch class is in the song key's scale.
+    pub scale_highlight: bool,
+    /// Keys-tab mouse state: pitch under the pointer, whether the mouse
+    /// button is held on the keys (glow + glissando), and the last pitch
+    /// the mouse previewed so a drag retriggers only on change.
+    kb_pointer: Option<u8>,
+    kb_down: bool,
+    kb_last_preview: Option<u8>,
     /// Last-frame geometry, also used by headless tests to compute click points.
     rects: EditorRects,
     grid_id: egui::Id,
@@ -147,6 +268,15 @@ impl Default for EditorView {
             right_erase: false,
             drum_paint: None,
             vel_drag: None,
+            kb_octave: 4,
+            chord_open: false,
+            chord_quality: None,
+            chord_direction: ops::StrumDirection::default(),
+            chord_spacing: 0.0,
+            scale_highlight: false,
+            kb_pointer: None,
+            kb_down: false,
+            kb_last_preview: None,
             rects: EditorRects::default(),
             grid_id: egui::Id::NULL,
         }
@@ -162,6 +292,9 @@ impl EditorView {
         self.marquee = None;
         self.drum_paint = None;
         self.vel_drag = None;
+        self.kb_pointer = None;
+        self.kb_down = false;
+        self.kb_last_preview = None;
         self.roll_scroll_x = 0.0;
         self.drum_scroll_x = 0.0;
     }
@@ -222,7 +355,7 @@ impl Roll {
 }
 
 #[derive(Clone, Copy)]
-struct DrumGrid {
+struct DrumGrid<'a> {
     grid: Rect,
     labels: Rect,
     ruler: Rect,
@@ -230,9 +363,13 @@ struct DrumGrid {
     scroll_x: f32,
     row_h: f32,
     len: f64,
+    /// `(pitch, name)` per row, top to bottom — the kit's pieces for a kit
+    /// preset, else the built-in `DRUMS` table. Never empty
+    /// ([`Track::drum_rows`] guarantees at least one row).
+    rows: &'a [(u8, &'a str)],
 }
 
-impl DrumGrid {
+impl DrumGrid<'_> {
     fn x(&self, step: f64) -> f32 {
         self.grid.left() + step as f32 * self.pps - self.scroll_x
     }
@@ -248,7 +385,7 @@ impl DrumGrid {
         }
         let row = ((pos.y - self.grid.top()) / self.row_h).floor() as usize;
         let step = self.step(pos.x).floor() as i64;
-        (0..DRUMS.len())
+        (0..self.rows.len())
             .contains(&row)
             .then_some(row)
             .filter(|_| step >= 0 && (step as f64) < self.len)
@@ -261,18 +398,22 @@ impl CadenceApp {
     #[cfg(test)]
     pub(crate) fn drum_cell_center(&self, row: usize, step: u32) -> Option<Pos2> {
         let r = &self.editor.rects;
-        if r.grid == Rect::NOTHING || row >= DRUMS.len() {
+        let track = self.selected_track()?;
+        if r.grid == Rect::NOTHING || !track.shows_drum_grid() {
+            return None;
+        }
+        let rows = track.drum_rows();
+        if row >= rows.len() {
             return None;
         }
         let len = self
-            .selected_track()
-            .and_then(|t| self.current_pattern_id(t))
-            .and_then(|pid| self.selected_track().and_then(|t| ops::pattern(t, pid)))
+            .current_pattern_id(track)
+            .and_then(|pid| ops::pattern(track, pid))
             .map_or(16.0, |p| p.length as f64);
         if (step as f64) >= len {
             return None;
         }
-        let g = drum_geometry(r, self.editor.drum_pps, self.editor.drum_scroll_x);
+        let g = drum_geometry(r, self.editor.drum_pps, self.editor.drum_scroll_x, &rows);
         let x = g.x(step as f64) + g.pps * 0.5;
         let y = g.row_y(row) + g.row_h * 0.5;
         (x >= g.grid.left() && x <= g.grid.right()).then(|| pos2(x, y))
@@ -327,30 +468,113 @@ impl CadenceApp {
         self.editor.roll_scroll_x = x.max(0.0);
         self.editor.roll_scroll_y = y.max(0.0);
     }
+
+    /// Quantize button handler: snap note starts to the grid — the editor's
+    /// snap value on the roll, whole steps on the drum grid. Selected notes
+    /// when any are selected, else the whole pattern.
+    pub(super) fn quantize_notes(&mut self, track_id: u64, pid: u64) {
+        let drum = self
+            .selected_track()
+            .is_some_and(|t| t.id == track_id && t.shows_drum_grid());
+        let grid = if drum { 1.0 } else { self.editor.snap };
+        let ids = (!self.sel.notes.is_empty()).then(|| self.sel.notes.clone());
+        let mut moved = 0;
+        self.edit("Quantize notes", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                moved = ops::quantize_notes(pat, ids.as_ref(), grid);
+            }
+        });
+        self.set_status(
+            StatusKind::Info,
+            if moved > 0 {
+                format!("Quantized {moved} note{}.", sidebar::plural(moved))
+            } else {
+                "Already on the grid.".to_string()
+            },
+        );
+    }
+
+    /// Paste target under the pointer: `(pattern step, pitch anchor)`. The
+    /// step is snapped to the editor grid; the anchor is the pitch row under
+    /// the cursor for melodic tracks (`None` on the drum grid, where rows
+    /// are kit pieces rather than chromatic pitch). `None` when the pattern
+    /// editor isn't the active view or the pointer isn't over the note grid —
+    /// callers fall back to the playhead and unshifted pitch.
+    pub(super) fn editor_paste_target(&self, ctx: &Context) -> Option<(f64, Option<u8>)> {
+        if self.tab != super::Tab::Editor {
+            return None;
+        }
+        let pos = ctx.input(|i| i.pointer.hover_pos())?;
+        let r = &self.editor.rects;
+        if r.grid == Rect::NOTHING {
+            return None;
+        }
+        let track = self.selected_track()?;
+        let snap = self.editor.snap;
+        if track.shows_drum_grid() {
+            let rows = track.drum_rows();
+            let g = DrumGrid {
+                grid: r.grid,
+                labels: r.labels,
+                ruler: r.ruler,
+                pps: self.editor.drum_pps,
+                scroll_x: self.editor.drum_scroll_x,
+                row_h: r.grid.height() / rows.len().max(1) as f32,
+                len: 1.0,
+                rows: &rows,
+            };
+            g.grid
+                .contains(pos)
+                .then(|| (snap_floor(g.step(pos.x).max(0.0), snap), None))
+        } else {
+            let roll = Roll {
+                grid: r.grid,
+                keys: r.keys,
+                ruler: r.ruler,
+                vel: r.vel,
+                pps: self.editor.roll_pps,
+                scroll_x: self.editor.roll_scroll_x,
+                scroll_y: self.editor.roll_scroll_y,
+            };
+            roll.grid.contains(pos).then(|| {
+                (
+                    snap_floor(roll.step(pos.x).max(0.0), snap),
+                    roll.pitch_at(pos.y),
+                )
+            })
+        }
+    }
 }
 
 #[cfg(test)]
-fn drum_geometry(rects: &EditorRects, pps: f32, scroll_x: f32) -> DrumGrid {
+fn drum_geometry<'a>(
+    rects: &EditorRects,
+    pps: f32,
+    scroll_x: f32,
+    rows: &'a [(u8, &'a str)],
+) -> DrumGrid<'a> {
     DrumGrid {
         grid: rects.grid,
         labels: rects.labels,
         ruler: rects.ruler,
         pps,
         scroll_x,
-        row_h: rects.grid.height() / DRUMS.len() as f32,
+        row_h: rects.grid.height() / rows.len().max(1) as f32,
         len: 1.0,
+        rows,
     }
 }
 
 impl CadenceApp {
     pub(super) fn editor_ui(&mut self, ui: &mut Ui) {
+        let pal = self.palette();
         let Some(track) = self.selected_track().cloned() else {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new(
                         "No track selected — pick one in the arrangement or add an instrument.",
                     )
-                    .color(TEXT_DIM),
+                    .color(pal.text_dim),
                 );
             });
             return;
@@ -374,10 +598,12 @@ impl CadenceApp {
         };
         if self.editor.last_track != Some(track.id) {
             self.editor.last_track = Some(track.id);
+            self.editor.kb_octave = kb_home_octave(&track);
             self.editor_roll_home(&track, pid);
         }
         self.editor_header(ui, &track, pid);
-        if track.instrument.is_drums() && track.preset.is_none() {
+        self.chord_strip(ui, &track);
+        if track.shows_drum_grid() {
             self.drum_editor(ui, &track, pid);
         } else {
             self.piano_roll(ui, &track, pid);
@@ -391,12 +617,10 @@ impl CadenceApp {
             .filter(|p| !p.notes.is_empty())
             .map(|p| p.notes.iter().map(|n| n.pitch as u32).sum::<u32>() / p.notes.len() as u32)
             .unwrap_or_else(|| {
-                // An empty pack-preset pattern homes on its audition note;
-                // built-ins keep their instrument default pitch.
-                track.preset.as_ref().map_or_else(
-                    || track.instrument.default_pitch() as u32,
-                    |p| u32::from(p.audition_note),
-                )
+                // An empty pack-preset pattern homes on its audition note
+                // (kit presets on a real piece pitch); built-ins keep their
+                // instrument default pitch.
+                u32::from(sidebar::audition_params(track, track.instrument.default_pitch()).0)
             });
         let row = (LAST_PITCH as u32 - pitch_center) as f32;
         // Before the first paint the grid rect is still empty; use a typical
@@ -411,6 +635,7 @@ impl CadenceApp {
     // ----- header ----------------------------------------------------------
 
     fn editor_header(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
+        let pal = self.palette();
         egui::Frame::new()
             .inner_margin(Margin {
                 left: 12,
@@ -422,13 +647,13 @@ impl CadenceApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     theme::color_dot(ui, theme::rgb(track.color), 10.0);
-                    ui.label(RichText::new(&track.name).size(15.5).color(TEXT));
+                    ui.label(RichText::new(&track.name).size(15.5).color(pal.text));
                     ui.label(
-                        RichText::new(ops::instrument_label(track))
+                        RichText::new(ops::instrument_label(track).into_owned())
                             .small()
-                            .color(TEXT_DIM),
+                            .color(pal.text_dim),
                     );
-                    ui.label(RichText::new("/").color(TEXT_FAINT));
+                    ui.label(RichText::new("/").color(pal.text_faint));
 
                     // Pattern selector
                     let cur = ops::pattern(track, pid)
@@ -503,10 +728,11 @@ impl CadenceApp {
 
                     if theme::icon_button(
                         ui,
+                        pal,
                         theme::Icon::Plus,
                         26.0,
                         false,
-                        LIME,
+                        pal.accent,
                         "New empty pattern",
                     )
                     .clicked()
@@ -532,10 +758,11 @@ impl CadenceApp {
                     }
                     if theme::icon_button(
                         ui,
+                        pal,
                         theme::Icon::Duplicate,
                         26.0,
                         false,
-                        LIME,
+                        pal.accent,
                         "Duplicate pattern",
                     )
                     .clicked()
@@ -561,10 +788,11 @@ impl CadenceApp {
                     let note_count = ops::pattern(track, pid).map_or(0, |p| p.notes.len());
                     if theme::icon_button(
                         ui,
+                        pal,
                         theme::Icon::Trash,
                         26.0,
                         false,
-                        CORAL,
+                        pal.danger,
                         "Clear all notes in this pattern",
                     )
                     .clicked()
@@ -613,9 +841,10 @@ impl CadenceApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if theme::chip(
                             ui,
+                            pal,
                             "Track",
                             self.side_tab == sidebar::SideTab::Track,
-                            PERIWINKLE,
+                            pal.link,
                             vec2(52.0, 24.0),
                             "Open track settings",
                         )
@@ -631,12 +860,13 @@ impl CadenceApp {
     // ----- piano roll ------------------------------------------------------
 
     fn piano_roll(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
+        let pal = self.palette();
         self.roll_toolbar(ui, track, pid);
         let Some(pat) = ops::pattern(track, pid).cloned() else {
             return;
         };
         let area = ui.available_rect_before_wrap();
-        if area.width() < 200.0 || area.height() < 80.0 {
+        if area.width() < 200.0 || area.height() < RULER_H + VEL_H + 24.0 {
             return;
         }
         let grid = Rect::from_min_max(
@@ -664,6 +894,7 @@ impl CadenceApp {
             vel,
             keys,
             ruler,
+            kb: Rect::NOTHING,
             labels: Rect::NOTHING,
         };
         self.editor.grid_id = ui.id().with("piano_grid");
@@ -713,9 +944,14 @@ impl CadenceApp {
         self.paint_roll_ruler(ui, track, &pat, &roll);
         self.paint_vel_lane(ui, track.id, &pat, &roll, vel_labels);
         let mut sx = self.editor.roll_scroll_x;
-        let hbar = Rect::from_min_max(pos2(grid.left(), vel.bottom() - 8.0), grid.right_bottom());
+        // Horizontal scrollbar rides the bottom of the velocity lane.
+        let hbar = Rect::from_min_max(
+            pos2(grid.left(), vel.bottom() - 8.0),
+            pos2(grid.right(), vel.bottom()),
+        );
         theme::scrollbar(
             ui,
+            pal,
             hbar.shrink2(vec2(0.0, 1.0)),
             ui.id().with("roll_hbar"),
             false,
@@ -731,6 +967,7 @@ impl CadenceApp {
         );
         theme::scrollbar(
             ui,
+            pal,
             vbar.shrink2(vec2(1.0, 0.0)),
             ui.id().with("roll_vbar"),
             true,
@@ -742,24 +979,25 @@ impl CadenceApp {
     }
 
     fn roll_toolbar(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
+        let pal = self.palette();
         egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 4 }).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 5.0);
-                theme::color_dot(ui, LIME, 6.0);
-                ui.label(RichText::new("Piano roll").small().color(TEXT_DIM));
-                ui.label(RichText::new("Note").small().color(TEXT_FAINT));
+                theme::color_dot(ui, pal.accent, 6.0);
+                ui.label(RichText::new("Piano roll").small().color(pal.text_dim));
+                ui.label(RichText::new("Note").small().color(pal.text_faint));
                 egui::ComboBox::from_id_salt(("notelen", track.id)).width(62.0).selected_text(note_len_label(self.editor.note_len)).show_ui(ui, |ui| {
                     for (v, l) in [(1.0, "1/16"), (2.0, "1/8"), (4.0, "1/4"), (8.0, "1/2"), (16.0, "1 bar")] {
                         ui.selectable_value(&mut self.editor.note_len, v, l);
                     }
                 });
-                ui.label(RichText::new("Snap").small().color(TEXT_FAINT));
+                ui.label(RichText::new("Snap").small().color(pal.text_faint));
                 egui::ComboBox::from_id_salt(("editsnap", track.id)).width(62.0).selected_text(note_len_label(self.editor.snap)).show_ui(ui, |ui| {
                     for (v, l) in [(0.5, "1/32"), (1.0, "1/16"), (2.0, "1/8"), (4.0, "1/4")] {
                         ui.selectable_value(&mut self.editor.snap, v, l);
                     }
                 });
-                ui.label(RichText::new("Velocity").small().color(TEXT_FAINT));
+                ui.label(RichText::new("Velocity").small().color(pal.text_faint));
                 let mut v = self.editor.velocity;
                 ui.spacing_mut().slider_width = 110.0;
                 if ui.add(egui::Slider::new(&mut v, 0.05..=1.0).custom_formatter(|x, _| format!("{:.0}%", x * 100.0))).changed() {
@@ -767,7 +1005,7 @@ impl CadenceApp {
                 }
                 let n = self.sel.notes.len();
                 if n > 0 {
-                    ui.label(RichText::new(format!("{n} selected")).small().color(LIME));
+                    ui.label(RichText::new(format!("{n} selected")).small().color(pal.accent));
                     if ui.add(egui::Button::new("Delete").small()).on_hover_text("Delete selected notes (Del)").clicked() {
                         self.delete_selection();
                     }
@@ -776,10 +1014,15 @@ impl CadenceApp {
                     p.notes.iter().filter(|n| n.start.fract() != 0.0).count()
                 });
                 if outside > 0 {
-                    ui.label(RichText::new(format!("{outside} off-grid")).small().color(TEXT_FAINT)).on_hover_text("These notes sit between grid steps (e.g. imported from MIDI). Moving them keeps their offset.");
+                    ui.label(RichText::new(format!("{outside} off-grid")).small().color(pal.text_faint)).on_hover_text("These notes sit between grid steps (e.g. imported from MIDI). Moving them keeps their offset.");
+                }
+                if (n > 0 || outside > 0)
+                    && ui.add(egui::Button::new("Quantize").small()).on_hover_text("Snap note starts to the Snap grid — selected notes, or every note when nothing is selected").clicked()
+                {
+                    self.quantize_notes(track.id, pid);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::hint(ui, "Click to draw · drag empty grid to box-select · drag selected notes as a group · right edge resizes · right-click erases");
+                    theme::hint(ui, pal, "Click to draw · drag empty grid to box-select · drag selected notes as a group · right edge resizes · right-click erases");
                 });
             });
         });
@@ -1117,7 +1360,12 @@ impl CadenceApp {
     }
 
     fn paint_roll(&self, ui: &Ui, track: &Track, pat: &Pattern, roll: &Roll, hover: Option<Pos2>) {
+        let pal = self.palette();
         let p = ui.painter_at(roll.grid.union(roll.vel).union(roll.ruler));
+        let scale = self
+            .editor
+            .scale_highlight
+            .then(|| scale_pitch_classes(self.project.key));
         // Row backgrounds
         let first_row = (roll.scroll_y / ROW_H).floor().max(0.0) as usize;
         let last_row = ((roll.scroll_y + roll.grid.height()) / ROW_H)
@@ -1134,13 +1382,16 @@ impl CadenceApp {
                 if black {
                     Color32::from_black_alpha(38)
                 } else {
-                    CANVAS
+                    pal.canvas
                 },
             );
+            if scale.is_some_and(|pcs| pcs[pitch as usize % 12]) {
+                p.rect_filled(r, 0.0, pal.accent.gamma_multiply(0.08));
+            }
             if pitch.is_multiple_of(12) {
-                p.hline(roll.grid.x_range(), y, Stroke::new(1.0_f32, GRID_BAR));
+                p.hline(roll.grid.x_range(), y, Stroke::new(1.0_f32, pal.grid_bar));
             } else {
-                p.hline(roll.grid.x_range(), y, Stroke::new(0.5_f32, GRID_FAINT));
+                p.hline(roll.grid.x_range(), y, Stroke::new(0.5_f32, pal.grid_faint));
             }
         }
         // Step/beat/bar lines
@@ -1153,11 +1404,11 @@ impl CadenceApp {
             }
             let x = roll.x(s as f64);
             if s % 16 == 0 {
-                p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, GRID_BAR));
+                p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_bar));
             } else if s % 4 == 0 {
-                p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, GRID_BEAT));
+                p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_beat));
             } else if step_lines {
-                p.vline(x, roll.grid.y_range(), Stroke::new(0.5_f32, GRID_FAINT));
+                p.vline(x, roll.grid.y_range(), Stroke::new(0.5_f32, pal.grid_faint));
             }
         }
         // Beyond pattern end
@@ -1187,13 +1438,13 @@ impl CadenceApp {
                 continue;
             }
             let selected = self.sel.notes.contains(&n.id);
-            let body = theme::mix(BORDER_SOFT, color, 0.35 + n.velocity * 0.65);
+            let body = theme::mix(pal.border_soft, color, 0.35 + n.velocity * 0.65);
             p.rect_filled(r, 3.0, body);
             if selected {
                 p.rect_stroke(
                     r.expand(1.0),
                     3.0,
-                    Stroke::new(1.5_f32, TEXT),
+                    Stroke::new(1.5_f32, pal.text),
                     StrokeKind::Inside,
                 );
             }
@@ -1214,7 +1465,7 @@ impl CadenceApp {
                     Align2::LEFT_CENTER,
                     note_name(n.pitch),
                     FontId::proportional(9.5),
-                    INK,
+                    theme::ink_on(body),
                 );
             }
         }
@@ -1223,8 +1474,8 @@ impl CadenceApp {
         if let Some(m) = &self.editor.marquee {
             let r = Rect::from_two_pos(m.start, m.current).intersect(roll.grid);
             if r.is_positive() {
-                p.rect_filled(r, 0.0, PERIWINKLE.gamma_multiply(0.12));
-                p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, PERIWINKLE), StrokeKind::Inside);
+                p.rect_filled(r, 0.0, pal.link.gamma_multiply(0.12));
+                p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, pal.link), StrokeKind::Inside);
             }
         }
         // Playhead inside a clip of this pattern
@@ -1235,7 +1486,7 @@ impl CadenceApp {
                     p.vline(
                         x,
                         roll.grid.top()..=roll.vel.bottom(),
-                        Stroke::new(1.5_f32, LIME),
+                        Stroke::new(1.5_f32, pal.accent),
                     );
                 }
             }
@@ -1268,24 +1519,24 @@ impl CadenceApp {
                 Align2::CENTER_CENTER,
                 "Empty pattern — click the grid to draw notes",
                 FontId::proportional(13.0),
-                TEXT_FAINT,
+                pal.text_faint,
             );
         }
         // Borders
         p.hline(
             roll.grid.x_range(),
             roll.ruler.bottom(),
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
         );
         p.vline(
             roll.grid.left(),
             roll.grid.top()..=roll.vel.bottom(),
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
         );
         p.hline(
             roll.grid.x_range(),
             roll.vel.top(),
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
         );
     }
 
@@ -1303,8 +1554,13 @@ impl CadenceApp {
     }
 
     fn paint_keys(&self, ui: &mut Ui, track: &Track, roll: &Roll) {
+        let pal = self.palette();
         let p = ui.painter_at(roll.keys);
-        p.rect_filled(roll.keys, 0.0, PANEL);
+        p.rect_filled(roll.keys, 0.0, pal.panel);
+        let scale = self
+            .editor
+            .scale_highlight
+            .then(|| scale_pitch_classes(self.project.key));
         let first_row = (roll.scroll_y / ROW_H).floor().max(0.0) as usize;
         let last_row = ((roll.scroll_y + roll.grid.height()) / ROW_H)
             .ceil()
@@ -1327,7 +1583,7 @@ impl CadenceApp {
             );
             let resp = ui.interact(r, ui.id().with(("key", pitch)), Sense::click());
             if resp.hovered() || resp.is_pointer_button_down_on() {
-                p.rect_filled(r, 0.0, theme::CONTROL_HOVER);
+                p.rect_filled(r, 0.0, pal.control_hover);
             } else {
                 p.rect_filled(
                     r,
@@ -1335,9 +1591,12 @@ impl CadenceApp {
                     if black {
                         Color32::from_rgb(15, 14, 13)
                     } else {
-                        theme::mix(PANEL, TEXT, 0.22)
+                        theme::mix(pal.panel, pal.text, 0.22)
                     },
                 );
+                if scale.is_some_and(|pcs| pcs[pitch as usize % 12]) {
+                    p.rect_filled(r, 0.0, pal.accent.gamma_multiply(0.08));
+                }
             }
             if pitch.is_multiple_of(12) {
                 p.text(
@@ -1345,7 +1604,7 @@ impl CadenceApp {
                     Align2::RIGHT_CENTER,
                     note_name(pitch),
                     FontId::proportional(9.5),
-                    TEXT_FAINT,
+                    pal.text_faint,
                 );
             }
             if resp.clicked() || resp.dragged_by(PointerButton::Primary) {
@@ -1355,7 +1614,7 @@ impl CadenceApp {
         p.vline(
             roll.keys.right(),
             roll.keys.y_range(),
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
         );
         if let Some(pitch) = preview_pitch {
             let vel = self.editor.velocity;
@@ -1364,8 +1623,9 @@ impl CadenceApp {
     }
 
     fn paint_roll_ruler(&self, ui: &Ui, track: &Track, pat: &Pattern, roll: &Roll) {
+        let pal = self.palette();
         let p = ui.painter_at(roll.ruler);
-        p.rect_filled(roll.ruler, 0.0, PANEL);
+        p.rect_filled(roll.ruler, 0.0, pal.panel);
         let pps = roll.pps;
         let every = [1i64, 2, 4, 8, 16]
             .into_iter()
@@ -1381,13 +1641,13 @@ impl CadenceApp {
                     Align2::LEFT_CENTER,
                     format!("{}", b + 1),
                     FontId::proportional(10.5),
-                    TEXT_DIM,
+                    pal.text_dim,
                 );
             }
             p.vline(
                 x,
                 roll.ruler.bottom() - 6.0..=roll.ruler.bottom(),
-                Stroke::new(1.0_f32, BORDER),
+                Stroke::new(1.0_f32, pal.border),
             );
         }
         if self.transport.playing {
@@ -1399,7 +1659,7 @@ impl CadenceApp {
                         pos2(x + 5.0, roll.ruler.bottom() - 8.0),
                         pos2(x, roll.ruler.bottom() - 1.0),
                     ],
-                    LIME,
+                    pal.accent,
                     Stroke::NONE,
                 ));
             }
@@ -1407,16 +1667,17 @@ impl CadenceApp {
     }
 
     fn paint_vel_lane(&self, ui: &Ui, track_id: u64, pat: &Pattern, roll: &Roll, labels: Rect) {
+        let pal = self.palette();
         let p = ui.painter_at(roll.vel.union(labels));
-        p.rect_filled(labels, 0.0, PANEL);
+        p.rect_filled(labels, 0.0, pal.panel);
         p.text(
             labels.center(),
             Align2::CENTER_CENTER,
             "VEL",
             FontId::proportional(9.0),
-            TEXT_FAINT,
+            pal.text_faint,
         );
-        p.rect_filled(roll.vel, 0.0, CANVAS_ALT);
+        p.rect_filled(roll.vel, 0.0, pal.canvas_alt);
         let color = theme::rgb(self.selected_track().map_or([140, 140, 140], |t| t.color));
         let s0 = roll.step(roll.vel.left()).max(0.0);
         let s1 = roll.step(roll.vel.right());
@@ -1439,7 +1700,7 @@ impl CadenceApp {
                 r,
                 1.0,
                 if selected {
-                    theme::mix(color, TEXT, 0.4)
+                    theme::mix(color, pal.text, 0.4)
                 } else {
                     color.gamma_multiply(0.85)
                 },
@@ -1448,44 +1709,723 @@ impl CadenceApp {
         let _ = track_id;
     }
 
+    // ----- computer keyboard & chord strip ---------------------------------
+
+    // ----- keys tab ---------------------------------------------------------
+
+    /// The dedicated Keys tab (⌘3): a full-size playable keyboard for the
+    /// selected track. Melodic tracks get a three-octave piano — mouse
+    /// press/drag glissandos, computer keys keep working, held keys glow.
+    /// Drum tracks get one pad per kit piece instead.
+    pub(super) fn keys_ui(&mut self, ui: &mut Ui) {
+        let pal = self.palette();
+        let Some(track_id) = self.sel.track else {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("Select a track to play it.").color(pal.text_dim));
+            });
+            return;
+        };
+        let drum = ops::track(&self.project, track_id).is_some_and(|t| t.shows_drum_grid());
+        if drum {
+            self.keys_drum_ui(ui, track_id);
+        } else {
+            self.keys_piano_ui(ui, track_id);
+        }
+    }
+
+    /// Melodic Keys tab: three octaves of piano keys centred on the play
+    /// octave (`kb_octave`), mouse + computer input, held-key glow.
+    fn keys_piano_ui(&mut self, ui: &mut Ui, track_id: u64) {
+        let pal = self.palette();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            theme::color_dot(ui, pal.accent, 6.0);
+            ui.label(RichText::new("Keyboard").small().color(pal.text_dim));
+            for (label, d, tip) in [
+                ("‹", -1, "Octave down (Q)"),
+                ("›", 1, "Octave up (W)"),
+            ] {
+                if ui
+                    .add(egui::Button::new(label).small())
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    self.editor.kb_octave = (self.editor.kb_octave + d)
+                        .clamp(KB_OCTAVE_MIN, KB_OCTAVE_MAX);
+                }
+            }
+            ui.label(
+                RichText::new(format!("C{}", self.editor.kb_octave))
+                    .small()
+                    .color(pal.text),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                theme::hint(
+                    ui,
+                    pal,
+                    "Drag the keys to glissando · Z X C V B N M + S D G H J play · Q/W octave · Shift +12",
+                );
+            });
+        });
+        let area = ui.available_rect_before_wrap();
+        if area.width() < 240.0 || area.height() < 80.0 {
+            return;
+        }
+
+        // Three octaves: kb_octave-1 ..= kb_octave+1. Whites are laid out
+        // left to right; each black centres on the boundary after its white.
+        let first_oct = self.editor.kb_octave - 1;
+        let mut whites: Vec<(u8, i32, usize)> = Vec::new(); // (pitch, octave, slot)
+        for o in first_oct..=first_oct + 2 {
+            for (slot, &pc) in KB_WHITE_PCS.iter().enumerate() {
+                let p = (o + 1) * 12 + i32::from(pc);
+                if (0..=i32::from(ops::MAX_PITCH)).contains(&p) {
+                    whites.push((p as u8, o, slot));
+                }
+            }
+        }
+        if whites.is_empty() {
+            return;
+        }
+        let white_w = area.width() / whites.len() as f32;
+        let black_w = white_w * 0.62;
+        let black_h = area.height() * 0.62;
+        let white_rects: Vec<(Rect, u8, i32)> = whites
+            .iter()
+            .enumerate()
+            .map(|(i, &(pitch, o, _))| {
+                let x0 = area.left() + i as f32 * white_w;
+                (
+                    Rect::from_min_max(pos2(x0, area.top()), pos2(x0 + white_w, area.bottom())),
+                    pitch,
+                    o,
+                )
+            })
+            .collect();
+        let mut black_rects: Vec<(Rect, u8)> = Vec::new();
+        for o in first_oct..=first_oct + 2 {
+            for &(bpc, _) in &KB_BLACKS {
+                let p = (o + 1) * 12 + i32::from(bpc);
+                if !(0..=i32::from(ops::MAX_PITCH)).contains(&p) {
+                    continue;
+                }
+                // The white key a semitone below is always present when the
+                // black is — its right edge is the black's centre line.
+                let Some(idx) = whites.iter().position(|&(wp, _, _)| i32::from(wp) == p - 1) else {
+                    continue;
+                };
+                let boundary = area.left() + (idx + 1) as f32 * white_w;
+                black_rects.push((
+                    Rect::from_min_max(
+                        pos2(boundary - black_w * 0.5, area.top()),
+                        pos2(boundary + black_w * 0.5, area.top() + black_h),
+                    ),
+                    p as u8,
+                ));
+            }
+        }
+
+        // Interaction: press/drag across the keys glissandos — retrigger
+        // only when the pitch under the pointer actually changes.
+        let resp = ui.interact(area, ui.id().with("keys_tab_area"), Sense::click_and_drag());
+        let dragging = resp.is_pointer_button_down_on() || resp.dragged();
+        let pos = ui.input(|i| {
+            if dragging {
+                i.pointer.interact_pos()
+            } else {
+                i.pointer.hover_pos()
+            }
+        });
+        let pointer_pitch = pos.filter(|p| area.contains(*p)).and_then(|p| {
+            black_rects
+                .iter()
+                .find(|(r, _)| r.contains(p))
+                .map(|(_, pitch)| *pitch)
+                .or_else(|| {
+                    white_rects
+                        .iter()
+                        .find(|(r, ..)| r.contains(p))
+                        .map(|(_, pitch, _)| *pitch)
+                })
+        });
+        self.editor.kb_pointer = pointer_pitch;
+        self.editor.kb_down = dragging;
+        if dragging {
+            match pointer_pitch {
+                Some(p) if self.editor.kb_last_preview != Some(p) => {
+                    self.editor.kb_last_preview = Some(p);
+                    let vel = self.editor.velocity;
+                    self.preview(track_id, p, vel);
+                }
+                None => self.editor.kb_last_preview = None,
+                _ => {}
+            }
+        } else {
+            self.editor.kb_last_preview = None;
+        }
+        resp.on_hover_cursor(CursorIcon::PointingHand);
+
+        // Held pitches: computer keys at the play octave + the mouse key.
+        let mut hot: BTreeSet<u8> = held_keyboard_keys(ui.ctx())
+            .iter()
+            .filter_map(|&i| {
+                let p = (self.editor.kb_octave + 1) * 12 + i as i32;
+                (0..=i32::from(ops::MAX_PITCH))
+                    .contains(&p)
+                    .then_some(p as u8)
+            })
+            .collect();
+        if dragging {
+            if let Some(p) = pointer_pitch {
+                hot.insert(p);
+            }
+        }
+        let hover_pitch = (!dragging).then_some(pointer_pitch).flatten();
+        let p = ui.painter_at(area);
+        let base_white = theme::mix(pal.panel, pal.text, 0.20);
+        let base_black = Color32::from_rgb(14, 13, 12);
+        let top_round = CornerRadius {
+            nw: 4,
+            ne: 4,
+            sw: 0,
+            se: 0,
+        };
+        for (rect, pitch, octave) in &white_rects {
+            let is_hot = hot.contains(pitch);
+            let is_hov = hover_pitch == Some(*pitch);
+            let fill = if is_hot {
+                pal.accent.gamma_multiply(0.40)
+            } else if is_hov {
+                theme::mix(base_white, pal.text, 0.16)
+            } else {
+                base_white
+            };
+            p.rect_filled(*rect, top_round, fill);
+            p.rect_stroke(
+                *rect,
+                top_round,
+                Stroke::new(1.0_f32, pal.border_soft),
+                StrokeKind::Inside,
+            );
+            let pc = (*pitch % 12) as usize;
+            let fg = if is_hot { pal.text } else { pal.text_dim };
+            // Note name at the bottom of every white key.
+            p.text(
+                pos2(rect.center().x, rect.bottom() - 13.0),
+                Align2::CENTER_CENTER,
+                NOTE_NAMES[pc],
+                FontId::proportional(10.0),
+                fg,
+            );
+            // C keys carry their octave number near the top.
+            if pc == 0 {
+                p.text(
+                    pos2(rect.center().x, rect.top() + 9.0),
+                    Align2::CENTER_CENTER,
+                    format!("C{octave}"),
+                    FontId::proportional(8.5),
+                    pal.text_faint,
+                );
+            }
+            // The play octave's whites also show their computer key.
+            if *octave == self.editor.kb_octave {
+                p.text(
+                    pos2(
+                        rect.center().x,
+                        rect.top() + if pc == 0 { 20.0 } else { 10.0 },
+                    ),
+                    Align2::CENTER_CENTER,
+                    KB_KEYS[pc].name(),
+                    FontId::proportional(9.0),
+                    pal.text_faint,
+                );
+            }
+        }
+        for (rect, pitch) in &black_rects {
+            let is_hot = hot.contains(pitch);
+            let is_hov = hover_pitch == Some(*pitch);
+            let fill = if is_hot {
+                pal.accent.gamma_multiply(0.45)
+            } else if is_hov {
+                theme::mix(base_black, pal.text, 0.22)
+            } else {
+                base_black
+            };
+            p.rect_filled(*rect, 2.0, fill);
+            p.rect_stroke(
+                *rect,
+                2.0,
+                Stroke::new(1.0_f32, pal.border_soft),
+                StrokeKind::Inside,
+            );
+            let pc = (*pitch % 12) as usize;
+            // Play-octave black keys show their computer key letter.
+            if (*pitch as i32 / 12) - 1 == self.editor.kb_octave {
+                p.text(
+                    pos2(rect.center().x, rect.bottom() - 4.0),
+                    Align2::CENTER_CENTER,
+                    KB_KEYS[pc].name(),
+                    FontId::proportional(8.0),
+                    if is_hot { pal.text } else { pal.text_faint },
+                );
+            }
+        }
+    }
+
+    /// Drum Keys tab: one tappable pad per kit piece, computer-key held
+    /// pieces glow.
+    fn keys_drum_ui(&mut self, ui: &mut Ui, track_id: u64) {
+        let pal = self.palette();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            theme::color_dot(ui, pal.danger, 6.0);
+            ui.label(RichText::new("Drum kit").small().color(pal.text_dim));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                theme::hint(
+                    ui,
+                    pal,
+                    "Click or tap a piece · the computer-key row plays them too",
+                );
+            });
+        });
+        // Owned copies so `self.preview` stays callable inside the loop.
+        let (rows, kb_pitches): (Vec<(u8, String)>, Vec<u8>) = ops::track(&self.project, track_id)
+            .map(|t| {
+                (
+                    t.drum_rows()
+                        .iter()
+                        .map(|(p, n)| (*p, (*n).to_string()))
+                        .collect(),
+                    drum_keyboard_pitches(t),
+                )
+            })
+            .unwrap_or_default();
+        if rows.is_empty() {
+            ui.label(RichText::new("No drum rows.").color(pal.text_dim));
+            return;
+        }
+        let held: BTreeSet<u8> = held_keyboard_keys(ui.ctx())
+            .iter()
+            .filter_map(|&i| kb_pitches.get(i).copied())
+            .collect();
+        let vel = self.editor.velocity;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (pitch, name) in &rows {
+                let on = held.contains(pitch);
+                let b = egui::Button::new(RichText::new(name.as_str()).small().color(if on {
+                    pal.text
+                } else {
+                    pal.text_dim
+                }))
+                .fill(if on {
+                    pal.accent.gamma_multiply(0.40)
+                } else {
+                    pal.control
+                })
+                .min_size(vec2(84.0, 30.0));
+                if ui
+                    .add(b)
+                    .on_hover_text(format!("{name} · note {pitch}"))
+                    .clicked()
+                {
+                    self.preview(track_id, *pitch, vel);
+                }
+            }
+        });
+    }
+
+    /// Computer-keyboard performance: while the pattern editor or Keys tab
+    /// is showing, unmapped-modifier key presses audition notes on the
+    /// selected track. `Z X C V B N M` are the white keys C–B and
+    /// `S D G H J` the black keys C# D# F# G# A#; `Q`/`W` shift the octave a
+    /// full step and holding Shift raises it another octave. Drum tracks map
+    /// the keys across the kit's piece pitches instead. Fires once per
+    /// physical press (key auto-repeat is ignored) at the editor's velocity;
+    /// release does nothing — previews are fixed-length.
+    pub(super) fn keyboard_play(&mut self, ctx: &Context) {
+        if self.tab != super::Tab::Editor && self.tab != super::Tab::Keys {
+            return;
+        }
+        let presses: Vec<(Key, bool)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
+                        Some((*key, modifiers.shift))
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        if presses.is_empty() {
+            return;
+        }
+        let Some(track_id) = self.sel.track else {
+            return;
+        };
+        let Some(track) = ops::track(&self.project, track_id) else {
+            return;
+        };
+        let drum_pitches = track
+            .shows_drum_grid()
+            .then(|| drum_keyboard_pitches(track));
+        let velocity = self.editor.velocity;
+        for (key, shift) in presses {
+            if drum_pitches.is_none() {
+                match key {
+                    Key::Q => {
+                        self.editor.kb_octave =
+                            (self.editor.kb_octave - 1).clamp(KB_OCTAVE_MIN, KB_OCTAVE_MAX);
+                        continue;
+                    }
+                    Key::W => {
+                        self.editor.kb_octave =
+                            (self.editor.kb_octave + 1).clamp(KB_OCTAVE_MIN, KB_OCTAVE_MAX);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            let pitch = match &drum_pitches {
+                Some(pitches) => kb_key_index(key).and_then(|i| pitches.get(i).copied()),
+                None => key_to_pitch(key, self.editor.kb_octave).and_then(|p| {
+                    let p = if shift { p.saturating_add(12) } else { p };
+                    (p <= ops::MAX_PITCH).then_some(p)
+                }),
+            };
+            if let Some(pitch) = pitch {
+                self.preview(track_id, pitch, velocity);
+            }
+        }
+    }
+
+    /// MIDI pitches + symbol for diatonic `degree` of the song key under the
+    /// chord strip's quality override, voiced around the track's home pitch.
+    /// `None` when the chord voices to nothing in MIDI range.
+    fn chord_pitches(&self, track: &Track, degree: usize) -> Option<(Vec<u8>, String)> {
+        let key = self.project.key;
+        let quality = self
+            .editor
+            .chord_quality
+            .unwrap_or_else(|| key.degree_chord_quality(degree));
+        let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
+        let home = sidebar::audition_params(track, track.instrument.default_pitch()).0;
+        let tones = ops::chord_notes(&spec, kb_home_octave(track), self.editor.velocity);
+        let pitches = ops::chord_midi_pitches(&tones, home);
+        (!pitches.is_empty()).then(|| (pitches, spec.symbol()))
+    }
+
+    /// Stamps diatonic chord `degree` into the selected melodic track's
+    /// current pattern at the pointer (or playhead): a block chord, or a
+    /// strum rolled `chord_spacing` steps in `chord_direction` order when
+    /// the spacing is non-zero. One undo step; the new notes become the
+    /// selection and the chord is auditioned.
+    pub(super) fn stamp_diatonic_chord(&mut self, degree: usize, ctx: &Context) {
+        let Some(track) = self.selected_track() else {
+            return;
+        };
+        if track.shows_drum_grid() {
+            self.set_status(
+                StatusKind::Warning,
+                "Chords stamp into melodic tracks — the drum grid has no chord tones.",
+            );
+            return;
+        }
+        let Some(pid) = self.current_pattern_id(track) else {
+            return;
+        };
+        let (track_id, pid) = (track.id, pid);
+        let Some((pitches, symbol)) = self.chord_pitches(track, degree) else {
+            self.set_status(
+                StatusKind::Warning,
+                "That chord has no notes in MIDI range.",
+            );
+            return;
+        };
+        let pattern_len = ops::pattern(track, pid).map_or(16, |p| p.length);
+        let step = self
+            .editor_paste_target(ctx)
+            .map(|(s, _)| s)
+            .unwrap_or(self.transport.position);
+        // A chord slot: half the pattern, capped at one bar.
+        let duration = (f64::from(pattern_len) * 0.5).clamp(4.0, 16.0);
+        let velocity = self.editor.velocity;
+        let spacing = self.editor.chord_spacing;
+        let direction = self.editor.chord_direction;
+        let mut new = Vec::new();
+        self.edit(&format!("Stamp {symbol}"), None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                new = if spacing > 0.0 {
+                    ops::stamp_strum(pat, step, &pitches, spacing, direction, duration, velocity)
+                } else {
+                    ops::stamp_chord(pat, step, &pitches, duration, velocity)
+                };
+            }
+        });
+        if new.is_empty() {
+            self.set_status(
+                StatusKind::Warning,
+                format!("Could not stamp {symbol} — the pattern is at the note limit."),
+            );
+            return;
+        }
+        let n = new.len();
+        self.sel.notes = new.into_iter().collect();
+        self.focus = super::Focus::Editor;
+        for &pitch in &pitches {
+            self.preview(track_id, pitch, 0.9);
+        }
+        self.set_status(
+            StatusKind::Success,
+            format!("Stamped {symbol} — {n} note{}.", sidebar::plural(n)),
+        );
+    }
+
+    /// Hover audition for the chord strip: plays the chord's tones once.
+    fn audition_diatonic_chord(&self, degree: usize) {
+        let Some(track) = self.selected_track() else {
+            return;
+        };
+        if track.shows_drum_grid() {
+            return;
+        }
+        if let Some((pitches, _)) = self.chord_pitches(track, degree) {
+            for &pitch in pitches.iter().take(4) {
+                self.preview(track.id, pitch, 0.7);
+            }
+        }
+    }
+
+    /// Flips the scale-highlight row tint (chord-strip toggle).
+    pub(super) fn toggle_scale_highlight(&mut self) {
+        self.editor.scale_highlight = !self.editor.scale_highlight;
+    }
+
+    /// Collapsible chord strip above the pattern editor: the seven diatonic
+    /// chords of the song key as one-click stamps, a quality override, strum
+    /// direction/spacing and the scale-highlight toggle. View state lives on
+    /// [`EditorView`]; stamping goes through [`Self::stamp_diatonic_chord`].
+    fn chord_strip(&mut self, ui: &mut Ui, track: &Track) {
+        let pal = self.palette();
+        let open = self.editor.chord_open;
+        egui::Frame::new()
+            .inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 3,
+                bottom: 3,
+            })
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+                    let b = egui::Button::new(RichText::new(if open { "▾" } else { "▸" }).small())
+                        .min_size(vec2(22.0, 22.0));
+                    if ui
+                        .add(b)
+                        .on_hover_text("Show or hide the chord strip")
+                        .clicked()
+                    {
+                        self.editor.chord_open = !self.editor.chord_open;
+                    }
+                    ui.label(RichText::new("Chords").small().color(pal.text_dim));
+                    ui.label(
+                        RichText::new(self.project.key.name())
+                            .small()
+                            .color(pal.text_faint),
+                    );
+                    if !track.shows_drum_grid() {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let on = self.editor.scale_highlight;
+                            let text = if on { "Scale ●" } else { "Scale" };
+                            let resp = ui.add(
+                                egui::Button::new(RichText::new(text).small())
+                                    .min_size(vec2(0.0, 22.0)),
+                            );
+                            if resp
+                                .on_hover_text("Tint piano-roll rows on the song key's scale notes")
+                                .clicked()
+                            {
+                                self.toggle_scale_highlight();
+                            }
+                        });
+                    }
+                });
+            });
+        if !open {
+            return;
+        }
+        if track.shows_drum_grid() {
+            ui.horizontal(|ui| {
+                theme::hint(
+                    ui,
+                    pal,
+                    "Chords stamp into melodic tracks — select a piano, bass, keys or similar track.",
+                );
+            });
+            return;
+        }
+        let key = self.project.key;
+        let mut stamp = None;
+        let mut hover_degree = None;
+        egui::Frame::new()
+            .inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 1,
+                bottom: 4,
+            })
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                    for degree in 0..7 {
+                        let quality = self
+                            .editor
+                            .chord_quality
+                            .unwrap_or_else(|| key.degree_chord_quality(degree));
+                        let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
+                        let label = format!("{}·{}", key.degree_numeral(degree), spec.symbol());
+                        let resp = ui
+                            .add(
+                                egui::Button::new(RichText::new(label).small())
+                                    .min_size(vec2(46.0, 24.0)),
+                            )
+                            .on_hover_text(format!(
+                                "{} — click to stamp at the pointer or playhead",
+                                spec.symbol()
+                            ));
+                        if resp.hovered() {
+                            hover_degree = Some(degree);
+                        }
+                        if resp.clicked() {
+                            stamp = Some(degree);
+                        }
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Type").small().color(pal.text_faint));
+                    egui::ComboBox::from_id_salt(("chord-quality", track.id))
+                        .width(96.0)
+                        .selected_text(self.editor.chord_quality.map_or("Diatonic", |q| q.label()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.editor.chord_quality, None, "Diatonic");
+                            for q in ChordQuality::ALL {
+                                ui.selectable_value(
+                                    &mut self.editor.chord_quality,
+                                    Some(q),
+                                    q.label(),
+                                );
+                            }
+                        });
+                    ui.label(RichText::new("Roll").small().color(pal.text_faint));
+                    egui::ComboBox::from_id_salt(("chord-spacing", track.id))
+                        .width(76.0)
+                        .selected_text(chord_spacing_label(self.editor.chord_spacing))
+                        .show_ui(ui, |ui| {
+                            for (v, l) in
+                                [(0.0, "Block"), (0.25, "1/64"), (0.5, "1/32"), (1.0, "1/16")]
+                            {
+                                ui.selectable_value(&mut self.editor.chord_spacing, v, l)
+                                    .on_hover_text("Strum spacing between chord tones (steps)");
+                            }
+                        });
+                    let strumming = self.editor.chord_spacing > 0.0;
+                    ui.add_enabled_ui(strumming, |ui| {
+                        egui::ComboBox::from_id_salt(("chord-direction", track.id))
+                            .width(64.0)
+                            .selected_text(self.editor.chord_direction.label())
+                            .show_ui(ui, |ui| {
+                                for d in ops::StrumDirection::ALL {
+                                    ui.selectable_value(
+                                        &mut self.editor.chord_direction,
+                                        d,
+                                        d.label(),
+                                    );
+                                }
+                            });
+                    });
+                    theme::hint(
+                        ui,
+                        pal,
+                        "Click a chord to stamp it at the pointer or playhead",
+                    );
+                });
+            });
+        // Hover audition: one stab per chord entered, not per frame.
+        let hover_id = egui::Id::new("cadence.editor.chord_hover");
+        let prev = ui
+            .ctx()
+            .data(|d| d.get_temp::<usize>(hover_id))
+            .unwrap_or(usize::MAX);
+        let now = hover_degree.unwrap_or(usize::MAX);
+        if now != prev {
+            ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
+            if let Some(d) = hover_degree {
+                self.audition_diatonic_chord(d);
+            }
+        }
+        if let Some(d) = stamp {
+            self.stamp_diatonic_chord(d, ui.ctx());
+        }
+    }
+
     // ----- drum grid --------------------------------------------------------
 
-    fn drum_toolbar(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
+    fn drum_toolbar(&mut self, ui: &mut Ui, track: &Track, pid: u64, rows: &[(u8, &str)]) {
+        let pal = self.palette();
         egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 4 }).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 5.0);
-                theme::color_dot(ui, CORAL, 6.0);
-                ui.label(RichText::new("Step sequencer").small().color(TEXT_DIM));
-                ui.label(RichText::new("Velocity").small().color(TEXT_FAINT));
+                theme::color_dot(ui, pal.danger, 6.0);
+                ui.label(RichText::new("Step sequencer").small().color(pal.text_dim));
+                ui.label(RichText::new("Velocity").small().color(pal.text_faint));
                 let mut v = self.editor.velocity;
                 ui.spacing_mut().slider_width = 120.0;
                 if ui.add(egui::Slider::new(&mut v, 0.05..=1.0).custom_formatter(|x, _| format!("{:.0}%", x * 100.0))).changed() {
                     self.editor.velocity = v;
                 }
-                if ui.add(egui::Button::new("Fill").small()).on_hover_text("Four-on-the-floor kick every beat").clicked() {
+                // Fill hits the top row: the kick for built-in drums and the
+                // conventional first piece of a kit.
+                let fill_pitch = rows.first().map_or(36, |(pitch, _)| *pitch);
+                if ui.add(egui::Button::new("Fill").small()).on_hover_text("Four-on-the-floor on the top row (the kick for the built-in kit)").clicked() {
                     let vel = self.editor.velocity;
                     self.edit("Fill pattern", None, |p| {
                         if let Some(pat) = ops::pattern_mut(p, track.id, pid) {
                             for s in (0..pat.length).step_by(4) {
-                                ops::set_drum(pat, 36, s, true, vel);
+                                ops::set_drum(pat, fill_pitch, s, true, vel);
                             }
                         }
                     });
                 }
-                let stray = ops::pattern(track, pid).map_or(0, |p| p.notes.iter().filter(|n| !DRUMS.iter().any(|(d, _)| *d == n.pitch)).count());
+                let stray = ops::pattern(track, pid).map_or(0, |p| p.notes.iter().filter(|n| !rows.iter().any(|(d, _)| *d == n.pitch)).count());
                 if stray > 0 {
-                    ui.label(RichText::new(format!("{stray} off-kit note{}", sidebar::plural(stray))).small().color(theme::AMBER))
-                        .on_hover_text("Notes on pitches outside the 8 kit rows (e.g. imported). They still play; drag a row to move them is not possible here — open the mixer or re-map via MIDI.");
+                    ui.label(RichText::new(format!("{stray} off-kit note{}", sidebar::plural(stray))).small().color(pal.warn))
+                        .on_hover_text(format!("Notes on pitches outside the {} kit row{} (e.g. imported). They still play; the grid only edits row pitches — re-map them via MIDI or the piano roll.", rows.len(), sidebar::plural(rows.len())));
+                }
+                let n = self.sel.notes.len();
+                let off_grid = ops::pattern(track, pid).map_or(0, |p| {
+                    p.notes.iter().filter(|n| n.start.fract() != 0.0).count()
+                });
+                if (n > 0 || off_grid > 0)
+                    && ui.add(egui::Button::new("Quantize").small()).on_hover_text("Snap note starts to the 1/16 grid — selected notes, or every note when nothing is selected").clicked()
+                {
+                    self.quantize_notes(track.id, pid);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::hint(ui, "Click or drag to paint steps · Shift+click cycles accents · right-click erases");
+                    theme::hint(ui, pal, "Click or drag to paint steps · Shift+click cycles accents · right-click erases");
                 });
             });
         });
     }
 
     fn drum_editor(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
-        self.drum_toolbar(ui, track, pid);
+        let rows = track.drum_rows();
+        self.drum_toolbar(ui, track, pid, &rows);
         let Some(pat) = ops::pattern(track, pid).cloned() else {
             return;
         };
@@ -1505,7 +2445,7 @@ impl CadenceApp {
             pos2(grid.left(), area.top()),
             pos2(grid.right(), grid.top()),
         );
-        let row_h = grid.height() / DRUMS.len() as f32;
+        let row_h = grid.height() / rows.len() as f32;
         // Zoom clamps: never smaller than "whole pattern fits", never below MIN_PPS.
         let fit_pps = grid.width() / pat.length as f32;
         let pps = self
@@ -1519,6 +2459,7 @@ impl CadenceApp {
             vel: Rect::NOTHING,
             keys: labels,
             ruler,
+            kb: Rect::NOTHING,
             labels,
         };
         let g = DrumGrid {
@@ -1529,6 +2470,7 @@ impl CadenceApp {
             scroll_x: self.editor.drum_scroll_x,
             row_h,
             len: pat.length as f64,
+            rows: &rows,
         };
 
         if ui.rect_contains_pointer(grid) {
@@ -1572,7 +2514,7 @@ impl CadenceApp {
         track: &Track,
         pid: u64,
         pat: &Pattern,
-        g: &DrumGrid,
+        g: &DrumGrid<'_>,
         resp: &egui::Response,
     ) {
         let (pressed, shift, secondary_pressed, secondary_down) = ui.input(|i| {
@@ -1587,7 +2529,7 @@ impl CadenceApp {
             self.focus = super::Focus::Editor;
             if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
                 if let Some((row, step)) = g.cell(pos) {
-                    let pitch = DRUMS[row].0;
+                    let pitch = g.rows[row].0;
                     let hit = ops::drum_hit(pat, pitch, step).is_some();
                     if shift && hit {
                         self.edit("Drum accent", None, |p| {
@@ -1629,7 +2571,7 @@ impl CadenceApp {
         if resp.dragged_by(PointerButton::Primary) {
             if let (Some(on), Some(pos)) = (self.editor.drum_paint, resp.interact_pointer_pos()) {
                 if let Some((row, step)) = g.cell(pos) {
-                    let pitch = DRUMS[row].0;
+                    let pitch = g.rows[row].0;
                     let cur = ops::drum_hit(pat, pitch, step).is_some();
                     if cur != on {
                         let vel = self.editor.velocity;
@@ -1659,7 +2601,7 @@ impl CadenceApp {
         if self.editor.right_erase {
             if let Some(pos) = resp.interact_pointer_pos() {
                 if let Some((row, step)) = g.cell(pos) {
-                    let pitch = DRUMS[row].0;
+                    let pitch = g.rows[row].0;
                     if ops::drum_hit(pat, pitch, step).is_some() {
                         self.edit("Erase drum step", Some("drum-erase"), |p| {
                             if let Some(pat) = ops::pattern_mut(p, track.id, pid) {
@@ -1672,24 +2614,42 @@ impl CadenceApp {
         }
     }
 
-    fn paint_drum_grid(&self, ui: &Ui, track: &Track, pat: &Pattern, g: &DrumGrid) {
+    fn paint_drum_grid(&self, ui: &Ui, track: &Track, pat: &Pattern, g: &DrumGrid<'_>) {
+        let pal = self.palette();
         let p = ui.painter_at(g.grid);
         let color = theme::rgb(track.color);
-        for row in 0..DRUMS.len() {
+        // Rows whose piece is held on the computer keyboard glow.
+        let kb_pitches = drum_keyboard_pitches(track);
+        let held: BTreeSet<u8> = held_keyboard_keys(ui.ctx())
+            .iter()
+            .filter_map(|&i| kb_pitches.get(i).copied())
+            .collect();
+        for row in 0..g.rows.len() {
             let y = g.row_y(row);
             let r = Rect::from_min_size(pos2(g.grid.left(), y), vec2(g.grid.width(), g.row_h));
-            p.rect_filled(r, 0.0, if row % 2 == 1 { CANVAS_ALT } else { CANVAS });
+            p.rect_filled(
+                r,
+                0.0,
+                if row % 2 == 1 {
+                    pal.canvas_alt
+                } else {
+                    pal.canvas
+                },
+            );
+            if held.contains(&g.rows[row].0) {
+                p.rect_filled(r, 0.0, pal.accent.gamma_multiply(0.10));
+            }
         }
         let s0 = g.step(g.grid.left()).max(0.0).floor() as i64;
         let s1 = g.step(g.grid.right()).ceil() as i64;
         for s in s0.max(0)..=(s1.min(pat.length as i64 + 16)) {
             let x = g.x(s as f64);
             if s % 16 == 0 {
-                p.vline(x, g.grid.y_range(), Stroke::new(1.0_f32, GRID_BAR));
+                p.vline(x, g.grid.y_range(), Stroke::new(1.0_f32, pal.grid_bar));
             } else if s % 4 == 0 {
-                p.vline(x, g.grid.y_range(), Stroke::new(1.0_f32, GRID_BEAT));
+                p.vline(x, g.grid.y_range(), Stroke::new(1.0_f32, pal.grid_beat));
             } else if g.pps > 18.0 {
-                p.vline(x, g.grid.y_range(), Stroke::new(0.5_f32, GRID_FAINT));
+                p.vline(x, g.grid.y_range(), Stroke::new(0.5_f32, pal.grid_faint));
             }
         }
         for s in 4..pat.length as i64 {
@@ -1706,7 +2666,7 @@ impl CadenceApp {
                         ),
                     ),
                     0.0,
-                    Color32::from_white_alpha(4),
+                    pal.text.gamma_multiply(0.025),
                 );
             }
         }
@@ -1720,7 +2680,7 @@ impl CadenceApp {
         }
         // Notes
         for n in &pat.notes {
-            let Some(row) = DRUMS.iter().position(|(d, _)| *d == n.pitch) else {
+            let Some(row) = g.rows.iter().position(|(d, _)| *d == n.pitch) else {
                 continue;
             };
             let step = n.start.floor();
@@ -1735,13 +2695,13 @@ impl CadenceApp {
             p.rect_filled(
                 cell,
                 4.0,
-                theme::mix(BORDER_SOFT, color, 0.35 + n.velocity * 0.65),
+                theme::mix(pal.border_soft, color, 0.35 + n.velocity * 0.65),
             );
             if selected {
                 p.rect_stroke(
                     cell.expand(1.0),
                     4.0,
-                    Stroke::new(1.5_f32, TEXT),
+                    Stroke::new(1.5_f32, pal.text),
                     StrokeKind::Inside,
                 );
             }
@@ -1761,7 +2721,7 @@ impl CadenceApp {
             if let Some(local) = self.pattern_playhead(track, pat.id) {
                 let x = g.x(local);
                 if x >= g.grid.left() && x <= g.grid.right() {
-                    p.vline(x, g.grid.y_range(), Stroke::new(1.5_f32, LIME));
+                    p.vline(x, g.grid.y_range(), Stroke::new(1.5_f32, pal.accent));
                 }
             }
         }
@@ -1771,22 +2731,29 @@ impl CadenceApp {
                 Align2::CENTER_CENTER,
                 "Empty beat — click steps to add hits",
                 FontId::proportional(13.0),
-                TEXT_FAINT,
+                pal.text_faint,
             );
         }
         p.rect_stroke(
             g.grid,
             0.0,
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
             StrokeKind::Inside,
         );
     }
 
-    fn paint_drum_labels(&mut self, ui: &mut Ui, track: &Track, g: &DrumGrid) {
+    fn paint_drum_labels(&mut self, ui: &mut Ui, track: &Track, g: &DrumGrid<'_>) {
+        let pal = self.palette();
         let p = ui.painter_at(g.labels);
-        p.rect_filled(g.labels, 0.0, PANEL);
+        p.rect_filled(g.labels, 0.0, pal.panel);
+        // Labels for pieces held on the computer keyboard glow too.
+        let kb_pitches = drum_keyboard_pitches(track);
+        let held: BTreeSet<u8> = held_keyboard_keys(ui.ctx())
+            .iter()
+            .filter_map(|&i| kb_pitches.get(i).copied())
+            .collect();
         let mut preview = None;
-        for (row, (pitch, name)) in DRUMS.iter().enumerate() {
+        for (row, (pitch, name)) in g.rows.iter().enumerate() {
             let y = g.row_y(row);
             let r = Rect::from_min_max(
                 pos2(g.labels.left(), y),
@@ -1796,10 +2763,12 @@ impl CadenceApp {
             p.rect_filled(
                 r,
                 0.0,
-                if resp.hovered() {
-                    theme::mix(PANEL, theme::CONTROL_HOVER, 0.5)
+                if held.contains(pitch) {
+                    pal.accent.gamma_multiply(0.16)
+                } else if resp.hovered() {
+                    theme::mix(pal.panel, pal.control_hover, 0.5)
                 } else {
-                    PANEL
+                    pal.panel
                 },
             );
             p.text(
@@ -1807,14 +2776,18 @@ impl CadenceApp {
                 Align2::LEFT_CENTER,
                 format!("{:02}", row + 1),
                 FontId::monospace(10.0),
-                TEXT_FAINT,
+                pal.text_faint,
             );
             p.text(
                 pos2(r.left() + 34.0, r.center().y),
                 Align2::LEFT_CENTER,
                 *name,
                 FontId::proportional(12.0),
-                if resp.hovered() { TEXT } else { TEXT_DIM },
+                if resp.hovered() {
+                    pal.text
+                } else {
+                    pal.text_dim
+                },
             );
             if resp.hovered() {
                 p.text(
@@ -1822,7 +2795,7 @@ impl CadenceApp {
                     Align2::RIGHT_CENTER,
                     "▶",
                     FontId::proportional(10.0),
-                    PERIWINKLE,
+                    pal.link,
                 );
             }
             if resp.on_hover_text(format!("Preview {name}")).clicked() {
@@ -1831,22 +2804,23 @@ impl CadenceApp {
             p.hline(
                 g.labels.x_range(),
                 r.bottom(),
-                Stroke::new(0.5_f32, BORDER_SOFT),
+                Stroke::new(0.5_f32, pal.border_soft),
             );
         }
         p.vline(
             g.labels.right(),
             g.labels.y_range(),
-            Stroke::new(1.0_f32, BORDER),
+            Stroke::new(1.0_f32, pal.border),
         );
         if let Some(pitch) = preview {
             self.preview(track.id, pitch, 0.9);
         }
     }
 
-    fn paint_drum_ruler(&self, ui: &Ui, track: &Track, pat: &Pattern, g: &DrumGrid) {
+    fn paint_drum_ruler(&self, ui: &Ui, track: &Track, pat: &Pattern, g: &DrumGrid<'_>) {
+        let pal = self.palette();
         let p = ui.painter_at(g.ruler);
-        p.rect_filled(g.ruler, 0.0, PANEL);
+        p.rect_filled(g.ruler, 0.0, pal.panel);
         for s in 0..pat.length {
             if s.is_multiple_of(4) {
                 let x = g.x(s as f64);
@@ -1860,7 +2834,7 @@ impl CadenceApp {
                     Align2::LEFT_CENTER,
                     label,
                     FontId::proportional(10.0),
-                    TEXT_DIM,
+                    pal.text_dim,
                 );
             }
         }
@@ -1873,7 +2847,7 @@ impl CadenceApp {
                         pos2(x + 5.0, g.ruler.bottom() - 8.0),
                         pos2(x, g.ruler.bottom() - 1.0),
                     ],
-                    LIME,
+                    pal.accent,
                     Stroke::NONE,
                 ));
             }

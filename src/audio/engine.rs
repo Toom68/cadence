@@ -371,6 +371,15 @@ impl AudioEngine {
         let _ = self.send(Command::Metronome(enabled));
     }
 
+    /// Installs the SoundFont catalog for tracks with `Track::font` set.
+    /// Fonts are parsed on the caller's thread ([`crate::font::load_library`])
+    /// and pushed to the audio callback — typically once at startup and again
+    /// when the font folder changes. An empty catalog makes font tracks fall
+    /// back to their preset/built-in sound.
+    pub fn set_fonts(&self, library: Arc<crate::font::FontLibrary>) {
+        let _ = self.send(Command::SetFonts(library));
+    }
+
     pub fn status(&self) -> TransportStatus {
         let s = &self.shared;
         TransportStatus {

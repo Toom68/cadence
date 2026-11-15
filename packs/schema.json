@@ -34,7 +34,11 @@
     "preset": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "oscillators"],
+      "required": ["id", "name"],
+      "anyOf": [
+        { "required": ["oscillators"] },
+        { "required": ["kit"] }
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -49,7 +53,8 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 4,
-          "items": { "$ref": "#/$defs/oscillator" }
+          "items": { "$ref": "#/$defs/oscillator" },
+          "description": "1-4 oscillators. Required for melodic presets; may be omitted entirely when `kit` is present (any listed oscillators are still validated, but inert)."
         },
         "envelope": {
           "$ref": "#/$defs/envelope",
@@ -110,8 +115,94 @@
           "maximum": 8,
           "default": 0.8,
           "description": "Seconds the library preview/audition holds the note. Preview metadata only; never affects the rendered signal."
+        },
+        "kit": {
+          "$ref": "#/$defs/kit",
+          "description": "Optional drum kit: an ordered list of named one-shot voices, each mapped to a MIDI pitch. When present the preset plays as a kit — note-on picks the piece with the nearest pitch (exact match wins, ties go to the lower pitch) — and the top-level synthesis fields become inert metadata that is still range-validated when present. Pair with the drum editor in the app."
         }
       }
+    },
+    "kit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pieces"],
+      "properties": {
+        "pieces": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/kitPiece" },
+          "description": "Ordered piece list; array order is the kit's display/row order. Piece pitches must be unique (0-127)."
+        }
+      }
+    },
+    "kitPiece": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "pitch", "voice"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pitch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127,
+          "description": "MIDI pitch this piece answers to. Must be unique within the kit; unmapped notes play the nearest piece."
+        },
+        "voice": {
+          "$ref": "#/$defs/kitVoice",
+          "description": "The piece's synthesis voice."
+        }
+      }
+    },
+    "kitVoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oscillators": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/oscillator" },
+          "description": "1-4 oscillators; required (a voice with none fails validation, like a melodic preset)."
+        },
+        "envelope": {
+          "$ref": "#/$defs/envelope",
+          "description": "ADSR-style amplitude envelope in seconds."
+        },
+        "pitch_envelope": { "$ref": "#/$defs/pitchEnvelope" },
+        "filter_envelope": { "$ref": "#/$defs/filterEnvelope" },
+        "filter_cutoff": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 20000,
+          "default": 20000,
+          "description": "Low-pass filter cutoff in Hz."
+        },
+        "filter_resonance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.95,
+          "default": 0,
+          "description": "Resonance of the low-pass filter, normalized 0..0.95."
+        },
+        "lfo": { "$ref": "#/$defs/lfo" },
+        "bit_depth": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 24,
+          "default": 24,
+          "description": "Bitcrush depth. 24 = full quality; 4-8 gives lo-fi grit."
+        },
+        "sample_hold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 1,
+          "description": "Sample-and-hold interval in samples. 1 = off; higher values add aliasing grit."
+        },
+        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 }
+      },
+      "description": "Synthesis fields of one kit piece — identical shapes, ranges and defaults to the melodic fields of a preset (no id/name/monophonic/audition). All fields optional with defaults; `oscillators` must contain 1-4 entries."
     },
     "oscillator": {
       "type": "object",

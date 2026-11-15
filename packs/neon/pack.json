@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "id": "neon",
+  "name": "Neon",
+  "description": "Modern detailed electronic voices: supersaw stacks, Reese and growl basses, resonant acid squelch, bells, formant wobble, sub drops and filtered-noise sweeps. Clean 24-bit synthesis throughout - layered, detuned and always moving. Pure synthesis, no samples.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "neon.supersaw-lead",
+      "audition_note": 64,
+      "audition_duration": 1.4,
+      "name": "Supersaw Lead",
+      "description": "Four-saw supersaw stack in two detuned pairs with a bright filter snap that settles dark. Monophonic lead voice; plays best an octave up for maximum width.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -15.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 15.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.004, "decay": 0.3, "sustain": 0.65, "release": 0.25 },
+      "filter_envelope": { "amount_octaves": 1.8, "decay": 0.35 },
+      "filter_cutoff": 3200.0,
+      "filter_resonance": 0.3,
+      "lfo": { "waveform": "sine", "rate_hz": 0.4, "pitch_semitones": 0.0, "filter_octaves": 0.9, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.72,
+      "monophonic": true
+    },
+    {
+      "id": "neon.supersaw-pad",
+      "audition_note": 55,
+      "audition_duration": 3.0,
+      "name": "Supersaw Pad",
+      "description": "Wide detuned supersaw pad with a slow swell, breathing filter LFO and a long release. Hold chords for the full wash; stacks beautifully under leads.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -13.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 13.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -21.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 21.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.7, "decay": 0.9, "sustain": 0.85, "release": 3.5 },
+      "filter_envelope": { "amount_octaves": -1.5, "decay": 2.8 },
+      "filter_cutoff": 3800.0,
+      "filter_resonance": 0.22,
+      "lfo": { "waveform": "sine", "rate_hz": 0.16, "pitch_semitones": 0.0, "filter_octaves": 1.3, "amplitude": 0.25 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.62,
+      "monophonic": false
+    },
+    {
+      "id": "neon.acid-line",
+      "audition_note": 57,
+      "audition_duration": 1.0,
+      "name": "Acid Line",
+      "description": "Clean resonant acid squelch: saw plus a quiet high pulse edge, filter envelope that snaps open then chokes down, and a wobbling filter LFO. Gate notes short for classic 303-style stabs.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.85, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.18, "frequency_ratio": 2.0, "detune_cents": 5.0, "pulse_width": 0.2 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.32, "sustain": 0.5, "release": 0.12 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.2 },
+      "filter_cutoff": 650.0,
+      "filter_resonance": 0.85,
+      "lfo": { "waveform": "triangle", "rate_hz": 2.8, "pitch_semitones": 0.0, "filter_octaves": 0.7, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.75,
+      "monophonic": true
+    },
+    {
+      "id": "neon.reese-bass",
+      "audition_note": 33,
+      "audition_duration": 1.4,
+      "name": "Reese Bass",
+      "description": "Beating detuned Reese bass: saw pairs an octave apart plus a sine sub anchor, dark through a low-pass. Monophonic; the mid-low register is where the beating lives.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -22.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 22.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 0.5, "detune_cents": -15.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.006, "decay": 0.5, "sustain": 0.8, "release": 0.35 },
+      "filter_cutoff": 480.0,
+      "filter_resonance": 0.28,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.7,
+      "monophonic": true
+    },
+    {
+      "id": "neon.neon-pluck",
+      "audition_note": 69,
+      "audition_duration": 0.8,
+      "name": "Neon Pluck",
+      "description": "Harmonic pluck with staggered partial decays: the top sine ping dies first so the tone darkens as it rings. Bright attack snap plus a quick downward pitch settle.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.65, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.3 },
+        { "waveform": "triangle", "level": 0.35, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.14 },
+        { "waveform": "sine", "level": 0.2, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.07 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.3, "sustain": 0.08, "release": 0.07 },
+      "pitch_envelope": { "amount_semitones": 8.0, "decay": 0.07 },
+      "filter_envelope": { "amount_octaves": 2.2, "decay": 0.1 },
+      "filter_cutoff": 5200.0,
+      "filter_resonance": 0.22,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.78,
+      "monophonic": false
+    },
+    {
+      "id": "neon.neon-bell",
+      "audition_note": 74,
+      "audition_duration": 2.0,
+      "name": "Neon Bell",
+      "description": "Inharmonic FM-style bell built from sine partials at non-integer ratios, each with its own decay so the partials separate as it rings. Playable as a lead or arpeggio voice.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.2 },
+        { "waveform": "sine", "level": 0.32, "frequency_ratio": 2.76, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.45 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 5.43, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.18 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.55, "sustain": 0.12, "release": 0.9 },
+      "pitch_envelope": { "amount_semitones": 4.0, "decay": 0.25 },
+      "filter_cutoff": 9500.0,
+      "filter_resonance": 0.15,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.72,
+      "monophonic": false
+    },
+    {
+      "id": "neon.formant-vox",
+      "audition_note": 60,
+      "audition_duration": 1.8,
+      "name": "Formant Vox",
+      "description": "Vocal-ish voice: detuned saws through a resonant mid filter that slowly opens on each note, plus a fast filter LFO that drifts vowel-like formants. Monophonic legato suits melody lines.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.09, "decay": 0.55, "sustain": 0.72, "release": 0.55 },
+      "filter_envelope": { "amount_octaves": -1.8, "decay": 1.6 },
+      "filter_cutoff": 1050.0,
+      "filter_resonance": 0.55,
+      "lfo": { "waveform": "triangle", "rate_hz": 4.6, "pitch_semitones": 0.35, "filter_octaves": 1.7, "amplitude": 0.25 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.68,
+      "monophonic": true
+    },
+    {
+      "id": "neon.arp-pluck",
+      "audition_note": 71,
+      "audition_duration": 0.6,
+      "name": "Arp Pluck",
+      "description": "Tight bright pluck for arpeggios and sequences: quick downward pitch settle, opening filter snap and short per-layer decays that thin the tone fast.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.4 },
+        { "waveform": "triangle", "level": 0.3, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.18 },
+        { "waveform": "sine", "level": 0.18, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.08 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.26, "sustain": 0.12, "release": 0.08 },
+      "pitch_envelope": { "amount_semitones": 5.0, "decay": 0.06 },
+      "filter_envelope": { "amount_octaves": 1.6, "decay": 0.1 },
+      "filter_cutoff": 6200.0,
+      "filter_resonance": 0.2,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.76,
+      "monophonic": false
+    },
+    {
+      "id": "neon.growl-bass",
+      "audition_note": 36,
+      "audition_duration": 1.1,
+      "name": "Growl Bass",
+      "description": "Detuned saw growl over a square sub: filter snaps open on the attack then chokes dark, with a fast triangle LFO wobbling the cutoff for movement. Monophonic.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 14.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.4, "sustain": 0.62, "release": 0.18 },
+      "filter_envelope": { "amount_octaves": 2.4, "decay": 0.16 },
+      "filter_cutoff": 320.0,
+      "filter_resonance": 0.62,
+      "lfo": { "waveform": "triangle", "rate_hz": 5.2, "pitch_semitones": 0.0, "filter_octaves": 0.9, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.72,
+      "monophonic": true
+    },
+    {
+      "id": "neon.supersaw-stab",
+      "audition_note": 64,
+      "audition_duration": 0.4,
+      "name": "Supersaw Stab",
+      "description": "Chord-stab voice: the same four-saw supersaw stack as the lead but with a very short envelope and a hard filter snap. Stab on offbeats or play quick staccato hits.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -16.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 16.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.32, "sustain": 0.04, "release": 0.05 },
+      "pitch_envelope": { "amount_semitones": 3.0, "decay": 0.05 },
+      "filter_envelope": { "amount_octaves": 2.6, "decay": 0.09 },
+      "filter_cutoff": 4800.0,
+      "filter_resonance": 0.32,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.82,
+      "monophonic": false
+    },
+    {
+      "id": "neon.wide-ensemble",
+      "audition_note": 57,
+      "audition_duration": 3.5,
+      "name": "Wide Ensemble",
+      "description": "Lush detuned ensemble pad: four saws spread across a wide detune range with a slow attack, opening filter sweep and gentle tremolo. For big emotional sections.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": -11.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 11.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -23.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 23.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.55, "decay": 0.8, "sustain": 0.82, "release": 2.8 },
+      "filter_envelope": { "amount_octaves": -1.2, "decay": 3.0 },
+      "filter_cutoff": 4200.0,
+      "filter_resonance": 0.18,
+      "lfo": { "waveform": "sine", "rate_hz": 0.14, "pitch_semitones": 0.0, "filter_octaves": 1.1, "amplitude": 0.3 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "neon.noise-sweep",
+      "audition_note": 60,
+      "audition_duration": 3.0,
+      "name": "Noise Sweep",
+      "description": "Build texture: pitched-rate filtered noise over a quiet sub and saw wash, with the filter starting dark and sweeping open. Use for risers into drops or transition beds.",
+      "oscillators": [
+        { "waveform": "noise", "level": 0.7, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 2.6 },
+        { "waveform": "saw", "level": 0.22, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.8 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 2.0 }
+      ],
+      "envelope": { "attack": 0.25, "decay": 0.5, "sustain": 0.65, "release": 0.7 },
+      "filter_envelope": { "amount_octaves": -4.2, "decay": 2.0 },
+      "filter_cutoff": 6800.0,
+      "filter_resonance": 0.28,
+      "lfo": { "waveform": "sine", "rate_hz": 0.35, "pitch_semitones": 0.0, "filter_octaves": 1.2, "amplitude": 0.15 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.66,
+      "monophonic": false
+    },
+    {
+      "id": "neon.sub-drop",
+      "audition_note": 33,
+      "audition_duration": 1.6,
+      "name": "Sub Drop",
+      "description": "Modern sub bass that scoops up into each note: the pitch envelope starts the voice deep and slides it up to pitch. Sine body with a quiet octave and harmonic edge. Monophonic.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.8, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.45, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.18, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.45, "sustain": 0.85, "release": 0.3 },
+      "pitch_envelope": { "amount_semitones": -15.0, "decay": 0.5 },
+      "filter_cutoff": 420.0,
+      "filter_resonance": 0.12,
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.8,
+      "monophonic": true
+    },
+    {
+      "id": "neon.laser-zap",
+      "audition_note": 76,
+      "audition_duration": 0.5,
+      "name": "Laser Zap",
+      "description": "Aggressive high-register zap: narrow pulses with a fast downward chirp, filter snap and a very fast pitch LFO warble. Keep notes short and staccato.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.55, "frequency_ratio": 2.0, "detune_cents": -3.0, "pulse_width": 0.14 },
+        { "waveform": "pulse", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.42 },
+        { "waveform": "noise", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.05 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.2, "sustain": 0.35, "release": 0.06 },
+      "pitch_envelope": { "amount_semitones": 20.0, "decay": 0.08 },
+      "filter_envelope": { "amount_octaves": 2.4, "decay": 0.07 },
+      "filter_cutoff": 5200.0,
+      "filter_resonance": 0.42,
+      "lfo": { "waveform": "sine", "rate_hz": 10.5, "pitch_semitones": 1.6, "filter_octaves": 0.0, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.74,
+      "monophonic": true
+    },
+    {
+      "id": "neon.choir-pad",
+      "audition_note": 55,
+      "audition_duration": 3.5,
+      "name": "Choir Pad",
+      "description": "Choir-ish pad: three saws around a sine sub, slow attack, dark-to-open filter sweep, vibrato and a formant-style filter wobble. Hold long notes for the full vocal swell.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.38, "frequency_ratio": 1.0, "detune_cents": -14.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.38, "frequency_ratio": 1.0, "detune_cents": 3.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.38, "frequency_ratio": 1.0, "detune_cents": 17.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.75, "decay": 0.9, "sustain": 0.85, "release": 3.2 },
+      "filter_envelope": { "amount_octaves": -1.6, "decay": 2.4 },
+      "filter_cutoff": 1250.0,
+      "filter_resonance": 0.48,
+      "lfo": { "waveform": "sine", "rate_hz": 4.8, "pitch_semitones": 0.55, "filter_octaves": 1.1, "amplitude": 0.12 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.62,
+      "monophonic": false
+    },
+    {
+      "id": "neon.neon-organ",
+      "audition_note": 60,
+      "audition_duration": 2.0,
+      "name": "Neon Organ",
+      "description": "Retro-futurist organ: two detuned pulse draws beating against each other over an octave-down saw and a quiet high sine. Gentle attack and slow vibrato; great for chords.",
+      "oscillators": [
+        { "waveform": "pulse", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.45, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.33 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 0.5, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5 }
+      ],
+      "envelope": { "attack": 0.12, "decay": 0.6, "sustain": 0.8, "release": 0.9 },
+      "filter_envelope": { "amount_octaves": 0.8, "decay": 0.8 },
+      "filter_cutoff": 2600.0,
+      "filter_resonance": 0.22,
+      "lfo": { "waveform": "sine", "rate_hz": 5.5, "pitch_semitones": 0.4, "filter_octaves": 0.6, "amplitude": 0.0 },
+      "bit_depth": 24,
+      "sample_hold": 1,
+      "gain": 0.66,
+      "monophonic": false
+    }
+  ]
+}

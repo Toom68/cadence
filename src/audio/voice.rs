@@ -7,7 +7,7 @@ use super::dsp::{
     Svf, SvfCoefs,
 };
 use crate::model::{map_drum_pitch, pitch_hz, Instrument};
-use crate::packs::{InstrumentPreset, LfoWaveform, Waveform};
+use crate::packs::{InstrumentPreset, LfoWaveform, Waveform, MAX_KIT_PIECES};
 
 pub const MAX_PRESET_OSCILLATORS: usize = 4;
 /// Lowest pitch the plucked-string model tunes to; lower notes are folded up an octave.
@@ -186,11 +186,93 @@ impl PresetParams {
     }
 }
 
-/// What a track sounds like: one of the six built-in algorithms or a pack preset.
+/// A drum kit preset flattened into a fixed-size `Copy` value: `(pitch,
+/// voice)` pairs sorted by pitch so note-on can pick a piece without
+/// allocating. Built once per track snapshot by [`KitParams::from_kit`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KitParams {
+    /// `(pitch, voice)` pairs sorted by ascending pitch; only the first
+    /// `count` entries are meaningful.
+    pub pieces: [(u8, PresetParams); MAX_KIT_PIECES],
+    pub count: usize,
+}
+
+impl KitParams {
+    /// Flattens a preset's `kit` section into audio-ready piece params. Each
+    /// piece voice goes through
+    /// [`KitVoice::to_preset_stub`](crate::packs::KitVoice::to_preset_stub)
+    /// and then [`PresetParams::from_preset`], so the same clamping applies as
+    /// for melodic presets. Over-long or pitch-duplicated kits (only possible
+    /// on unvalidated data) are tolerated: pieces are truncated to
+    /// [`MAX_KIT_PIECES`] and sorted by pitch.
+    pub fn from_kit(p: &InstrumentPreset) -> Self {
+        let mut pieces = [(0u8, PresetParams::SINE); MAX_KIT_PIECES];
+        let mut count = 0;
+        if let Some(kit) = &p.kit {
+            for piece in kit.pieces.iter().take(MAX_KIT_PIECES) {
+                pieces[count] = (
+                    piece.pitch,
+                    PresetParams::from_preset(&piece.voice.to_preset_stub()),
+                );
+                count += 1;
+            }
+            pieces[..count].sort_by_key(|(pitch, _)| *pitch);
+        }
+        KitParams { pieces, count }
+    }
+
+    /// The voice for `pitch`: an exact pitch match wins; otherwise the
+    /// NEAREST piece pitch (ties resolve to the lower pitch, which sorted
+    /// order guarantees is seen first). An empty kit yields
+    /// [`PresetParams::SINE`] — validation prevents that, this is defensive.
+    pub fn piece_for(&self, pitch: u8) -> PresetParams {
+        if self.count == 0 {
+            return PresetParams::SINE;
+        }
+        let mut best = 0usize;
+        let mut best_dist = u16::MAX;
+        for (i, &(piece_pitch, _)) in self.pieces.iter().take(self.count).enumerate() {
+            let dist = (piece_pitch as i16 - pitch as i16).unsigned_abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best = i;
+                if dist == 0 {
+                    break;
+                }
+            }
+        }
+        self.pieces[best].1
+    }
+}
+
+/// Address of a General MIDI program inside an installed SoundFont: the
+/// stable [`crate::font::font_key`] of the font name plus the program number.
+/// `Copy` so it can live inside [`Sound`] on the audio thread; the parsed font
+/// itself is resolved through the renderer's font bank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FontKey {
+    pub font_key: u64,
+    /// GM program 0..=127.
+    pub program: u8,
+}
+
+/// What a track sounds like: one of the six built-in algorithms, a pack
+/// preset, a pack drum kit, or a sampled SoundFont program.
+// `Kit` is large (~5 KB of piece params) but must stay `Copy`: sounds are
+// duplicated into per-note `NoteStart`s and per-track `TrackParams` on the
+// audio thread, where allocation is forbidden. The copy is a flat memcpy.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sound {
     Builtin(Instrument),
     Preset(PresetParams),
+    /// A data-driven drum kit ([`crate::packs::KitSpec`]): one-shot voices
+    /// picked by pitch at note-on.
+    Kit(KitParams),
+    /// A sampled General MIDI program from an installed `.sf2` font. Rendered
+    /// by a per-track `rustysynth` instance, not by [`Voice`]; when the font is
+    /// missing the renderer substitutes the track's fallback sound instead.
+    Font(FontKey),
 }
 
 impl Sound {
@@ -198,11 +280,21 @@ impl Sound {
         match self {
             Sound::Builtin(i) => i.is_monophonic(),
             Sound::Preset(p) => p.mono,
+            // Kit pieces are one-shot polyphonic voices; `monophonic` is not a
+            // kit concept. Fonts are rendered by rustysynth, which is
+            // polyphonic per note.
+            Sound::Kit(_) | Sound::Font(_) => false,
         }
     }
 
+    /// One-shot drum-kit voices: the built-in eight-piece kit or a pack kit.
+    /// Used for seek-chase suppression (a drum hit is never re-armed
+    /// mid-ring). The built-in kit additionally gets same-kind choking in the
+    /// renderer — that path is matched on `Sound::Builtin(Instrument::Drums)`
+    /// directly because it relies on [`Voice::drum`]/[`drum_kind`], which kit
+    /// voices do not populate.
     pub fn is_drums(&self) -> bool {
-        matches!(self, Sound::Builtin(Instrument::Drums))
+        matches!(self, Sound::Builtin(Instrument::Drums) | Sound::Kit(_))
     }
 }
 
@@ -238,6 +330,7 @@ enum Kind {
     Piano,
     Bass,
     Pluck,
+    Guitar,
     Pad,
     Lead,
     Preset,
@@ -352,6 +445,19 @@ pub struct NoteStart {
 
 const HAT_FREQS: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
 const RIDE_FREQS: [f32; 6] = [312.0, 461.0, 548.0, 751.0, 887.0, 1237.0];
+/// Lowest pitch the guitar model tunes to; lower notes are folded up an octave.
+const GUITAR_MIN_HZ: f32 = 45.0;
+/// Guitar body resonances `(Hz, Q, mix weight)`: air/Helmholtz ~105 Hz, the
+/// main top "honk" ~215 Hz, presence ~450 Hz and the bridge "snap" ~3 kHz.
+/// Fixed frequencies — a real top's modes don't track the note.
+const GUITAR_BODY: [(f32, f32, f32); 4] = [
+    (105.0, 4.5, 0.5),
+    (215.0, 6.5, 0.8),
+    (450.0, 5.0, 0.6),
+    (3000.0, 8.0, 0.3),
+];
+/// Overall blend of the resonator sum into the string output.
+const GUITAR_BODY_MIX: f32 = 0.5;
 
 #[derive(Clone, Debug)]
 pub struct Voice {
@@ -407,6 +513,24 @@ pub struct Voice {
     ks_last: f32,
     ks_g: f32,
     ks_g_release: f32,
+    // Guitar-only state (the KS fields above are shared with `Kind::Pluck`).
+    /// Loop low-pass (2nd-order SVF) state and coefficients: bright at the
+    /// pick, closing toward `ks_fc_lo` as `ks_fenv` decays by `ks_fstep`.
+    /// A 2nd-order filter is used because its passband stays flat at the
+    /// note's own frequency — a one-pole's ~1.5%/cycle loss would kill
+    /// high notes outright (hundreds of loop cycles per second).
+    ks_sv: Svf,
+    ks_svc: SvfCoefs,
+    ks_fenv: f32,
+    ks_fstep: f32,
+    ks_fc_lo: f32,
+    ks_fc_hi: f32,
+    /// Parallel body resonators driven by the string output.
+    gt: [Svf; 4],
+    gtc: [SvfCoefs; 4],
+    /// Pick-burst transient length in samples (counted by `t`); the burst
+    /// itself is `f2` band-passed noise under `fc` coefficients.
+    g_pick: u32,
 }
 
 fn velocity_gain(v: f32) -> f32 {
@@ -467,6 +591,15 @@ impl Voice {
             ks_last: 0.0,
             ks_g: 0.0,
             ks_g_release: 0.0,
+            ks_sv: Svf::default(),
+            ks_svc: SvfCoefs::default(),
+            ks_fenv: 0.0,
+            ks_fstep: 0.0,
+            ks_fc_lo: 0.0,
+            ks_fc_hi: 0.0,
+            gt: [Svf::default(); 4],
+            gtc: [SvfCoefs::default(); 4],
+            g_pick: 0,
         };
         v.set_sample_rate(sample_rate);
         v
@@ -477,6 +610,9 @@ impl Voice {
         self.sr = sample_rate;
         self.inv_sr = 1.0 / sample_rate;
         self.ks = vec![0.0; (sample_rate / PLUCK_MIN_HZ) as usize + 4];
+        for (i, &(freq, q, _)) in GUITAR_BODY.iter().enumerate() {
+            self.gtc[i] = SvfCoefs::new(freq, q, sample_rate);
+        }
         self.active = false;
     }
 
@@ -532,6 +668,7 @@ impl Voice {
                 self.menv = Adsr::new(sr, 0.0015, 0.09, 0.12, 0.05);
             }
             Sound::Builtin(Instrument::Pluck) => self.start_pluck(),
+            Sound::Builtin(Instrument::Guitar) => self.start_guitar(),
             Sound::Builtin(Instrument::Pad) => {
                 self.kind = Kind::Pad;
                 self.amp = Adsr::new(sr, 0.55, 0.6, 0.85, 0.26);
@@ -546,37 +683,15 @@ impl Voice {
                 self.menv = Adsr::new(sr, 0.004, 0.18, 0.3, 0.1);
                 self.glide = time_coef(0.045, sr);
             }
-            Sound::Preset(p) => {
-                self.kind = Kind::Preset;
-                self.preset = p;
-                self.amp = Adsr::new(
-                    sr,
-                    finite(p.attack, 0.01).clamp(0.0, 5.0).max(0.001),
-                    finite(p.decay, 0.2).clamp(0.0, 10.0).max(0.001) / 4.0,
-                    finite(p.sustain, 0.7).clamp(0.0, 1.0),
-                    finite(p.release, 0.3).clamp(0.005, 20.0) / 5.0,
-                );
-                self.fc = SvfCoefs::new(p.cutoff, p.resonance_q(), sr);
-                self.hold_left = 0;
-                self.hold_value = 0.0;
-                self.pitch_env = finite(p.pitch_env_amount, 0.0).clamp(-48.0, 48.0);
-                self.pitch_env_coef =
-                    t60_coef(finite(p.pitch_env_decay, 0.2).clamp(0.005, 10.0), sr);
-                self.filter_env = finite(p.filter_env_amount, 0.0).clamp(-6.0, 6.0);
-                self.filter_env_coef =
-                    t60_coef(finite(p.filter_env_decay, 0.5).clamp(0.005, 20.0), sr);
-                self.lfo = 0.0;
-                for k in 0..MAX_PRESET_OSCILLATORS {
-                    self.e[k] = 1.0;
-                    self.c[k] = if p.oscs[k].decay > 0.0 {
-                        t60_coef(p.oscs[k].decay, sr)
-                    } else {
-                        1.0
-                    };
-                }
-                let rng = &mut self.rng;
-                self.noise_value.iter_mut().for_each(|x| *x = rng.noise());
-            }
+            Sound::Preset(p) => self.start_preset(p),
+            // A kit piece is picked by pitch at note-on, then runs the exact
+            // same preset DSP path as a melodic preset voice.
+            Sound::Kit(k) => self.start_preset(k.piece_for(n.pitch)),
+            // `Sound::Font` never reaches a `Voice`: the renderer routes font
+            // notes to per-track rustysynth instances (or the fallback sound
+            // when the font is missing). This arm only keeps the match total
+            // for direct/unexpected uses — a quiet placeholder.
+            Sound::Font(_) => self.start_preset(PresetParams::SINE),
         }
     }
 
@@ -747,6 +862,134 @@ impl Voice {
         self.c = [t60_coef(0.7, sr), 0.0, 0.0, 0.0];
     }
 
+    /// Steel-string acoustic: same Karplus-Strong delay loop as the pluck, but
+    /// with a register-dependent loop low-pass that closes over the first
+    /// ~0.7 s (brightness decays faster than loudness, like a real string),
+    /// a static pluck-shape excitation with pick-contact noise, four fixed
+    /// body-mode resonators and a short band-passed pick burst — all mixed in
+    /// [`Self::guitar_sample`].
+    fn start_guitar(&mut self) {
+        let sr = self.sr;
+        self.kind = Kind::Guitar;
+        let mut f = self.freq.min(sr * 0.25);
+        while f < GUITAR_MIN_HZ {
+            f *= 2.0;
+        }
+        self.freq = f;
+        // Loop low-pass cutoff tracks the register (~16 harmonics, darker on
+        // the wound bass strings) and opens further for harder picks. The
+        // brightness envelope closes it toward `ks_fc_lo` over ~0.7 s.
+        let fc_lo = (16.0 * f).clamp(650.0, 12_000.0).min(sr * 0.45);
+        let fc_hi = (fc_lo * (2.0 + 0.8 * self.vel))
+            .clamp(3600.0, 18_000.0)
+            .min(sr * 0.45);
+        self.ks_fc_lo = fc_lo;
+        self.ks_fc_hi = fc_hi;
+        self.ks_svc = SvfCoefs::new(fc_hi, 0.707, sr);
+        self.ks_fstep = time_coef(0.7, sr);
+        // Loop delay = N samples + 0.5 (averaging filter) + all-pass fractional
+        // delay, shortened by the loop filter's group delay so the note stays
+        // in tune (the SVF passband lags the bare delay line by ~0.09·sr/fc_lo
+        // samples — measured, not derived).
+        let gd = 0.09 * sr / fc_lo;
+        let d = (sr / f - 0.5 - gd).max(2.0);
+        let n = ((d - 0.1).floor() as usize).clamp(2, self.ks.len() - 1);
+        let frac = (d - n as f32).clamp(0.05, 1.5);
+        self.ks_len = n;
+        self.ks_pos = 0;
+        self.ks_c = (1.0 - frac) / (1.0 + frac);
+        self.ks_x1 = 0.0;
+        self.ks_y1 = 0.0;
+        self.ks_last = 0.0;
+        self.ks_sv.reset();
+        self.ks_fenv = 1.0;
+        // Amplitude damping: ~60 dB T60 of 1.4–5.5 s across the compass, so
+        // wound low strings ring longest — the real instrument's 1.5–4 s
+        // ring-out. Released notes are stopped/palm-muted and damp ~7x faster.
+        let t60 = (3.4 * 2f32.powf((58.0 - self.pitch as f32) / 26.0)).clamp(1.4, 5.5);
+        self.ks_g = 10f32.powf(-3.0 / (t60 * f));
+        self.ks_g_release = 10f32.powf(-3.0 / (0.55 * f));
+        for s in &mut self.gt {
+            s.reset();
+        }
+        // Pick burst: ~55 ms of noise through a ~2.6–3.4 kHz band-pass —
+        // harder picks snap brighter. `f2`/`fc` are unused by the guitar
+        // otherwise (f1/f2 are reset for every note in `start`).
+        self.fc = SvfCoefs::new(2600.0 + 900.0 * self.vel, 1.1, sr);
+        self.g_pick = (0.055 * sr) as u32;
+        // Excitation: the static pluck shape — a tent peaking at the pick
+        // point ~1/10 of the period from the bridge end (closer to the
+        // bridge = brighter attack) — plus localized noise for the pick's
+        // contact crunch. Harder picks add more crunch; the loop low-pass
+        // above supplies the brightness decay.
+        let p = ((n / 10).max(1)).min(n - 1);
+        let w = ((0.0022 * sr) as usize).min(n / 3).clamp(2, n);
+        let noise_amp = 0.26 * (0.5 + 0.7 * self.vel);
+        let mut mean = 0.0;
+        for (i, s) in self.ks[..n].iter_mut().enumerate() {
+            let tent = if i < p {
+                i as f32 / p as f32
+            } else {
+                (n - i) as f32 / (n - p) as f32
+            };
+            let d = i.abs_diff(p);
+            let di = d.min(n - d);
+            let env = if di < w {
+                0.5 + 0.5 * (std::f32::consts::PI * di as f32 / w as f32).cos()
+            } else {
+                0.0
+            };
+            let v = tent + self.rng.noise() * env * noise_amp;
+            *s = v;
+            mean += v;
+        }
+        mean /= n as f32;
+        let mut peak = 1e-6f32;
+        for s in &mut self.ks[..n] {
+            *s -= mean;
+            peak = peak.max(s.abs());
+        }
+        for s in &mut self.ks[..n] {
+            *s /= peak;
+        }
+        self.amp = Adsr::new(sr, 0.0015, 1.0, 1.0, 0.3);
+        self.e = [0.0, 0.0, 0.0, 1.0];
+    }
+
+    /// Shared init for pack presets and drum-kit pieces: both run the same
+    /// oscillator/ADSR/filter DSP ([`Kind::Preset`]); they differ only in
+    /// which [`PresetParams`] the note picked.
+    fn start_preset(&mut self, p: PresetParams) {
+        let sr = self.sr;
+        self.kind = Kind::Preset;
+        self.preset = p;
+        self.amp = Adsr::new(
+            sr,
+            finite(p.attack, 0.01).clamp(0.0, 5.0).max(0.001),
+            finite(p.decay, 0.2).clamp(0.0, 10.0).max(0.001) / 4.0,
+            finite(p.sustain, 0.7).clamp(0.0, 1.0),
+            finite(p.release, 0.3).clamp(0.005, 20.0) / 5.0,
+        );
+        self.fc = SvfCoefs::new(p.cutoff, p.resonance_q(), sr);
+        self.hold_left = 0;
+        self.hold_value = 0.0;
+        self.pitch_env = finite(p.pitch_env_amount, 0.0).clamp(-48.0, 48.0);
+        self.pitch_env_coef = t60_coef(finite(p.pitch_env_decay, 0.2).clamp(0.005, 10.0), sr);
+        self.filter_env = finite(p.filter_env_amount, 0.0).clamp(-6.0, 6.0);
+        self.filter_env_coef = t60_coef(finite(p.filter_env_decay, 0.5).clamp(0.005, 20.0), sr);
+        self.lfo = 0.0;
+        for k in 0..MAX_PRESET_OSCILLATORS {
+            self.e[k] = 1.0;
+            self.c[k] = if p.oscs[k].decay > 0.0 {
+                t60_coef(p.oscs[k].decay, sr)
+            } else {
+                1.0
+            };
+        }
+        let rng = &mut self.rng;
+        self.noise_value.iter_mut().for_each(|x| *x = rng.noise());
+    }
+
     /// Adds this voice's output to `l`/`r`.
     pub fn render(&mut self, l: &mut [f32], r: &mut [f32]) {
         for (sl, sr) in l.iter_mut().zip(r.iter_mut()) {
@@ -762,6 +1005,7 @@ impl Voice {
                 Kind::Piano => self.piano_sample(),
                 Kind::Bass => self.bass_sample(),
                 Kind::Pluck => self.pluck_sample(),
+                Kind::Guitar => self.guitar_sample(),
                 Kind::Pad => self.pad_sample(),
                 Kind::Lead => self.lead_sample(),
                 Kind::Preset => self.preset_sample(),
@@ -985,6 +1229,58 @@ impl Voice {
             self.done = true;
         }
         let y = (x * 0.9 + bell) * a * self.gain * 0.55;
+        (y, y)
+    }
+
+    /// Steel-string guitar voice: Karplus-Strong string with a closing loop
+    /// low-pass, parallel body-mode resonators, a band-passed pick burst and
+    /// a gentle output saturation. Mono, like the pluck.
+    fn guitar_sample(&mut self) -> (f32, f32) {
+        let a = self.amp.next();
+        let x = self.ks[self.ks_pos];
+        let avg = 0.5 * (x + self.ks_last);
+        self.ks_last = x;
+        let ap = self.ks_c * avg + self.ks_x1 - self.ks_c * self.ks_y1;
+        self.ks_x1 = avg;
+        self.ks_y1 = flush(ap);
+        // Loop low-pass glides from the bright pick toward the darker sustain;
+        // coefficients refresh every 64 samples (inaudible zipper on a 0.5 s glide).
+        self.ks_fenv *= self.ks_fstep;
+        if (self.t & 63) == 0 && self.ks_fenv > 0.002 {
+            let fc = self.ks_fc_lo + (self.ks_fc_hi - self.ks_fc_lo) * self.ks_fenv;
+            self.ks_svc = SvfCoefs::new(fc, 0.707, self.sr);
+        }
+        let lp = self.ks_sv.low(&self.ks_svc, ap);
+        let g = if self.held {
+            self.ks_g
+        } else {
+            self.ks_g_release
+        };
+        self.ks[self.ks_pos] = flush(lp * g);
+        self.ks_pos += 1;
+        if self.ks_pos >= self.ks_len {
+            self.ks_pos = 0;
+        }
+        // Wooden body: the string drives four fixed resonances in parallel.
+        let mut body = 0.0;
+        for i in 0..GUITAR_BODY.len() {
+            body += self.gt[i].process(&self.gtc[i], x).band * GUITAR_BODY[i].2;
+        }
+        let mut y = x * 0.85 + body * GUITAR_BODY_MIX;
+        // Pick burst: band-passed noise with a ~20 ms decay — the attack's
+        // brightness and "quack" that the mellower sustain lacks.
+        if self.t < self.g_pick {
+            let env = (-3.0 * self.t as f32 / self.g_pick as f32).exp();
+            y += self.f2.process(&self.fc, self.rng.noise()).band * env * (0.08 + 0.13 * self.vel);
+        }
+        // Same ring-out detector as the pluck: `e[3]` follows the string's
+        // recent peak so the voice frees itself once the note has died.
+        self.e[3] = (x.abs()).max(self.e[3] * 0.9995);
+        if self.amp.is_off() || (self.t as f32 > self.sr * 0.05 && self.e[3] < 2e-5) {
+            self.done = true;
+        }
+        // Gentle saturation for pick-edge warmth — kept subtle for a clean tone.
+        let y = soft_clip(y * 1.45) * 0.52 * a * self.gain;
         (y, y)
     }
 
@@ -1324,6 +1620,7 @@ mod tests {
             monophonic: false,
             audition_note: 60,
             audition_duration: 0.8,
+            kit: None,
         }
     }
 
@@ -1331,6 +1628,7 @@ mod tests {
     fn every_sound_is_finite_audible_and_ends() {
         let mut sounds: Vec<Sound> = Instrument::ALL.iter().map(|i| Sound::Builtin(*i)).collect();
         sounds.push(Sound::Preset(PresetParams::from_preset(&chip_preset())));
+        sounds.push(kit_sound());
         for sound in sounds {
             let pitches: Vec<u8> = if sound.is_drums() {
                 crate::model::DRUMS.iter().map(|d| d.0).collect()
@@ -1829,6 +2127,200 @@ mod tests {
             n1[(0.45 * SR) as usize..].iter().all(|s| s.abs() < 1e-4),
             "percussive preset decays"
         );
+    }
+
+    /// A two-piece kit: a deep sine kick at 36 and a bright noise hat at 42.
+    fn kit_preset() -> InstrumentPreset {
+        serde_json::from_str(
+            r#"{
+                "id": "test.kit", "name": "Kit",
+                "kit": { "pieces": [
+                    { "name": "Kick", "pitch": 36, "voice": {
+                        "oscillators": [{"waveform":"sine","frequency_ratio":0.5}],
+                        "envelope": {"attack":0.001,"decay":0.3,"sustain":0.0,"release":0.05},
+                        "pitch_envelope": {"amount_semitones":-24.0,"decay":0.08},
+                        "filter_cutoff": 4000.0 } },
+                    { "name": "Hat", "pitch": 42, "voice": {
+                        "oscillators": [{"waveform":"noise","level":0.8}],
+                        "envelope": {"attack":0.001,"decay":0.06,"sustain":0.0,"release":0.02},
+                        "filter_cutoff": 9000.0 } }
+                ] } }"#,
+        )
+        .unwrap()
+    }
+
+    fn kit_sound() -> Sound {
+        let preset = kit_preset();
+        crate::packs::validate_preset(&preset).unwrap();
+        Sound::Kit(KitParams::from_kit(&preset))
+    }
+
+    #[test]
+    fn kit_params_piece_for_exact_nearest_and_empty() {
+        let kit = KitParams::from_kit(&kit_preset());
+        assert_eq!(kit.count, 2);
+        // Sorted by pitch regardless of JSON order (36 then 42 here anyway).
+        assert_eq!(kit.pieces[0].0, 36);
+        assert_eq!(kit.pieces[1].0, 42);
+        // Exact matches win; cutoff distinguishes the two voices.
+        assert_eq!(kit.piece_for(36).cutoff, 4_000.0);
+        assert_eq!(kit.piece_for(42).cutoff, 9_000.0);
+        // Nearest below/above.
+        assert_eq!(kit.piece_for(37).cutoff, 4_000.0);
+        assert_eq!(kit.piece_for(41).cutoff, 9_000.0);
+        // Tie (39 is 3 from each) resolves to the lower pitch.
+        assert_eq!(kit.piece_for(39).cutoff, 4_000.0);
+        // Out-of-range pitches clamp to the nearest end piece.
+        assert_eq!(kit.piece_for(0).cutoff, 4_000.0);
+        assert_eq!(kit.piece_for(127).cutoff, 9_000.0);
+        // An empty kit is defensive SINE, never a panic.
+        let empty = KitParams {
+            pieces: kit.pieces,
+            count: 0,
+        };
+        assert_eq!(empty.piece_for(60), PresetParams::SINE);
+        // A kit-less preset yields an empty KitParams too.
+        assert_eq!(KitParams::from_kit(&chip_preset()).count, 0);
+    }
+
+    #[test]
+    fn kit_voices_pick_piece_by_pitch_and_sound_distinct() {
+        let sound = kit_sound();
+        assert!(sound.is_drums());
+        assert!(!sound.is_mono());
+        // 1.3 s so `features` can score the full envelope window; the
+        // percussive pieces finish well inside it.
+        let kick = render(sound, 36, 1.3, 0.4);
+        let hat = render(sound, 42, 1.3, 0.4);
+        assert!(kick.iter().all(|s| s.is_finite()));
+        assert!(hat.iter().all(|s| s.is_finite()));
+        assert!(
+            rms(&kick) > 0.005 && rms(&hat) > 0.005,
+            "kit pieces audible"
+        );
+        // Sine pitch-drop kick vs noise hat: clearly different timbres.
+        assert!(
+            distance(&features(&kick), &features(&hat)) > 0.25,
+            "kit pieces should sound distinct"
+        );
+        // Percussive pieces decay to silence.
+        assert!(kick[(1.0 * SR) as usize..]
+            .iter()
+            .chain(&hat[(1.0 * SR) as usize..])
+            .all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn kit_unmapped_pitch_plays_nearest_piece_bit_exact() {
+        let sound = kit_sound();
+        let kit = match sound {
+            Sound::Kit(k) => k,
+            _ => unreachable!(),
+        };
+        // 40 sits between Kick(36) and Hat(42) but nearer Kick; the rendered
+        // signal must equal the Kick piece's PresetParams voice at pitch 40.
+        for pitch in [36u8, 39, 40, 41, 42] {
+            let piece = kit.piece_for(pitch);
+            let via_kit = render(sound, pitch, 0.4, 0.3);
+            let via_preset = render(Sound::Preset(piece), pitch, 0.4, 0.3);
+            assert_eq!(
+                via_kit, via_preset,
+                "pitch {pitch} must play its nearest piece exactly"
+            );
+        }
+        // And the mapped pitches really do pick different pieces.
+        assert_ne!(kit.piece_for(36), kit.piece_for(42));
+    }
+
+    /// `render` with an explicit velocity (the shared helper fixes 0.8).
+    fn render_vel(
+        sound: Sound,
+        pitch: u8,
+        velocity: f32,
+        seconds: f32,
+        gate_seconds: f32,
+    ) -> Vec<f32> {
+        let mut v = Voice::new(SR);
+        v.start(&NoteStart {
+            sound,
+            strip: 0,
+            pitch,
+            velocity,
+            gate: (gate_seconds * SR) as u64,
+            from_song: true,
+            age: 1,
+        });
+        let n = (seconds * SR) as usize;
+        let mut l = vec![0.0; n];
+        let mut r = vec![0.0; n];
+        for (cl, cr) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            if v.active {
+                v.render(cl, cr);
+            }
+        }
+        l.iter().zip(&r).map(|(a, b)| (a + b) * 0.5).collect()
+    }
+
+    #[test]
+    fn guitar_is_in_tune() {
+        // Pitches in the guitar compass (E2 up) need no octave fold, so the
+        // expected period is just SR / pitch_hz. Autocorrelation must peak
+        // within ±10% of it, like the pluck test.
+        for pitch in [40u8, 52, 64, 76, 83] {
+            let x = render_vel(Sound::Builtin(Instrument::Guitar), pitch, 0.8, 0.6, 0.6);
+            let seg = &x[(0.1 * SR) as usize..(0.5 * SR) as usize];
+            let expected = SR / pitch_hz(pitch as f32);
+            let lo = (expected * 0.9) as usize;
+            let hi = (expected * 1.1) as usize;
+            let best = (lo..=hi)
+                .max_by(|&a, &b| {
+                    let ca: f32 = seg.iter().zip(&seg[a..]).map(|(p, q)| p * q).sum();
+                    let cb: f32 = seg.iter().zip(&seg[b..]).map(|(p, q)| p * q).sum();
+                    ca.total_cmp(&cb)
+                })
+                .unwrap();
+            assert!(
+                (best as f32 - expected).abs() <= 1.5,
+                "guitar {pitch}: period {best} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn guitar_note_decays_over_seconds() {
+        // Held note: the KS loop rings for seconds then dies — the acoustic
+        // ring-out, with low/mid strings sustaining longest.
+        let x = render_vel(Sound::Builtin(Instrument::Guitar), 52, 0.9, 6.0, 6.0);
+        assert!(x.iter().all(|s| s.is_finite()), "guitar not finite");
+        let peak = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05 && peak < 1.2, "guitar peak {peak}");
+        let w = |a: f32, b: f32| rms(&x[(a * SR) as usize..(b * SR) as usize]);
+        assert!(w(0.2, 0.8) > w(1.5, 2.5) * 1.5, "guitar not decaying");
+        assert!(w(1.5, 2.5) > 1e-4, "guitar died too early");
+        assert!(w(4.5, 5.5) < w(1.5, 2.5) * 0.4, "guitar never decays");
+    }
+
+    #[test]
+    fn guitar_velocity_changes_level() {
+        let soft = render_vel(Sound::Builtin(Instrument::Guitar), 60, 0.25, 0.6, 0.6);
+        let hard = render_vel(Sound::Builtin(Instrument::Guitar), 60, 0.95, 0.6, 0.6);
+        let seg = (0.4 * SR) as usize;
+        let rs = rms(&soft[..seg]);
+        let rh = rms(&hard[..seg]);
+        assert!(rh > rs * 1.4, "guitar velocity level {rs} vs {rh}");
+    }
+
+    #[test]
+    fn guitar_all_midi_pitches_stay_finite() {
+        // Every MIDI pitch 0–127 must render bounded, non-silent audio — the
+        // octave fold and clamped delay keep the extremes stable.
+        for pitch in 0..=127u8 {
+            let x = render_vel(Sound::Builtin(Instrument::Guitar), pitch, 0.7, 0.4, 0.4);
+            assert!(x.iter().all(|s| s.is_finite()), "guitar {pitch} NaN/inf");
+            let peak = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(peak > 0.005, "guitar {pitch} silent (peak {peak})");
+            assert!(peak < 1.2, "guitar {pitch} too hot (peak {peak})");
+        }
     }
 
     #[test]

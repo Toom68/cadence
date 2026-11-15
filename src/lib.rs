@@ -6,9 +6,12 @@
 //! - [`midi`]: Standard MIDI File import/export.
 //! - [`persistence`]: safe project save/load and crash recovery.
 //! - [`packs`]: data-driven JSON instrument packs (validation, install, catalog).
+//! - [`font`]: SoundFont (`.sf2`) instruments — user font directory, GM program
+//!   names and the font catalog shared with the audio engine.
 //! - [`gui`]: the eframe/egui desktop interface.
 
 pub mod audio;
+pub mod font;
 pub mod gui;
 pub mod midi;
 pub mod model;

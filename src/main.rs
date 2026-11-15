@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cadence_studio::model::{Instrument, Project};
-use cadence_studio::{audio, packs, persistence, APP_NAME, APP_VERSION};
+use cadence_studio::{audio, font, packs, persistence, APP_NAME, APP_VERSION};
 
 const USAGE: &str = "\
 Cadence - native music sequencer
@@ -22,7 +22,11 @@ INSTRUMENT PACKS (JSON synth presets, no rebuild needed):
     cadence --new-pack ID OUTPUT.json      Write a starter pack template (e.g. ID = my-synths)
     cadence --validate-pack PACK.json      Check a pack and report the first bad field
     cadence --install-pack PACK.json       Validate, then install into the user pack folder
-    cadence --list-instruments             List built-in and installed instruments
+    cadence --list-instruments             List built-in, pack and SoundFont instruments
+
+SOUNDFONTS (.sf2 sampled General MIDI, no rebuild needed):
+    Drop .sf2 files into the user font folder shown by --list-instruments
+    (or $CADENCE_FONTS_DIR), then pick a font + GM program for a track.
 
     Pipeline: --new-pack -> edit JSON -> --validate-pack -> --install-pack ->
     \"Reload Packs\" in the app (or restart) -> add the instrument from the library.
@@ -322,6 +326,21 @@ fn list_instruments() {
     if !catalog.errors.is_empty() {
         eprintln!("Pack problems ({}):", catalog.errors.len());
         for err in &catalog.errors {
+            eprintln!("  {err}");
+        }
+    }
+    let fonts = font::load_library();
+    println!("SoundFont instruments ({}):", fonts.fonts.len());
+    for info in &fonts.fonts {
+        println!("  {:<32} {} GM programs (0-127)", info.name, info.presets);
+    }
+    println!(
+        "User font folder: {} (drop .sf2 files here)",
+        fonts.dir.display()
+    );
+    if !fonts.errors.is_empty() {
+        eprintln!("Font problems ({}):", fonts.errors.len());
+        for err in &fonts.errors {
             eprintln!("  {err}");
         }
     }

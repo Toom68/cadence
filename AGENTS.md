@@ -39,6 +39,7 @@ Windows executables are unsigned. Do not claim otherwise.
 | `src/midi.rs` | Standard MIDI File import/export |
 | `src/persistence.rs` | atomic `.cadence` save/load (20 MB cap), crash-recovery autosave, `data_dir()` |
 | `src/packs.rs` | JSON instrument packs: schema types, validation, install, catalog |
+| `src/font.rs` | SoundFont (`.sf2`) instruments: user font dir, GM program names, catalog |
 | `src/gui/` | egui UI (`CadenceApp`) |
 | `packs/` | bundled packs (embedded via `include_str!`), `schema.json`, template |
 | `tests/` | integration tests (persistence, recovery, render/WAV, CLI, MIDI, pack pipeline) |

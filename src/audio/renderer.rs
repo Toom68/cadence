@@ -7,9 +7,12 @@
 use super::dsp::{
     soft_clip, time_coef, DcBlock, Limiter, PingPongDelay, Reverb, Smoother, Svf, SvfCoefs,
 };
+use super::font::FontBank;
 use super::song::{SongData, TrackParams};
 use super::voice::{DrumKind, NoteStart, Sound, Voice};
-use crate::model::{MAX_CUTOFF_HZ, MAX_TRACKS, STEPS_PER_BAR, STEPS_PER_BEAT};
+use crate::font::FontLibrary;
+use crate::model::{Instrument, MAX_CUTOFF_HZ, MAX_TRACKS, STEPS_PER_BAR, STEPS_PER_BEAT};
+use std::sync::Arc;
 
 /// Largest internal processing block in frames.
 pub const MAX_BLOCK: usize = 256;
@@ -17,7 +20,7 @@ pub const MAX_BLOCK: usize = 256;
 pub const MAX_VOICES: usize = 96;
 /// Strip used for auditioning notes from the editor.
 pub const PREVIEW_STRIP: usize = MAX_TRACKS;
-const STRIPS: usize = MAX_TRACKS + 1;
+pub(crate) const STRIPS: usize = MAX_TRACKS + 1;
 /// Transport timing tolerance in steps.
 const EPS: f64 = 1e-9;
 /// Overall mix trim. At the default master volume (0.8) this is ~unity, so a full
@@ -30,6 +33,9 @@ const DELAY_STEPS: f64 = 3.0;
 const PANIC_SECONDS: f32 = 0.012;
 
 /// Messages from the control thread. `Box` payloads are built off the audio thread.
+// `Preview` carries a `TrackParams` whose `Sound::Kit` variant is ~5 KB; the
+// command is built and sent once per user action, never copied per note.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     Load(Box<SongData>),
     Play {
@@ -46,6 +52,8 @@ pub enum Command {
         seconds: f64,
     },
     Metronome(bool),
+    /// Replaces the SoundFont catalog (parsed off the audio thread).
+    SetFonts(Arc<FontLibrary>),
 }
 
 /// One mixer channel.
@@ -279,6 +287,11 @@ pub struct Renderer {
     panic_len: usize,
     peak_l: f32,
     peak_r: f32,
+    /// SoundFont catalog + per-track synthesizers for `Sound::Font` notes.
+    font_bank: FontBank,
+    /// Stereo scratch for rustysynth output (its `render` needs separate L/R).
+    font_scratch_l: Vec<f32>,
+    font_scratch_r: Vec<f32>,
 }
 
 impl Renderer {
@@ -319,6 +332,9 @@ impl Renderer {
             panic_len: ((PANIC_SECONDS * sr) as usize).max(1),
             peak_l: 0.0,
             peak_r: 0.0,
+            font_bank: FontBank::new(sr, Arc::new(FontLibrary::empty())),
+            font_scratch_l: vec![0.0; MAX_BLOCK],
+            font_scratch_r: vec![0.0; MAX_BLOCK],
         }
     }
 
@@ -333,6 +349,8 @@ impl Renderer {
             return;
         }
         let mut fresh = Renderer::new(sample_rate);
+        // Synthesizers are sample-rate specific: keep the catalog, drop the synths.
+        fresh.font_bank = FontBank::new(fresh.sr, self.font_bank.library().clone());
         std::mem::swap(&mut fresh.song, &mut self.song);
         fresh.metronome = self.metronome;
         fresh.master.snap(Self::master_gain(&fresh.song));
@@ -340,6 +358,13 @@ impl Renderer {
             strip.set(p, fresh.sr, true);
         }
         *self = fresh;
+    }
+
+    /// Installs the SoundFont catalog for `Sound::Font` tracks. Call before
+    /// `load`/`play`; the audio engine routes this through [`Command::SetFonts`].
+    /// Never call on the audio thread.
+    pub fn set_fonts(&mut self, library: Arc<FontLibrary>) {
+        self.font_bank.set_library(library);
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -356,7 +381,7 @@ impl Renderer {
     }
 
     pub fn active_voices(&self) -> usize {
-        self.voices.iter().filter(|v| v.active).count()
+        self.voices.iter().filter(|v| v.active).count() + self.font_bank.active_notes()
     }
 
     /// Peak of the most recent rendered block, per channel.
@@ -414,6 +439,10 @@ impl Renderer {
                 self.metronome = on;
                 None
             }
+            Command::SetFonts(library) => {
+                self.font_bank.set_library(library);
+                None
+            }
         }
     }
 
@@ -467,6 +496,7 @@ impl Renderer {
             self.master.target = Self::master_gain(&song);
         }
         let old = std::mem::replace(&mut self.song, song);
+        self.font_bank.retain_tracks(&self.song.tracks);
         self.resync();
         old
     }
@@ -484,6 +514,7 @@ impl Renderer {
             v.active = false;
             v.held = false;
         }
+        self.font_bank.hard_reset();
         for s in &mut self.strips {
             s.reset();
         }
@@ -521,7 +552,7 @@ impl Renderer {
                     if let Some(tp) = self.song.tracks.get(ev.track).copied() {
                         if tp.audible && !tp.sound.is_drums() {
                             let gate = ((ev.end - start) * sps) as u64;
-                            self.note_on(ev.track, tp.sound, ev.pitch, ev.velocity, gate, true);
+                            self.note_on(ev.track, &tp, ev.pitch, ev.velocity, gate, true);
                         }
                     }
                 }
@@ -559,7 +590,8 @@ impl Renderer {
         let snap = self
             .voices
             .iter()
-            .all(|v| !v.active || v.strip != PREVIEW_STRIP);
+            .all(|v| !v.active || v.strip != PREVIEW_STRIP)
+            && !self.font_bank.preview_sounding();
         let preview = TrackParams {
             audible: true,
             ..params
@@ -573,7 +605,7 @@ impl Renderer {
         let gate = (secs * self.sr as f64) as u64;
         self.note_on(
             PREVIEW_STRIP,
-            params.sound,
+            &params,
             pitch.min(127),
             velocity.clamp(0.0, 1.0),
             gate,
@@ -585,24 +617,46 @@ impl Renderer {
         for v in self.voices.iter_mut().filter(|v| v.active && v.from_song) {
             v.release();
         }
+        self.font_bank.release_song_voices();
     }
 
     fn note_on(
         &mut self,
         strip: usize,
-        sound: Sound,
+        params: &TrackParams,
         pitch: u8,
         velocity: f32,
         gate: u64,
         from_song: bool,
     ) {
         self.age += 1;
+        let gate = gate.max((self.sr * 0.001) as u64);
+        let mut sound = params.sound;
+        if let Sound::Font(key) = sound {
+            // Sampled notes go to the per-track rustysynth instance (keyed by
+            // track id, so reordering needs no remap; the preview strip uses
+            // its own slot). When the font file is not installed — or cannot
+            // run at this rate — the track's fallback sound plays instead so
+            // the song still sounds.
+            if self.font_bank.note_on(
+                strip == PREVIEW_STRIP,
+                params.id,
+                key,
+                pitch,
+                velocity,
+                gate,
+                from_song,
+            ) {
+                return;
+            }
+            sound = params.fallback;
+        }
         let start = NoteStart {
             sound,
             strip,
             pitch,
             velocity,
-            gate: gate.max((self.sr * 0.001) as u64),
+            gate,
             from_song,
             age: self.age,
         };
@@ -634,7 +688,11 @@ impl Renderer {
                 }
                 return;
             }
-        } else if sound.is_drums() {
+        } else if matches!(sound, Sound::Builtin(Instrument::Drums)) {
+            // Same-kind choking is specific to the built-in eight-voice kit:
+            // it keys on `Voice::drum`/`drum_kind`, which pack-kit voices
+            // (`Sound::Kit`) never populate — those fall through to the
+            // generic same-pitch release below.
             let kind = super::voice::drum_kind(pitch);
             for v in self
                 .voices
@@ -711,7 +769,7 @@ impl Renderer {
                 if let Some(tp) = self.song.tracks.get(ev.track).copied() {
                     if tp.audible {
                         let gate = ((ev.end - ev.clock).max(0.0) * sps) as u64;
-                        self.note_on(ev.track, tp.sound, ev.pitch, ev.velocity, gate, true);
+                        self.note_on(ev.track, &tp, ev.pitch, ev.velocity, gate, true);
                     }
                 }
             }
@@ -756,6 +814,18 @@ impl Renderer {
                 &mut self.strip_r[base + from..base + to],
             );
         }
+        // SoundFont synths accumulate into the same per-strip buffers, so font
+        // audio gets the identical fader/pan/drive/filter/FX treatment as voices.
+        self.font_bank.render(
+            &self.song.tracks,
+            &mut self.strip_l,
+            &mut self.strip_r,
+            &mut self.strip_used,
+            &mut self.font_scratch_l,
+            &mut self.font_scratch_r,
+            from,
+            to,
+        );
         self.click.render(&mut self.click_buf[from..to]);
     }
 
@@ -1120,6 +1190,52 @@ mod tests {
     }
 
     #[test]
+    fn missing_font_falls_back_to_builtin_sound() {
+        use crate::model::FontRef;
+        let mut p = one_note_project(Instrument::Piano, 60, 0.0, 4.0);
+        p.tracks[0].font = Some(FontRef::new("DefinitelyNotInstalled", 0));
+        let mut r = Renderer::new(SR);
+        // No fonts installed: the reference must fall back to the built-in.
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, 30_000);
+        assert!(
+            l.iter().any(|s| s.abs() > 0.01),
+            "fallback piano is audible"
+        );
+        assert_eq!(r.font_bank.active_notes(), 0, "no synth was created");
+        run(&mut r, SR as usize * 4);
+        assert_eq!(r.active_voices(), 0);
+    }
+
+    #[test]
+    fn font_preview_without_font_uses_fallback() {
+        use crate::model::FontRef;
+        let mut t = create_track(Instrument::Pluck);
+        t.font = Some(FontRef::new("DefinitelyNotInstalled", 0));
+        let mut r = Renderer::new(SR);
+        r.preview(TrackParams::from_track(&t, true), 72, 0.9, 0.3);
+        let (l, _) = run(&mut r, 9600);
+        assert!(l.iter().any(|s| s.abs() > 0.01), "fallback pluck audible");
+        assert_eq!(r.font_bank.active_notes(), 0);
+    }
+
+    #[test]
+    fn set_fonts_swaps_catalog_without_losing_transport() {
+        let mut r = Renderer::new(SR);
+        let p = one_note_project(Instrument::Drums, 36, 0.0, 1.0);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, true);
+        run(&mut r, 4096);
+        let library = Arc::new(crate::font::FontLibrary::empty());
+        r.set_fonts(library.clone());
+        let _ = r.apply(Command::SetFonts(library));
+        assert!(r.is_playing(), "transport survives a catalog swap");
+        let (l, _) = run(&mut r, 8192);
+        assert!(l.iter().any(|s| s.abs() > 0.001), "drums still play");
+    }
+
+    #[test]
     fn metronome_clicks_on_beats() {
         let p = Project {
             tracks: vec![],
@@ -1143,6 +1259,41 @@ mod tests {
             l[lat + 24_000..lat + 24_200].iter().any(|s| s.abs() > 0.05),
             "click on beat 2"
         );
+    }
+
+    #[test]
+    fn metronome_is_off_by_default_and_accents_bar_one() {
+        let p = Project {
+            bars: 2,
+            tracks: vec![],
+            ..one_note_project(Instrument::Drums, 36, 0.0, 1.0)
+        };
+        // No `Command::Metronome`: an empty song renders pure silence, which is
+        // also what the offline export path produces (it never enables it).
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, 40_000);
+        assert!(l.iter().all(|s| s.abs() < 1e-6), "metronome off by default");
+
+        // On: the beat-1 click is louder than the other beats' clicks.
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        let _ = r.apply(Command::Metronome(true));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, 100_000);
+        let lat = r.latency();
+        let peak = |from: usize, to: usize| {
+            l[lat + from..lat + to]
+                .iter()
+                .fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        // 120 BPM at 48 kHz: 6000 frames per step, a beat every 4 steps.
+        let accent = peak(0, 2_000);
+        let beat = peak(24_000, 26_000);
+        assert!(accent > 0.1, "accent click present ({accent})");
+        assert!(beat > 0.05, "beat click present ({beat})");
+        assert!(accent > beat * 1.2, "accent louder: {accent} vs {beat}");
     }
 
     #[test]

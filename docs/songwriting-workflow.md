@@ -55,6 +55,8 @@ Pattern actions: **create**, **select**, **rename**, **duplicate**, **change len
 - Click empty grid space to draw a note; drag empty grid space to box-select notes; drag any selected note to move the group with relative timing and pitch preserved. Pull a note's right edge to resize; **Shift+click/drag** adds or toggles selection; **right-click** erases.
 - The piano-key column on the left auditions pitches; scroll and zoom cover the visible range.
 - The velocity lane under the roll shapes note loudness for the selection.
+- A **computer-keyboard strip** under the roll maps keys to notes: `Z X C V B N M` are the white keys, `S D G H J` the black keys, `Q`/`W` shift the octave, `Shift` plays +12 — notes audition through the selected instrument (drum tracks map the keys across the kit's pieces). The full map is in **Help → Shortcuts & Tips**.
+- The collapsible **chord strip** above the roll lists the song key's seven diatone chords — pick a quality override and strum direction/spacing, then click a chord to stamp it (or strum it) into the pattern at the pointer or playhead. Its **scale** toggle tints the rows belonging to the song key.
 
 Everything snaps to the 1/16 grid. (Positions imported from MIDI may sit between steps; editing snaps them back.)
 
@@ -72,11 +74,11 @@ The **mixer** (per track, plus master):
 
 - **Volume** (0–1) and **pan** (−1…+1)
 - **Mute** / **Solo** — when any track is soloed, only soloed tracks sound
-- **Effects** — filter cutoff (100 Hz–20 kHz), reverb, delay, drive (0–1)
+- **Effects** — filter cutoff (100 Hz–20 kHz), reverb, delay, drive (0–1); the per-strip **FX** chip opens the same four as a pedal chain, and the **Compact** toggle densifies the strips
 
 ## 7. Play and iterate
 
-Press **Space** (or **Transport → Play**) to audition; **Home** returns to the start, **Stop** resets, **L** toggles loop. The playhead follows the engine's actual position while playing. Arrow keys nudge the selection (Shift+↑/↓ moves by octave); Delete/Backspace removes it; Esc deselects. Undo/redo (**⌘/Ctrl+Z**, **⌘/Ctrl+Shift+Z** or **⌘/Ctrl+Y**) covers pattern edits, arrangement changes, and mixer moves — the Edit menu shows what each undo step is.
+Press **Space** (or **Transport → Play**) to audition; **Home** returns to the start, **Stop** resets, **L** toggles loop. The playhead follows the engine's actual position while playing. Arrow keys nudge the selection (Shift+↑/↓ moves by octave); Delete/Backspace removes it; Esc deselects. **⌘/Ctrl+C / X / V** copy, cut, or paste the selection — pattern notes paste at the mouse cursor when it's over the note grid (playhead otherwise), clips land on their own tracks with their left edge on the playhead, and a copied track pastes as a fresh deep copy appended at the end. Undo/redo (**⌘/Ctrl+Z**, **⌘/Ctrl+Shift+Z** or **⌘/Ctrl+Y**) covers pattern edits, arrangement changes, and mixer moves — the Edit menu shows what each undo step is.
 
 Cadence autosaves a recovery copy ~1.5 s after edits. If the app quits or crashes, the next launch shows a **Recovery** dialog — **Restore Work** or **Discard** — that stays until you choose (closing the app keeps the autosave for next time).
 

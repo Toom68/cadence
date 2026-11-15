@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "id": "guitar",
+  "name": "Guitar",
+  "description": "Twelve synthesized guitar voices: chorus-doubled clean and overdriven electrics, 12-string shimmer, steel and nylon acoustics, round and picked basses, metallic resonator, natural harmonics, palm-muted chord stabs, slide-legato and a string-scrape FX. Plucked tones layer detuned saws and triangles with fast-decaying upper partials to imitate string decay, plus short noise transients for pick attack. Pure synthesis, no samples; melodic presets for the piano roll, not kits.",
+  "author": "Cadence",
+  "instruments": [
+    {
+      "id": "guitar.electric-clean",
+      "audition_note": 55,
+      "audition_duration": 1.6,
+      "name": "Electric Guitar (Clean)",
+      "description": "Chorus-y clean electric: two saws detuned ±9 cents over a triangle body give the doubled-string width, a fast-decaying octave saw adds pick brightness, and a gentle filter sweep opens the top end on attack. Medium pluck decay with real sustain; comfortable around MIDI 50-72.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.4, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 9.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.2, "frequency_ratio": 2.0, "detune_cents": 4.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.55, "sustain": 0.35, "release": 0.6 },
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.45 },
+      "filter_cutoff": 3800.0,
+      "filter_resonance": 0.25,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.electric-overdrive",
+      "audition_note": 55,
+      "audition_duration": 1.2,
+      "name": "Electric Guitar (Overdriven)",
+      "description": "Gritty overdriven electric: detuned saw pair plus a square layer for odd-harmonic crunch, a resonant low-pass at 0.45 supplies the amp grit (no waveshaper needed), and a noise pick transient snaps the attack. Shorter decay and low sustain keep it tight; MIDI 50-72.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.42, "frequency_ratio": 1.0, "detune_cents": -6.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.42, "frequency_ratio": 1.0, "detune_cents": 6.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.18, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.025 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.4, "sustain": 0.18, "release": 0.28 },
+      "filter_envelope": { "amount_octaves": 1.2, "decay": 0.15 },
+      "filter_cutoff": 3200.0,
+      "filter_resonance": 0.45,
+      "gain": 0.7,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.electric-12",
+      "audition_note": 55,
+      "audition_duration": 1.8,
+      "name": "Electric 12-String",
+      "description": "Twelve-string shimmer: two detuned fundamental saws plus a pair of octave-up saws (ratio 2.0, ±4 cents) that ring longer than the courses below, reproducing the chorus-and-octave wash of doubled courses. Bright, wide and jangly; MIDI 52-76.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.26, "frequency_ratio": 1.0, "detune_cents": -8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.26, "frequency_ratio": 1.0, "detune_cents": 8.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.34, "frequency_ratio": 2.0, "detune_cents": -4.0, "pulse_width": 0.5, "decay": 1.6 },
+        { "waveform": "saw", "level": 0.34, "frequency_ratio": 2.0, "detune_cents": 4.0, "pulse_width": 0.5, "decay": 1.6 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.5, "sustain": 0.32, "release": 0.7 },
+      "filter_envelope": { "amount_octaves": 1.0, "decay": 0.5 },
+      "filter_cutoff": 4500.0,
+      "filter_resonance": 0.18,
+      "gain": 0.68,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.acoustic-steel",
+      "audition_note": 57,
+      "audition_duration": 1.5,
+      "name": "Acoustic Guitar (Steel)",
+      "description": "Bright steel-string acoustic: a triangle fundamental for the warm body, a decaying saw for harmonic string content that mellows as it fades, a fast-dying octave partial and a short noise pick attack. Filter opens bright then settles — the pluck's natural mellowing; MIDI 50-76.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.42, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.4 },
+        { "waveform": "saw", "level": 0.15, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "noise", "level": 0.13, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.02 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.5, "sustain": 0.22, "release": 0.5 },
+      "filter_envelope": { "amount_octaves": 1.2, "decay": 0.3 },
+      "filter_cutoff": 3500.0,
+      "filter_resonance": 0.2,
+      "gain": 0.68,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.acoustic-nylon",
+      "audition_note": 55,
+      "audition_duration": 1.8,
+      "name": "Acoustic Guitar (Nylon)",
+      "description": "Soft nylon-string classical tone: triangle-dominant voicing with a gentle 2nd and 3rd partial that die early (nylon lacks steel's high harmonics), a slightly slower attack and a warm 2.6 kHz ceiling. Barely-there finger noise; sustains a touch longer than steel; MIDI 50-76.",
+      "oscillators": [
+        { "waveform": "triangle", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.22, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.6 },
+        { "waveform": "sine", "level": 0.14, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.35 },
+        { "waveform": "noise", "level": 0.05, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.015 }
+      ],
+      "envelope": { "attack": 0.007, "decay": 0.55, "sustain": 0.38, "release": 0.65 },
+      "filter_cutoff": 2600.0,
+      "filter_resonance": 0.12,
+      "gain": 0.68,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.bass",
+      "audition_note": 40,
+      "audition_duration": 1.1,
+      "name": "Bass Guitar",
+      "description": "Round bass-guitar tone: sine fundamental with a triangle body layer and quiet 2nd/3rd partials that fade fast, through a warm ~1 kHz low-pass. Tight pluck envelope with a short release for defined basslines; comfortable around MIDI 36-55.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.55, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.15, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.7 },
+        { "waveform": "sine", "level": 0.08, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.35 }
+      ],
+      "envelope": { "attack": 0.003, "decay": 0.45, "sustain": 0.3, "release": 0.22 },
+      "filter_cutoff": 1000.0,
+      "filter_resonance": 0.12,
+      "gain": 0.75,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.bass-pick",
+      "audition_note": 40,
+      "audition_duration": 1.0,
+      "name": "Bass Guitar (Pick)",
+      "description": "Brighter picked bass: same round sine/triangle core but with a short-decay saw octave for pick edge and a tiny noise transient on the attack, low-passed around 1.8 kHz with a fast opening filter sweep. Snappier than the fingered version; MIDI 36-55.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.16, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "noise", "level": 0.1, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.02 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.4, "sustain": 0.28, "release": 0.2 },
+      "filter_envelope": { "amount_octaves": 0.8, "decay": 0.12 },
+      "filter_cutoff": 1800.0,
+      "filter_resonance": 0.18,
+      "gain": 0.72,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.resonator",
+      "audition_note": 57,
+      "audition_duration": 1.2,
+      "name": "Resonator Guitar",
+      "description": "Metallic resonator (Dobro-style) honk: a detuned square pair plus a narrow pulse layer gives the square-wave body and inharmonic edge, a near-0.6 resonant low-pass adds the cone's ring, and a slightly inharmonic 3.01x partial supplies the bell-metal top. Fast decay; MIDI 52-76.",
+      "oscillators": [
+        { "waveform": "square", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "square", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "pulse", "level": 0.2, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.32 },
+        { "waveform": "sine", "level": 0.14, "frequency_ratio": 3.01, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 }
+      ],
+      "envelope": { "attack": 0.002, "decay": 0.38, "sustain": 0.2, "release": 0.32 },
+      "filter_envelope": { "amount_octaves": 1.5, "decay": 0.15 },
+      "filter_cutoff": 4000.0,
+      "filter_resonance": 0.6,
+      "gain": 0.65,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.harmonics",
+      "audition_note": 67,
+      "audition_duration": 2.0,
+      "name": "Natural Harmonics",
+      "description": "Bell-like natural harmonics: a sine stack at 1x/2x/3x/4x where every partial fades faster than the one below — the classic string-harmonic decay — through a wide open filter. A hair of pitch settle on attack adds the 'ping'. Airy and sparse; best MIDI 64-84.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.6, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.3 },
+        { "waveform": "sine", "level": 0.28, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.8 },
+        { "waveform": "sine", "level": 0.16, "frequency_ratio": 3.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "sine", "level": 0.09, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.28 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 1.3, "sustain": 0.08, "release": 0.9 },
+      "pitch_envelope": { "amount_semitones": 0.6, "decay": 0.1 },
+      "filter_cutoff": 9000.0,
+      "filter_resonance": 0.12,
+      "gain": 0.62,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.string-squeak",
+      "audition_note": 64,
+      "audition_duration": 0.9,
+      "name": "String Squeak / Scrape",
+      "description": "FX one-shot: each note starts about 14 semitones flat and slides up to pitch (pitch envelope), over a noise scrape transient and a short sine stack with fast-decaying partials. Sounds like a slide-whine or string grab; use sparingly as an accent, MIDI 60-76.",
+      "oscillators": [
+        { "waveform": "sine", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.22, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.5 },
+        { "waveform": "noise", "level": 0.18, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.04 },
+        { "waveform": "sine", "level": 0.12, "frequency_ratio": 4.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.25 }
+      ],
+      "envelope": { "attack": 0.008, "decay": 0.8, "sustain": 0.12, "release": 0.2 },
+      "pitch_envelope": { "amount_semitones": -14.0, "decay": 0.4 },
+      "filter_cutoff": 6000.0,
+      "filter_resonance": 0.2,
+      "gain": 0.6,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.chord-stab",
+      "audition_note": 52,
+      "audition_duration": 0.5,
+      "name": "Guitar Chord Stab",
+      "description": "Palm-muted rhythm stab: detuned saw pair plus triangle body and a pick-noise transient, but with an extremely short decay to a whisper of sustain and a fast release — the damped 'chk' of muted chords. The filter opens bright then clamps down like a palm on the strings; MIDI 48-64.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -7.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 7.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.22, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "noise", "level": 0.12, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 0.018 }
+      ],
+      "envelope": { "attack": 0.001, "decay": 0.09, "sustain": 0.07, "release": 0.07 },
+      "filter_envelope": { "amount_octaves": 2.0, "decay": 0.12 },
+      "filter_cutoff": 2800.0,
+      "filter_resonance": 0.35,
+      "gain": 0.72,
+      "monophonic": false
+    },
+    {
+      "id": "guitar.slide",
+      "audition_note": 57,
+      "audition_duration": 2.8,
+      "name": "Slide Guitar",
+      "description": "Legato slide voicing: slow swell-in attack, high sustain and a long release for gliding lines, monophonic so slides don't stack. A gentle vibrato LFO adds the expressive wobble of a bottleneck; keep it monophonic for best results, MIDI 52-72.",
+      "oscillators": [
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": -5.0, "pulse_width": 0.5 },
+        { "waveform": "saw", "level": 0.3, "frequency_ratio": 1.0, "detune_cents": 5.0, "pulse_width": 0.5 },
+        { "waveform": "triangle", "level": 0.28, "frequency_ratio": 1.0, "detune_cents": 0.0, "pulse_width": 0.5 },
+        { "waveform": "sine", "level": 0.16, "frequency_ratio": 2.0, "detune_cents": 0.0, "pulse_width": 0.5, "decay": 1.8 }
+      ],
+      "envelope": { "attack": 0.05, "decay": 0.9, "sustain": 0.82, "release": 2.2 },
+      "filter_cutoff": 3200.0,
+      "filter_resonance": 0.18,
+      "lfo": { "waveform": "sine", "rate_hz": 4.5, "pitch_semitones": 0.5, "filter_octaves": 0.0, "amplitude": 0.12 },
+      "gain": 0.62,
+      "monophonic": true
+    }
+  ]
+}

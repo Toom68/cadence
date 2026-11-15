@@ -1,6 +1,6 @@
 # Instrument packs
 
-Cadence ships 6 built-in instruments plus bundled pack presets — **144 sounds in total**: the `8-bit` pack adds 10 chiptune-style sounds and seven `psy-*` banks add 128 experimental electronic instruments (`psy-rhythm` and `psy-bass` with 24 each; `psy-keys`, `psy-brass`, `psy-leads`, `psy-arps` and `psy-space` with 16 each). You are not limited to them: **instrument packs** are pure-JSON synthesis presets that add new instruments without rebuilding the app or installing samples. A pack describes oscillators, an envelope, filter, bit depth, sample-and-hold, and output gain — no executable code, no audio files.
+Cadence ships 6 built-in instruments plus bundled pack presets — **202 sounds in total**: thirteen banks including `8-bit` chiptune, seven `psy-*` experimental banks, drum kits, guitars, neon leads, one-shot FX, and mallets & keys (196 pack presets). You are not limited to them: **instrument packs** are pure-JSON synthesis presets that add new instruments without rebuilding the app or installing samples. A pack describes oscillators, an envelope, filter, bit depth, sample-and-hold, and output gain — no executable code, no audio files.
 
 The full format reference lives in [`packs/README.md`](../packs/README.md) with a JSON schema at [`packs/schema.json`](../packs/schema.json) and a working example at [`packs/8-bit/pack.json`](../packs/8-bit/pack.json). A step-by-step agent guide for authoring packs (schema fields, validation, install pipeline) lives at [`tools/instrument-packs/AGENTS.md`](../tools/instrument-packs/AGENTS.md).
 
@@ -23,6 +23,7 @@ Or skip the CLI: in the app, the instrument library's packs footer has **Import 
 - A track's inspector (sidebar **Track** tab) can switch its sound between built-ins and any installed preset.
 - The preset is **embedded in the `.cadence` file** when you save, so the song plays the same sound even where the pack isn't installed. Installing an updated pack does **not** change existing songs — each song keeps its embedded copy until you open the track inspector and choose *Update sound from installed pack*.
 - `instrument` on a pack track still selects the editor (drum step grid vs. piano roll); the preset supplies the sound.
+- A preset may instead be a **drum kit**: a `kit.pieces` list maps named one-shot voices to MIDI pitches (1-32 pieces, unique pitches, nearest pitch wins for unmapped notes). Kit presets omit the top-level `oscillators` and pair with the drum editor — see `packs/README.md` → "Drum kits".
 
 ## What a pack contains
 
@@ -38,7 +39,7 @@ Limits: 2 MB per pack file, 128 instruments per pack, 4 oscillators per instrume
 
 ## Where packs live
 
-- **Embedded** — compiled into the binary (`packs/` in the source tree; currently `8-bit` plus the seven `psy-*` banks — 138 presets). A user pack file with the **same pack id** (e.g. `eight-bit`) replaces that embedded pack wholesale on the next catalog load — handy for iterating on a bundled pack without a rebuild; an invalid override is rejected and the bundled pack stays as fallback.
+- **Embedded** — compiled into the binary (`packs/` in the source tree; currently `8-bit`, the seven `psy-*` banks, `drum-kits`, `guitar`, `neon`, `one-shots`, and `mallets` — 196 presets). A user pack file with the **same pack id** (e.g. `eight-bit`) replaces that embedded pack wholesale on the next catalog load — handy for iterating on a bundled pack without a rebuild; an invalid override is rejected and the bundled pack stays as fallback.
 - **User** — `<pack-id>.json` files in the user pack directory: `$CADENCE_PACKS_DIR` if set, else `$CADENCE_DATA_DIR/packs`, else the platform app-data `Cadence/packs` folder.
 - Catalog order is deterministic (embedded first, then user files by name); files that fail to load are reported as catalog errors, not silently dropped. The app re-scans the folder about every 2 seconds, so dropped-in or CLI-installed packs appear without a restart (**Reload** is the manual fallback).
 

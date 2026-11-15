@@ -22,18 +22,18 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use egui::{
-    Color32, Context, Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Stroke,
-    ViewportCommand,
+    Color32, Context, Event, Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Stroke,
+    SurrenderFocusOn, ViewportCommand,
 };
 
 use crate::audio::AudioEngine;
-use crate::model::{Instrument, Project, Track};
+use crate::model::{Clip, Instrument, Project, Track};
 
 pub use history::History;
 
 use dialogs::Dialog;
 use files::{Document, ExportJob, PendingAction};
-use theme::{Icon, BG, BORDER_SOFT, CORAL, LIME, TEXT_DIM, TEXT_FAINT};
+use theme::{Icon, Palette, ThemeChoice};
 use transport::TransportState;
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
@@ -52,15 +52,37 @@ pub(crate) const SC_UNDO: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Z);
 pub(crate) const SC_REDO: KeyboardShortcut = sc(CMD_SHIFT, Key::Z);
 pub(crate) const SC_REDO_ALT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Y);
 pub(crate) const SC_DUPLICATE: KeyboardShortcut = sc(Modifiers::COMMAND, Key::D);
+pub(crate) const SC_COPY: KeyboardShortcut = sc(Modifiers::COMMAND, Key::C);
+pub(crate) const SC_PASTE: KeyboardShortcut = sc(Modifiers::COMMAND, Key::V);
+pub(crate) const SC_CUT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::X);
 pub(crate) const SC_SELECT_ALL: KeyboardShortcut = sc(Modifiers::COMMAND, Key::A);
 pub(crate) const SC_EDITOR: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num1);
 pub(crate) const SC_MIXER: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num2);
+pub(crate) const SC_KEYS: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num3);
 pub(crate) const SC_HELP: KeyboardShortcut = sc(Modifiers::NONE, Key::F1);
+
+/// How long after a clipboard paste the matching V-key release is ignored.
+/// egui-winit turns ⌘V into [`Event::Paste`] on key-down and drops the key
+/// press; the release still arrives as a key event and would otherwise look
+/// like a second paste request when the OS clipboard was empty.
+const PASTE_RELEASE_GUARD: Duration = Duration::from_millis(1000);
+
+/// Removes every input event matching `pred`; returns whether any matched.
+fn take_events(ctx: &Context, pred: impl Fn(&Event) -> bool) -> bool {
+    ctx.input_mut(|i| {
+        let hit = i.events.iter().any(&pred);
+        if hit {
+            i.events.retain(|e| !pred(e));
+        }
+        hit
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Editor,
     Mixer,
+    Keys,
 }
 
 /// Which area keyboard edits (Delete, arrows, Cmd+D) apply to.
@@ -94,6 +116,25 @@ struct Selection {
     patterns: HashMap<u64, u64>,
 }
 
+/// The app-level clipboard behind ⌘C/⌘V/⌘X. One clipboard for the whole app:
+/// the most recent copy wins, and paste always targets the playhead.
+/// Snapshots are taken at copy time, so later edits don't rewrite them.
+#[derive(Debug, Clone, Default)]
+enum Clipboard {
+    /// Nothing copied yet.
+    #[default]
+    None,
+    /// Pattern notes with positions relative to the selection's left edge —
+    /// pastes into the selected track's current pattern at the playhead.
+    /// Works identically for the drum grid (drum hits are notes).
+    Notes(Vec<ops::NoteSnap>),
+    /// Arranger clips as `(track_id, clip)` snapshots on their original
+    /// tracks, shifted so the group's left edge lands on the playhead.
+    Clips(Vec<(u64, Clip)>),
+    /// A whole track; pastes as a fresh deep copy appended at the end.
+    Track(Box<Track>),
+}
+
 /// The Cadence desktop application.
 pub struct CadenceApp {
     project: Project,
@@ -103,6 +144,10 @@ pub struct CadenceApp {
     audio_error: Option<String>,
     transport: TransportState,
     sel: Selection,
+    clipboard: Clipboard,
+    /// Set when a paste fired on key-down; the paired V-release is ignored
+    /// for [`PASTE_RELEASE_GUARD`] so it can't paste a second time.
+    paste_release_guard: Option<Instant>,
     arranger: arranger::ArrangerView,
     editor: editor::EditorView,
     tab: Tab,
@@ -126,20 +171,29 @@ pub struct CadenceApp {
     catalog: crate::packs::PackCatalog,
     /// Fingerprint of the packs dir at the last catalog refresh.
     pack_stamp: u64,
+    /// Installed SoundFont catalog for the sound picker; the parsed fonts are
+    /// also pushed to the audio engine so `Track::font` references play.
+    fonts: crate::font::FontLibrary,
+    /// Fingerprint of the fonts dir at the last catalog refresh.
+    font_stamp: u64,
     window_title: String,
     style_applied: bool,
+    /// Selected UI theme (appearance only — never part of the song).
+    theme: ThemeChoice,
 }
 
 impl CadenceApp {
     /// Creates the app: demo song on first launch, the launch file if one was
     /// given, and a recovery offer when a valid autosave exists.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::apply(&cc.egui_ctx);
+        let theme = ThemeChoice::from_storage(cc.storage);
+        theme::apply(&cc.egui_ctx, theme);
         let (engine, audio_error) = match AudioEngine::new() {
             Ok(engine) => (Some(engine), None),
             Err(err) => (None, Some(err)),
         };
         let mut app = Self::build(Project::demo(), engine, true);
+        app.theme = theme;
         app.style_applied = true;
         if let Some(err) = audio_error {
             app.set_status(
@@ -161,8 +215,18 @@ impl CadenceApp {
     fn build(project: Project, engine: Option<AudioEngine>, io_enabled: bool) -> Self {
         let history = History::new();
         let state = history.state();
+        // The stamp is taken before parsing so a font dropped in mid-scan is
+        // still picked up by the next dir poll instead of being fingerprinted
+        // but never loaded.
+        let font_stamp = if io_enabled { font_fingerprint() } else { 0 };
+        let fonts = if io_enabled {
+            crate::font::load_library()
+        } else {
+            crate::font::FontLibrary::empty()
+        };
         if let Some(engine) = &engine {
             engine.set_project(&project);
+            engine.set_fonts(std::sync::Arc::new(fonts.clone()));
         }
         let mut app = Self {
             project,
@@ -175,6 +239,8 @@ impl CadenceApp {
             audio_error: None,
             transport: TransportState::default(),
             sel: Selection::default(),
+            clipboard: Clipboard::default(),
+            paste_release_guard: None,
             arranger: arranger::ArrangerView::default(),
             editor: editor::EditorView::default(),
             tab: Tab::Editor,
@@ -198,8 +264,11 @@ impl CadenceApp {
                 crate::packs::PackCatalog::default()
             },
             pack_stamp: if io_enabled { pack_fingerprint() } else { 0 },
+            fonts,
+            font_stamp,
             window_title: String::new(),
             style_applied: false,
+            theme: ThemeChoice::default(),
         };
         app.fix_selection();
         app
@@ -209,6 +278,21 @@ impl CadenceApp {
     #[cfg(test)]
     pub(crate) fn headless(project: Project) -> Self {
         Self::build(project, None, false)
+    }
+
+    /// The color palette of the active theme, resolved fresh each call.
+    pub(super) fn palette(&self) -> Palette {
+        self.theme.palette()
+    }
+
+    /// Switches the UI theme and re-applies the egui styles immediately.
+    /// Appearance only: the project and its dirty flag are untouched.
+    pub(super) fn set_theme(&mut self, ctx: &Context, choice: ThemeChoice) {
+        if self.theme == choice {
+            return;
+        }
+        self.theme = choice;
+        theme::apply(ctx, choice);
     }
 
     // ----- editing ---------------------------------------------------------
@@ -262,6 +346,9 @@ impl CadenceApp {
         self.doc.saved_state = clean.then(|| self.history.state());
         self.autosaved_state = self.history.state();
         self.sel = Selection::default();
+        // Clip snapshots name tracks of the old document; notes and tracks
+        // would paste fine, but a per-song clipboard is the least surprising.
+        self.clipboard = Clipboard::None;
         self.arranger.scroll_x = 0.0;
         self.arranger.scroll_y = 0.0;
         self.arranger.reset_gesture();
@@ -401,7 +488,7 @@ impl CadenceApp {
         self.sel.notes.clear();
     }
 
-    fn selected_clip_snapshots(&self) -> Vec<(u64, crate::model::Clip)> {
+    fn selected_clip_snapshots(&self) -> Vec<(u64, Clip)> {
         ops::collect_clips(&self.project, &self.selected_clip_ids())
     }
 
@@ -598,6 +685,310 @@ impl CadenceApp {
         }
     }
 
+    // ----- clipboard (copy / paste / cut) ---------------------------------
+
+    /// Whether ⌘C has anything to capture: selected clips or notes, else the
+    /// selected track (always present while the song has tracks).
+    fn can_copy(&self) -> bool {
+        !self.selected_clip_ids().is_empty()
+            || !self.sel.notes.is_empty()
+            || self.sel.track.is_some()
+    }
+
+    /// Clipboard snapshots of the selected notes in the selected track's
+    /// current pattern — `(track_id, pattern_id, snaps)`. `None` when the
+    /// note selection is empty or doesn't resolve to real notes.
+    fn note_clipboard_target(&self) -> Option<(u64, u64, Vec<ops::NoteSnap>)> {
+        let track = self.selected_track()?;
+        let pid = self.current_pattern_id(track)?;
+        let pat = ops::pattern(track, pid)?;
+        let snaps = ops::note_snaps(pat, &self.sel.notes);
+        (!snaps.is_empty()).then_some((track.id, pid, snaps))
+    }
+
+    /// Snapshots `snaps` onto the clipboard with the usual status message.
+    fn clipboard_notes(&mut self, snaps: Vec<ops::NoteSnap>) {
+        let n = snaps.len();
+        self.clipboard = Clipboard::Notes(snaps);
+        self.set_status(
+            StatusKind::Info,
+            format!("Copied {n} note{}.", sidebar::plural(n)),
+        );
+    }
+
+    /// ⌘C: snapshot the current selection. Like [`Self::delete_selection`],
+    /// the focused domain wins — notes while the editor is focused, else
+    /// clips — so a stale clip selection can't hijack a note copy (editor
+    /// note selection never clears `sel.clips`). The project is untouched;
+    /// the clipboard holds data, not references into it.
+    fn copy_selection(&mut self) {
+        if self.focus == Focus::Editor {
+            if let Some((_, _, snaps)) = self.note_clipboard_target() {
+                self.clipboard_notes(snaps);
+                return;
+            }
+        }
+        let clips = self.selected_clip_snapshots();
+        if !clips.is_empty() {
+            let n = clips.len();
+            self.clipboard = Clipboard::Clips(clips);
+            self.set_status(
+                StatusKind::Info,
+                format!("Copied {n} clip{}.", sidebar::plural(n)),
+            );
+            return;
+        }
+        if self.focus != Focus::Editor {
+            if let Some((_, _, snaps)) = self.note_clipboard_target() {
+                self.clipboard_notes(snaps);
+                return;
+            }
+        }
+        if let Some(track) = self
+            .sel
+            .track
+            .and_then(|id| ops::track(&self.project, id))
+            .cloned()
+        {
+            let name = track.name.clone();
+            self.clipboard = Clipboard::Track(Box::new(track));
+            self.set_status(StatusKind::Info, format!("Copied track “{name}”."));
+            return;
+        }
+        self.set_status(
+            StatusKind::Info,
+            "Nothing to copy — select notes, clips or a track first.",
+        );
+    }
+
+    /// ⌘V: paste whatever the clipboard holds. Notes land at the pointer
+    /// when it's over the editor grid, everything else at the playhead.
+    fn paste_clipboard(&mut self, ctx: &Context) {
+        // Clone so the clipboard survives the paste (repeat ⌘V stacks copies).
+        match self.clipboard.clone() {
+            Clipboard::None => self.set_status(
+                StatusKind::Info,
+                "Nothing to paste — copy notes, clips or a track first.",
+            ),
+            Clipboard::Notes(snaps) => self.paste_notes(&snaps, ctx),
+            Clipboard::Clips(originals) => self.paste_clips(&originals),
+            Clipboard::Track(track) => self.paste_track(&track),
+        }
+    }
+
+    /// Pastes note snapshots into the selected track's current pattern — at
+    /// the pointer when it's over the editor grid, else at the playhead
+    /// (patterns loop, so the origin wraps with `rem_euclid`, see
+    /// [`ops::paste_notes`]). New notes merge with the existing ones and
+    /// become the selection.
+    fn paste_notes(&mut self, snaps: &[ops::NoteSnap], ctx: &Context) {
+        let target = self.sel.track.and_then(|tid| {
+            let track = ops::track(&self.project, tid)?;
+            Some((tid, self.current_pattern_id(track)?))
+        });
+        let Some((track_id, pid)) = target else {
+            self.set_status(
+                StatusKind::Warning,
+                "Select a track with a pattern to paste notes into.",
+            );
+            return;
+        };
+        let pname = ops::track(&self.project, track_id)
+            .and_then(|t| ops::pattern(t, pid))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let (step, pitch_anchor) = self
+            .editor_paste_target(ctx)
+            .unwrap_or((self.transport.position, None));
+        // Pitch anchor: shift the whole selection so the note nearest the
+        // cursor's row lands on it — paste anywhere, any octave. The shift is
+        // clamped so no note leaves the MIDI range.
+        let shifted = pitch_anchor.and_then(|anchor| {
+            let near = snaps
+                .iter()
+                .map(|s| s.pitch)
+                .min_by_key(|&p| (i32::from(p) - i32::from(anchor)).abs())?;
+            let min_p = snaps.iter().map(|s| i32::from(s.pitch)).min()?;
+            let max_p = snaps.iter().map(|s| i32::from(s.pitch)).max()?;
+            let shift = (i32::from(anchor) - i32::from(near))
+                .clamp(-min_p, i32::from(ops::MAX_PITCH) - max_p);
+            (shift != 0).then(|| {
+                snaps
+                    .iter()
+                    .map(|s| ops::NoteSnap {
+                        pitch: (i32::from(s.pitch) + shift) as u8,
+                        ..*s
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+        let snaps: &[ops::NoteSnap] = shifted.as_deref().unwrap_or(snaps);
+        let mut new = Vec::new();
+        self.edit("Paste notes", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                new = ops::paste_notes(pat, snaps, step);
+            }
+        });
+        if new.is_empty() {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Nothing pasted — \"{pname}\" is at the {}-note limit.",
+                    ops::MAX_NOTES_PER_PATTERN
+                ),
+            );
+            return;
+        }
+        let n = new.len();
+        self.sel.notes = new.into_iter().collect();
+        self.focus = Focus::Editor;
+        self.set_status(
+            StatusKind::Info,
+            format!("Pasted {n} note{}.", sidebar::plural(n)),
+        );
+    }
+
+    /// Pastes clip snapshots back onto their original tracks, shifted so the
+    /// group's left edge lands on the playhead (`copy_clip_group` clamps the
+    /// move inside the song like every other clip edit). The new clips become
+    /// the selection.
+    fn paste_clips(&mut self, originals: &[(u64, Clip)]) {
+        if originals.is_empty() {
+            return;
+        }
+        // `copy_clip_group` checks clip limits atomically but pushes clips
+        // track by track — a track deleted since the copy would otherwise
+        // leave a partial paste behind. Refuse up front instead.
+        if originals
+            .iter()
+            .any(|(track_id, _)| ops::track(&self.project, *track_id).is_none())
+        {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not paste clips — a track they were copied from is gone.",
+            );
+            return;
+        }
+        let min_start = originals
+            .iter()
+            .map(|(_, c)| c.start)
+            .fold(f64::INFINITY, f64::min);
+        let dstep = self.transport.position - min_start;
+        let mut new = None;
+        self.edit("Paste clips", None, |p| {
+            new = ops::copy_clip_group(p, originals, dstep);
+        });
+        match new {
+            Some(ids) => {
+                let primary = ids.first().copied();
+                let set: BTreeSet<u64> = ids.into_iter().collect();
+                self.set_clip_selection(set, primary);
+            }
+            None => self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Could not paste clips (tracks hold up to {} clips, or a copied track is gone).",
+                    ops::MAX_CLIPS_PER_TRACK
+                ),
+            ),
+        }
+    }
+
+    /// Pastes a copied track as a new independent track appended at the end
+    /// of the list (fresh ids everywhere — see [`ops::paste_track`]).
+    fn paste_track(&mut self, source: &Track) {
+        let mut new = None;
+        self.edit("Paste track", None, |p| new = ops::paste_track(p, source));
+        match new {
+            Some(id) => {
+                let name = ops::track(&self.project, id)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default();
+                self.select_track(id);
+                self.arranger.reveal_track = Some(id);
+                self.set_status(StatusKind::Success, format!("Pasted track “{name}”."));
+            }
+            None => self.set_status(
+                StatusKind::Warning,
+                format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
+            ),
+        }
+    }
+
+    /// ⌘X: snapshot the selection into the clipboard, then delete it — the
+    /// whole cut is a single undo step. Same precedence as [`Self::copy_selection`].
+    fn cut_selection(&mut self) {
+        if self.focus == Focus::Editor {
+            if let Some((track_id, pid, snaps)) = self.note_clipboard_target() {
+                self.cut_notes(track_id, pid, snaps);
+                return;
+            }
+        }
+        let clips = self.selected_clip_snapshots();
+        if !clips.is_empty() {
+            let n = clips.len();
+            if self.edit(if n == 1 { "Cut clip" } else { "Cut clips" }, None, |p| {
+                for (track, clip) in &clips {
+                    ops::delete_clip(p, *track, clip.id);
+                }
+            }) {
+                self.clipboard = Clipboard::Clips(clips);
+                self.clear_arranger_clip_selection();
+                self.set_status(
+                    StatusKind::Info,
+                    format!("Cut {n} clip{}.", sidebar::plural(n)),
+                );
+            }
+            return;
+        }
+        if self.focus != Focus::Editor {
+            if let Some((track_id, pid, snaps)) = self.note_clipboard_target() {
+                self.cut_notes(track_id, pid, snaps);
+                return;
+            }
+        }
+        if let Some(track) = self
+            .sel
+            .track
+            .and_then(|id| ops::track(&self.project, id))
+            .cloned()
+        {
+            let name = track.name.clone();
+            let tid = track.id;
+            if self.edit("Cut track", None, |p| {
+                ops::delete_track(p, tid);
+            }) {
+                self.clipboard = Clipboard::Track(Box::new(track));
+                self.fix_selection();
+                self.set_status(StatusKind::Info, format!("Cut track “{name}”."));
+            }
+            return;
+        }
+        self.set_status(
+            StatusKind::Info,
+            "Nothing to cut — select notes, clips or a track first.",
+        );
+    }
+
+    /// Cut the notes in `snaps`' pattern — snapshot to clipboard + delete in
+    /// one undo step.
+    fn cut_notes(&mut self, track_id: u64, pid: u64, snaps: Vec<ops::NoteSnap>) {
+        let ids: Vec<u64> = self.sel.notes.iter().copied().collect();
+        let n = ids.len();
+        if self.edit("Cut notes", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                ops::delete_notes(pat, &ids);
+            }
+        }) {
+            self.clipboard = Clipboard::Notes(snaps);
+            self.sel.notes.clear();
+            self.set_status(
+                StatusKind::Info,
+                format!("Cut {n} note{}.", sidebar::plural(n)),
+            );
+        }
+    }
+
     fn add_track(&mut self, instrument: Instrument) {
         let mut id = None;
         self.edit(&format!("Add {} track", instrument.name()), None, |p| {
@@ -703,13 +1094,51 @@ impl CadenceApp {
         }
     }
 
+    /// Re-reads the SoundFont catalog and pushes it to the audio engine. The
+    /// 2s dir poll calls this; parsing `.sf2` files is the expensive part, so
+    /// it only runs when the fonts folder fingerprint actually changed.
+    fn reload_fonts(&mut self) {
+        if !self.io_enabled {
+            return;
+        }
+        let stamp = font_fingerprint();
+        if stamp == self.font_stamp {
+            return;
+        }
+        self.font_stamp = stamp;
+        self.fonts = crate::font::load_library();
+        if let Some(engine) = &self.engine {
+            engine.set_fonts(std::sync::Arc::new(self.fonts.clone()));
+        }
+        if !self.fonts.errors.is_empty() {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "{} SoundFont file{} failed to load; the track sound picker lists the problem.",
+                    self.fonts.errors.len(),
+                    sidebar::plural(self.fonts.errors.len())
+                ),
+            );
+        }
+    }
+
     // ----- frame -----------------------------------------------------------
 
     /// Runs one UI frame. Separated from `eframe::App::update` so tests can
     /// drive the full interface with a bare `egui::Context`.
     fn frame(&mut self, ctx: &Context) {
         if !self.style_applied {
-            theme::apply(ctx);
+            theme::apply(ctx, self.theme);
+            // Keyboard shortcuts are gated on `wants_keyboard_input()`, which
+            // is true while any widget holds focus (a TextEdit or DragValue).
+            // The default `Clicks` mode only surrenders that focus on a full
+            // click, so drag gestures — marquee-selecting notes, scrubbing the
+            // playhead — would leave a stale text field focused and silently
+            // kill every editing shortcut. `Presses` hands focus back as soon
+            // as the pointer goes down anywhere outside the focused widget.
+            ctx.memory_mut(|m| {
+                m.options.input_options.surrender_focus_on = SurrenderFocusOn::Presses;
+            });
             self.style_applied = true;
         }
         self.poll_engine();
@@ -839,6 +1268,9 @@ impl CadenceApp {
         if pressed(&SC_MIXER) {
             self.tab = Tab::Mixer;
         }
+        if pressed(&SC_KEYS) {
+            self.tab = Tab::Keys;
+        }
         if typing {
             return;
         }
@@ -849,6 +1281,46 @@ impl CadenceApp {
         }
         if pressed(&SC_DUPLICATE) {
             self.duplicate_selection();
+        }
+        // Clipboard commands arrive as dedicated egui events, not key presses:
+        // egui-winit translates ⌘C/⌘V/⌘X into Event::Copy/Paste/Cut on
+        // key-down and drops the Event::Key entirely — and emits *no* event
+        // for ⌘V when the OS clipboard has no text. `consume_shortcut` can
+        // therefore never see them on desktop, so handle both forms. While a
+        // text field is focused we returned above, leaving these for it.
+        if take_events(ctx, |e| matches!(e, Event::Copy)) || pressed(&SC_COPY) {
+            self.copy_selection();
+        }
+        if take_events(ctx, |e| matches!(e, Event::Cut)) || pressed(&SC_CUT) {
+            self.cut_selection();
+        }
+        if take_events(ctx, |e| matches!(e, Event::Paste(_))) || pressed(&SC_PASTE) {
+            // Arm the guard so the V-release can't paste a second time.
+            self.paste_release_guard = Some(Instant::now());
+            self.paste_clipboard(ctx);
+        } else if take_events(ctx, |e| {
+            matches!(
+                e,
+                Event::Key {
+                    key: Key::V,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if modifiers.command
+            )
+        }) {
+            // No Paste event fired (empty/non-text OS clipboard), so this
+            // release is our only signal — unless it pairs with a paste we
+            // already did on the press.
+            match self.paste_release_guard {
+                Some(t) if t.elapsed() < PASTE_RELEASE_GUARD => {
+                    self.paste_release_guard = None;
+                }
+                _ => {
+                    self.paste_release_guard = None;
+                    self.paste_clipboard(ctx);
+                }
+            }
         }
         if pressed(&SC_SELECT_ALL) {
             self.select_all();
@@ -891,6 +1363,11 @@ impl CadenceApp {
         if key(Modifiers::NONE, Key::Minus) {
             self.zoom(0.8);
         }
+        // Computer-keyboard note audition: letter keys play the selected
+        // track's sounds while the pattern editor is showing. Reached only
+        // when not typing and no dialog is open (both return earlier); it
+        // also no-ops off the Editor tab.
+        self.keyboard_play(ctx);
     }
 
     /// Zooms whichever timeline has keyboard focus.
@@ -905,7 +1382,10 @@ impl CadenceApp {
     // ----- layout ----------------------------------------------------------
 
     fn menu_bar(&mut self, ctx: &Context) {
-        let frame = Frame::new().fill(BG).inner_margin(Margin::symmetric(8, 3));
+        let pal = self.palette();
+        let frame = Frame::new()
+            .fill(pal.bg)
+            .inner_margin(Margin::symmetric(8, 3));
         egui::TopBottomPanel::top("menu_bar")
             .frame(frame)
             .show_separator_line(false)
@@ -921,7 +1401,7 @@ impl CadenceApp {
                         }
                     };
                     ui.menu_button("File", |ui| {
-                        if ui.add(item("New Song", Some(&SC_NEW))).clicked() {
+                        if ui.add(item("New Song…", Some(&SC_NEW))).clicked() {
                             self.request(PendingAction::New);
                         }
                         if ui.add(item("New from Demo", None)).clicked() {
@@ -1024,6 +1504,37 @@ impl CadenceApp {
                         {
                             self.clear_selection();
                         }
+                        if ui
+                            .add_enabled(self.can_copy(), item("Cut", Some(&SC_CUT)))
+                            .clicked()
+                        {
+                            self.cut_selection();
+                        }
+                        if ui
+                            .add_enabled(self.can_copy(), item("Copy", Some(&SC_COPY)))
+                            .clicked()
+                        {
+                            self.copy_selection();
+                        }
+                        if ui
+                            .add_enabled(
+                                !matches!(self.clipboard, Clipboard::None),
+                                item("Paste", Some(&SC_PASTE)),
+                            )
+                            .on_disabled_hover_text("Copy notes, clips or a track first")
+                            .clicked()
+                        {
+                            self.paste_clipboard(ctx);
+                        }
+                        if ui
+                            .add_enabled(self.can_arpeggiate(), item("Arpeggiator…", None))
+                            .on_disabled_hover_text(
+                                "Select a melodic track with a pattern to arpeggiate",
+                            )
+                            .clicked()
+                        {
+                            self.open_arpeggiator();
+                        }
                         ui.separator();
                         ui.menu_button("Add Track", |ui| {
                             for inst in Instrument::ALL {
@@ -1074,6 +1585,9 @@ impl CadenceApp {
                         if ui.add(item("Mixer", Some(&SC_MIXER))).clicked() {
                             self.tab = Tab::Mixer;
                         }
+                        if ui.add(item("Keyboard", Some(&SC_KEYS))).clicked() {
+                            self.tab = Tab::Keys;
+                        }
                         ui.separator();
                         if ui.add(item("Zoom In", None).shortcut_text("=")).clicked() {
                             self.zoom(1.25);
@@ -1085,6 +1599,25 @@ impl CadenceApp {
                             self.arranger.fit_request = true;
                         }
                         ui.checkbox(&mut self.arranger.follow, "Follow playhead");
+                        ui.separator();
+                        ui.menu_button("Theme", |ui| {
+                            for choice in ThemeChoice::ALL {
+                                let on = self.theme == choice;
+                                let text = if on {
+                                    RichText::new(choice.label()).color(pal.text).strong()
+                                } else {
+                                    RichText::new(choice.label())
+                                };
+                                if ui
+                                    .selectable_label(on, text)
+                                    .on_hover_text(choice.description())
+                                    .clicked()
+                                {
+                                    self.set_theme(ui.ctx(), choice);
+                                    ui.close();
+                                }
+                            }
+                        });
                     });
                     ui.menu_button("Help", |ui| {
                         if ui.add(item("Shortcuts & Tips", Some(&SC_HELP))).clicked() {
@@ -1102,7 +1635,15 @@ impl CadenceApp {
                         });
                         if ui
                             .add_enabled_ui(self.history.can_redo(), |ui| {
-                                theme::icon_button(ui, Icon::Redo, 24.0, false, LIME, &redo_tip)
+                                theme::icon_button(
+                                    ui,
+                                    pal,
+                                    Icon::Redo,
+                                    24.0,
+                                    false,
+                                    pal.accent,
+                                    &redo_tip,
+                                )
                             })
                             .inner
                             .clicked()
@@ -1114,7 +1655,15 @@ impl CadenceApp {
                         });
                         if ui
                             .add_enabled_ui(self.history.can_undo(), |ui| {
-                                theme::icon_button(ui, Icon::Undo, 24.0, false, LIME, &undo_tip)
+                                theme::icon_button(
+                                    ui,
+                                    pal,
+                                    Icon::Undo,
+                                    24.0,
+                                    false,
+                                    pal.accent,
+                                    &undo_tip,
+                                )
                             })
                             .inner
                             .clicked()
@@ -1123,9 +1672,9 @@ impl CadenceApp {
                         }
                         ui.add_space(8.0);
                         let (text, color) = if self.dirty() {
-                            ("Unsaved changes", theme::AMBER)
+                            ("Unsaved changes", pal.warn)
                         } else {
-                            ("All changes saved", TEXT_FAINT)
+                            ("All changes saved", pal.text_faint)
                         };
                         let shown = if self.doc.path.is_none() && !self.dirty() {
                             "Not saved yet"
@@ -1139,10 +1688,11 @@ impl CadenceApp {
     }
 
     fn status_bar(&mut self, ctx: &Context) {
+        let pal = self.palette();
         let frame = Frame::new()
-            .fill(BG)
+            .fill(pal.bg)
             .inner_margin(Margin::symmetric(12, 4))
-            .stroke(Stroke::new(1.0_f32, BORDER_SOFT));
+            .stroke(Stroke::new(1.0_f32, pal.border_soft));
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(28.0)
             .frame(frame)
@@ -1150,21 +1700,23 @@ impl CadenceApp {
                 ui.horizontal_centered(|ui| {
                     if let Some(status) = &self.status {
                         let color = match status.kind {
-                            StatusKind::Info => TEXT_DIM,
-                            StatusKind::Success => LIME,
-                            StatusKind::Warning => theme::AMBER,
-                            StatusKind::Error => CORAL,
+                            StatusKind::Info => pal.text_dim,
+                            StatusKind::Success => pal.accent,
+                            StatusKind::Warning => pal.warn,
+                            StatusKind::Error => pal.danger,
                         };
                         theme::color_dot(ui, color, 7.0);
                         ui.add(
-                            egui::Label::new(RichText::new(&status.text).small().color(TEXT_DIM))
-                                .truncate(),
+                            egui::Label::new(
+                                RichText::new(&status.text).small().color(pal.text_dim),
+                            )
+                            .truncate(),
                         );
                     } else {
                         ui.label(
                             RichText::new("Ready · Press F1 for shortcuts")
                                 .small()
-                                .color(TEXT_FAINT),
+                                .color(pal.text_faint),
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1172,13 +1724,13 @@ impl CadenceApp {
                             (Some(_), _) => {
                                 let err = self.transport.engine_error.clone();
                                 let (c, t) = match err {
-                                    Some(e) => (CORAL, format!("Audio error: {e}")),
+                                    Some(e) => (pal.danger, format!("Audio error: {e}")),
                                     None => (
-                                        LIME,
+                                        pal.accent,
                                         format!("Audio ready · {} voices", self.transport.voices),
                                     ),
                                 };
-                                ui.label(RichText::new(t).small().color(TEXT_DIM));
+                                ui.label(RichText::new(t).small().color(pal.text_dim));
                                 theme::color_dot(ui, c, 7.0);
                             }
                             (None, err) => {
@@ -1194,9 +1746,9 @@ impl CadenceApp {
                                         "Offline (no audio output) · editing & export work",
                                     )
                                     .small()
-                                    .color(TEXT_DIM),
+                                    .color(pal.text_dim),
                                 );
-                                theme::color_dot(ui, CORAL, 7.0);
+                                theme::color_dot(ui, pal.danger, 7.0);
                             }
                         }
                         ui.add_space(14.0);
@@ -1211,7 +1763,7 @@ impl CadenceApp {
                                 ops::format_time(secs)
                             ))
                             .small()
-                            .color(TEXT_FAINT),
+                            .color(pal.text_faint),
                         );
                         if let Some(job) = &self.export {
                             ui.add_space(14.0);
@@ -1220,12 +1772,12 @@ impl CadenceApp {
                                 egui::ProgressBar::new(p)
                                     .desired_width(140.0)
                                     .desired_height(10.0)
-                                    .fill(LIME),
+                                    .fill(pal.accent),
                             );
                             ui.label(
                                 RichText::new(format!("Exporting WAV {:.0}%", p * 100.0))
                                     .small()
-                                    .color(LIME),
+                                    .color(pal.accent),
                             );
                         }
                     });
@@ -1237,6 +1789,7 @@ impl CadenceApp {
         match AudioEngine::new() {
             Ok(engine) => {
                 engine.set_project(&self.project);
+                engine.set_fonts(std::sync::Arc::new(self.fonts.clone()));
                 engine.set_metronome(self.transport.metronome);
                 self.engine = Some(engine);
                 self.audio_error = None;
@@ -1250,7 +1803,8 @@ impl CadenceApp {
     }
 
     fn central(&mut self, ctx: &Context) {
-        let frame = Frame::new().fill(BG).inner_margin(Margin {
+        let pal = self.palette();
+        let frame = Frame::new().fill(pal.bg).inner_margin(Margin {
             left: 8,
             right: 10,
             top: 8,
@@ -1273,23 +1827,29 @@ impl CadenceApp {
                     ..Margin::ZERO
                 }))
                 .show_inside(ui, |ui| {
-                    theme::card().inner_margin(Margin::same(0)).show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        self.arranger_ui(ui);
-                    });
+                    theme::card(pal)
+                        .inner_margin(Margin::same(0))
+                        .show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            self.arranger_ui(ui);
+                        });
                 });
-            theme::card().inner_margin(Margin::same(0)).show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
-                self.bottom_tabs(ui);
-                match self.tab {
-                    Tab::Editor => self.editor_ui(ui),
-                    Tab::Mixer => self.mixer_ui(ui),
-                }
-            });
+            theme::card(pal)
+                .inner_margin(Margin::same(0))
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.bottom_tabs(ui);
+                    match self.tab {
+                        Tab::Editor => self.editor_ui(ui),
+                        Tab::Mixer => self.mixer_ui(ui),
+                        Tab::Keys => self.keys_ui(ui),
+                    }
+                });
         });
     }
 
     fn bottom_tabs(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
         Frame::new()
             .inner_margin(Margin {
                 left: 12,
@@ -1303,10 +1863,11 @@ impl CadenceApp {
                     for (tab, label, s) in [
                         (Tab::Editor, "Pattern Editor", &SC_EDITOR),
                         (Tab::Mixer, "Mixer", &SC_MIXER),
+                        (Tab::Keys, "Keyboard", &SC_KEYS),
                     ] {
                         let on = self.tab == tab;
                         let text =
-                            RichText::new(label).color(if on { theme::TEXT } else { TEXT_DIM });
+                            RichText::new(label).color(if on { pal.text } else { pal.text_dim });
                         let b = egui::Button::new(text)
                             .selected(on)
                             .min_size(egui::vec2(120.0, 28.0))
@@ -1317,8 +1878,7 @@ impl CadenceApp {
                                 se: 0,
                             });
                         let b = if on {
-                            b.fill(theme::CONTROL)
-                                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                            b.fill(pal.control).stroke(Stroke::new(1.0_f32, pal.border))
                         } else {
                             b.fill(Color32::TRANSPARENT).stroke(Stroke::NONE)
                         };
@@ -1334,25 +1894,27 @@ impl CadenceApp {
             });
         let r = ui.cursor();
         ui.painter()
-            .hline(r.x_range(), r.top(), Stroke::new(1.0_f32, theme::BORDER));
+            .hline(r.x_range(), r.top(), Stroke::new(1.0_f32, pal.border));
     }
 
     fn empty_state(&mut self, ui: &mut egui::Ui) {
-        theme::card().show(ui, |ui| {
+        let pal = self.palette();
+        theme::card(pal).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.25).max(20.0));
-                ui.label(theme::kicker_text("EMPTY SONG"));
-                ui.label(RichText::new("Start by adding an instrument").size(22.0).color(theme::TEXT));
+                ui.label(theme::kicker_text(pal, "EMPTY SONG"));
+                ui.label(RichText::new("Start by adding an instrument").size(22.0).color(pal.text));
                 ui.add_space(4.0);
-                ui.label(RichText::new("Each track gets its own patterns, clips and mixer channel. You can add up to 32 tracks.").color(TEXT_DIM));
+                ui.label(RichText::new("Each track gets its own patterns, clips and mixer channel. You can add up to 32 tracks.").color(pal.text_dim));
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
-                    let w = 6.0 * 128.0 + 5.0 * 8.0;
+                    let count = Instrument::ALL.len() as f32;
+                    let w = count * 128.0 + (count - 1.0) * 8.0;
                     ui.add_space(((ui.available_width() - w) * 0.5).max(0.0));
                     for inst in Instrument::ALL {
                         let color = theme::rgb(sidebar::instrument_color(inst));
-                        let b = egui::Button::new(RichText::new(format!("+  {}", inst.name())).color(theme::INK).strong()).fill(color).min_size(egui::vec2(128.0, 40.0));
+                        let b = egui::Button::new(RichText::new(format!("+  {}", inst.name())).color(theme::ink_on(color)).strong()).fill(color).min_size(egui::vec2(128.0, 40.0));
                         if ui.add(b).on_hover_text(inst.description()).clicked() {
                             self.add_track(inst);
                         }
@@ -1363,18 +1925,23 @@ impl CadenceApp {
     }
 }
 
-/// Fingerprint of the packs directory (names + sizes + mtimes) used by the
-/// 2-second auto-refresh poll. Cheap: only directory metadata is read.
-fn pack_fingerprint() -> u64 {
+/// Fingerprint of the files with extension `ext` in `dir` (names + sizes +
+/// mtimes), used by the periodic rescan polls. Cheap: only directory
+/// metadata is read.
+fn dir_fingerprint(dir: &std::path::Path, ext: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mix = |v: u64, h: &mut u64| {
         *h ^= v;
         *h = h.wrapping_mul(0x0000_0100_0000_01b3);
     };
-    if let Ok(rd) = std::fs::read_dir(crate::packs::user_packs_dir()) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            if !p
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case(ext))
+            {
                 continue;
             }
             for b in p
@@ -1400,12 +1967,28 @@ fn pack_fingerprint() -> u64 {
     h
 }
 
+/// Fingerprint of the user pack folder (see [`dir_fingerprint`]).
+fn pack_fingerprint() -> u64 {
+    dir_fingerprint(&crate::packs::user_packs_dir(), "json")
+}
+
+/// Fingerprint of the user SoundFont folder (see [`dir_fingerprint`]).
+fn font_fingerprint() -> u64 {
+    dir_fingerprint(&crate::font::user_fonts_dir(), "sf2")
+}
+
 impl eframe::App for CadenceApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.frame(ctx);
     }
 
+    /// Persists only the UI theme — song state is saved through `.cadence`
+    /// files, never through eframe storage.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(theme::STORAGE_KEY, self.theme.id().to_owned());
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        BG.to_normalized_gamma_f32()
+        self.palette().bg.to_normalized_gamma_f32()
     }
 }

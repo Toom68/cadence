@@ -35,6 +35,12 @@ No Rust edits, no rebuild, no samples.
 - **Only schema fields are allowed** — unknown fields are rejected, so a typo
   like `samplehold` fails validation (that's the point: fix it).
 - File max 2 MB.
+- **Drum kits:** instead of top-level `oscillators`, a preset may carry
+  `"kit": {"pieces": [...]}` — 1-32 pieces, each `{"name", "pitch" (MIDI
+  0-127, unique), "voice": {...same synth fields as a preset...}}`. The
+  preset then plays as a kit: note-on picks the piece with the nearest pitch
+  (ties → lower). Array order is display order. See `packs/README.md` →
+  "Drum kits" and the `kit`/`kitPiece`/`kitVoice` defs in `schema.json`.
 
 ## Validate and install (built binary — never rebuild for packs)
 

@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 
 use egui::Context;
 
-use super::dialogs::Dialog;
+use super::dialogs::{Dialog, NewSongDraft};
 use super::{CadenceApp, StatusKind};
-use crate::model::Project;
+use crate::model::{Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
 
 /// How often the user pack folder is re-scanned for dropped-in packs.
@@ -85,10 +85,10 @@ impl CadenceApp {
     /// the document is clean). Called by the unsaved-changes dialog.
     pub(super) fn run_pending_action(&mut self, action: PendingAction) {
         match action {
-            PendingAction::New => {
-                self.replace_project(Project::empty(), None, true);
-                self.set_status(StatusKind::Success, "Started a new song.");
-            }
+            // The unsaved-changes decision (if any) has already been made;
+            // now ask for the new song's name and key. Cancelling that dialog
+            // keeps the current song.
+            PendingAction::New => self.dialog = Dialog::NewSong(NewSongDraft::default()),
             PendingAction::Demo => {
                 self.replace_project(Project::demo(), None, true);
                 self.set_status(
@@ -100,6 +100,23 @@ impl CadenceApp {
             PendingAction::ImportMidi => self.import_midi_dialog(),
             PendingAction::Quit => self.allow_close = true,
         }
+    }
+
+    /// Replaces the song with a blank one named `name` (trimmed; blank falls
+    /// back to the default name) in `key`. Used by the New Song dialog.
+    pub(super) fn create_new_song(&mut self, name: &str, key: SongKey) {
+        let mut project = Project::empty();
+        let name: String = name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let name = name.trim_end();
+        if !name.is_empty() {
+            project.name = name.to_string();
+        }
+        project.key = SongKey::new(key.root, key.mode);
+        self.replace_project(project, None, true);
+        self.set_status(
+            StatusKind::Success,
+            format!("Started a new song in {}.", key.name()),
+        );
     }
 
     // ----- open / save -----------------------------------------------------
@@ -410,6 +427,26 @@ impl CadenceApp {
         ctx.data_mut(|d| d.insert_temp(id, now));
         ctx.request_repaint_after(PACK_SCAN_INTERVAL);
         self.reload_packs(false);
+    }
+
+    /// Re-reads the user font folder on the same cadence as packs so `.sf2`
+    /// files dropped into it appear without a restart. Parsing only happens
+    /// inside [`CadenceApp::reload_fonts`] when the folder actually changed.
+    /// Driven from [`CadenceApp::dialogs`]; the timestamp lives in egui temp
+    /// data like the pack scan.
+    pub(super) fn poll_font_dir(&mut self, ctx: &Context) {
+        if !self.io_enabled {
+            return;
+        }
+        let id = egui::Id::new("cadence-font-dir-scan");
+        let now = Instant::now();
+        let last = ctx.data_mut(|d| d.get_temp::<Instant>(id));
+        if last.is_some_and(|t| now.saturating_duration_since(t) < PACK_SCAN_INTERVAL) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(id, now));
+        ctx.request_repaint_after(PACK_SCAN_INTERVAL);
+        self.reload_fonts();
     }
 
     // ----- helpers ---------------------------------------------------------

@@ -6,6 +6,7 @@ use super::song::SongData;
 use crate::audio::dsp::Rng;
 use crate::model::Project;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Sample rate of exported WAV files.
 pub const EXPORT_SAMPLE_RATE: u32 = 44_100;
@@ -49,6 +50,12 @@ impl OfflineRender {
         let tail = (MAX_TAIL_SECONDS * sr) as u64;
         let max_frames = (song_frames + tail).min((max_seconds.max(0.0) * sr) as u64);
         let mut renderer = Renderer::new(sample_rate as f32);
+        // Font tracks need the catalog; parsing .sf2 files is too slow to do
+        // unconditionally, so load only when the song actually references one.
+        // Missing fonts fall back to each track's preset/built-in sound.
+        if project.tracks.iter().any(|t| t.font.is_some()) {
+            renderer.set_fonts(Arc::new(crate::font::load_library()));
+        }
         renderer.load(Box::new(song));
         renderer.play(0.0, false);
         let skip = renderer.latency();

@@ -32,6 +32,42 @@ seconds (`attack`/`decay`/`release`, `sustain` 0-1); `audition_note`
 0-127 and `audition_duration` 0.1-8 s pick the preview note and length
 (defaults 60 / 0.8 — set them to the preset's real register).
 
+## Drum kits
+
+A preset can be a whole drum kit instead of one melodic voice: add a `kit`
+object with an ordered `pieces` array (1-32 pieces). Each piece has a display
+`name` (1-64 chars), a MIDI `pitch` (0-127, unique within the kit) and a
+`voice` — the same synthesis fields as a preset (`oscillators`, `envelope`,
+`pitch_envelope`, `filter_envelope`, `filter_cutoff`, `filter_resonance`,
+`lfo`, `bit_depth`, `sample_hold`, `gain`; every field optional with the
+usual defaults, but `oscillators` needs 1-4 entries).
+
+```json
+{ "id": "my-kit.studio", "name": "Studio Kit",
+  "kit": { "pieces": [
+    { "name": "Kick", "pitch": 36, "voice": {
+        "oscillators": [{"waveform":"sine","level":1.0,"frequency_ratio":1.0}],
+        "envelope": {"attack":0.001,"decay":0.4,"sustain":0.0,"release":0.05},
+        "filter_cutoff": 4000.0 } },
+    { "name": "Snare", "pitch": 38, "voice": {
+        "oscillators": [{"waveform":"noise","level":0.7},
+                        {"waveform":"triangle","level":0.4,"frequency_ratio":1.8}],
+        "envelope": {"attack":0.001,"decay":0.18,"sustain":0.0,"release":0.04},
+        "filter_cutoff": 8000.0 } }
+  ] } }
+```
+
+- Array order is the kit's display/row order — list pieces the way you want
+  them shown (e.g. kick, snare, hats, cymbals).
+- At note-on the engine plays the piece whose `pitch` matches exactly; any
+  other note plays the NEAREST piece pitch (ties go to the lower pitch), so
+  the whole MIDI range stays playable.
+- A kit preset may omit the top-level `oscillators` entirely (they become
+  inert metadata; if present they are still range-validated). `monophonic`
+  does not apply to kits — pieces are one-shot polyphonic voices.
+- Pair kit presets with the drum editor in the app so notes land on the
+  step grid like the built-in kit.
+
 ## Rules that bite
 
 - Instrument ids: lowercase `a-z 0-9 - _ .`, must contain a dot
@@ -52,12 +88,15 @@ seconds (`attack`/`decay`/`release`, `sustain` 0-1); `audition_note`
 
 ## Bundled banks
 
-Eight packs ship compiled in: `8-bit/` (10 chiptune presets) and seven
+Thirteen packs ship compiled in: `8-bit/` (10 chiptune presets), seven
 `psy-*` banks — `psy-rhythm` (24), `psy-bass` (24), `psy-keys` (16),
 `psy-brass` (16), `psy-leads` (16), `psy-arps` (16), `psy-space` (16) —
-138 presets, 144 sounds together with the six built-ins. The `psy-*` packs
-all set `audition_note`/`audition_duration` per preset so previews and new
-tracks open in a useful register.
+plus `drum-kits/` (4 multi-voice kits), `guitar/` (12), `neon/` (16
+detailed electronic voices), `one-shots/` (12 FX) and `mallets/` (14
+struck idiophones and vintage keys plus a 12-piece mallet kit): 196
+presets, 202 sounds together with the six built-ins. The `psy-*` packs
+all set `audition_note`/`audition_duration` per preset so previews and
+new tracks open in a useful register.
 
 ## Where packs live
 

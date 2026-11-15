@@ -9,14 +9,19 @@
 
 use std::collections::BTreeSet;
 
+use eframe::Storage as _;
 use egui::{pos2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
-use super::dialogs::Dialog;
+use super::dialogs::{ArpDraft, Dialog, NewSongDraft};
 use super::files::PendingAction;
-use super::sidebar::{audition_params, bank_options, library_rows, LibraryBank};
-use super::{arranger, ops, CadenceApp, StatusKind};
-use crate::model::{Instrument, Note, Project, DRUMS};
-use crate::packs::InstrumentPreset;
+use super::sidebar::{
+    audition_params, bank_options, gm_family, library_rows, preset_summary, LibraryBank, SideTab,
+};
+use super::theme::{self, ThemeChoice};
+use super::{arranger, ops, CadenceApp, Clipboard, StatusKind};
+use crate::font::FontInfo;
+use crate::model::{ChordQuality, FontRef, Instrument, KeyMode, Note, Project, SongKey, DRUMS};
+use crate::packs::{InstrumentPreset, KitPiece, KitSpec, KitVoice};
 
 /// Pitch-row height used by the piano roll (mirrors `editor.rs` `ROW_H`).
 const ROW_H: f32 = 16.0;
@@ -192,6 +197,13 @@ impl Ui {
         self.step();
     }
 
+    /// Queues one raw egui event and runs a frame — the shape egui-winit
+    /// actually delivers for desktop clipboard commands.
+    fn event(&mut self, ev: Event) {
+        self.next.events.push(ev);
+        self.step();
+    }
+
     fn pattern(&self, track_idx: usize, pattern_idx: usize) -> &crate::model::Pattern {
         &self.app.project.tracks[track_idx].patterns[pattern_idx]
     }
@@ -226,6 +238,7 @@ fn test_preset() -> InstrumentPreset {
         monophonic: false,
         audition_note: 55,
         audition_duration: 1.6,
+        kit: None,
     }
 }
 
@@ -237,6 +250,42 @@ fn preset_with(id: &str, name: &str, desc: &str, note: u8, secs: f32) -> Instrum
     p.description = desc.into();
     p.audition_note = note;
     p.audition_duration = secs;
+    p
+}
+
+fn kit_voice() -> KitVoice {
+    KitVoice {
+        oscillators: vec![Default::default()],
+        ..Default::default()
+    }
+}
+
+/// A three-piece drum-kit preset. Pieces are deliberately NOT in pitch order
+/// (Hat@42, Kick@60, Clap@39) so tests can prove the grid follows the pieces
+/// array order rather than sorting by pitch — and Kick@60 sits outside the
+/// built-in DRUMS table, proving kit rows take arbitrary pitches. `audition_note` stays at the
+/// serde default 60 so the kit audition falls back to the first piece.
+fn test_kit_preset() -> InstrumentPreset {
+    let mut p = preset_with("test-drums.machine", "Machine Kit", "kit", 60, 0.8);
+    p.kit = Some(KitSpec {
+        pieces: vec![
+            KitPiece {
+                name: "Hat".into(),
+                pitch: 42,
+                voice: kit_voice(),
+            },
+            KitPiece {
+                name: "Kick".into(),
+                pitch: 60,
+                voice: kit_voice(),
+            },
+            KitPiece {
+                name: "Clap".into(),
+                pitch: 39,
+                voice: kit_voice(),
+            },
+        ],
+    });
     p
 }
 
@@ -492,7 +541,9 @@ fn piano_non_first_note_group_drag_preserves_intervals_and_clamps() {
     ui.step();
     let idx = ui.app.project.tracks.len() - 1;
     let id = ui.app.project.tracks[idx].id;
-    show_pitch(&mut ui, id, 60);
+    // Centre on pitch 63 so the whole 60–67 range the drag touches stays
+    // inside the (now shorter) roll viewport.
+    show_pitch(&mut ui, id, 63);
     {
         let pat = &mut ui.app.project.tracks[idx].patterns[0];
         pat.notes = vec![Note::new(60, 2.0, 2.0, 0.8), Note::new(64, 6.0, 2.0, 0.8)];
@@ -1265,10 +1316,16 @@ fn unsaved_guard_blocks_then_discards() {
     assert!(matches!(ui.app.dialog, Dialog::None));
     ui.app.request(PendingAction::New);
     ui.app.run_pending_action(PendingAction::New);
+    assert!(
+        matches!(ui.app.dialog, Dialog::NewSong(_)),
+        "discard moves on to the New Song dialog"
+    );
+    ui.key(Key::Enter);
+    assert!(matches!(ui.app.dialog, Dialog::None));
     assert_eq!(
         ui.app.project.tracks.len(),
         1,
-        "discard started a new song (starter drum track)"
+        "Create started a new song (starter drum track)"
     );
     assert!(!ui.app.dirty());
 }
@@ -1480,7 +1537,7 @@ fn library_bank_and_search_filters() {
 
     // Bank chooser reports sound counts per bank.
     let options = bank_options(&catalog);
-    assert_eq!(options[0], (LibraryBank::All, 9));
+    assert_eq!(options[0], (LibraryBank::All, Instrument::ALL.len() + 3));
     assert_eq!(options[1], (LibraryBank::BuiltIn, Instrument::ALL.len()));
     assert!(options.contains(&(LibraryBank::Pack("test-a".into()), 2)));
     assert!(options.contains(&(LibraryBank::Pack("test-b".into()), 1)));
@@ -1653,4 +1710,1498 @@ fn preset_track_with_notes_still_centers_on_note_content() {
         ui.app.roll_cell_center(33, 1.0).is_none(),
         "audition metadata no longer drives the scroll once notes exist"
     );
+}
+
+#[test]
+fn kit_preset_track_gets_the_drum_grid() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.add_preset_track(&test_kit_preset());
+    ui.step();
+
+    let t = ui.app.project.tracks.last().unwrap();
+    assert_eq!(t.instrument, Instrument::Drums, "kits become drum tracks");
+    assert_eq!(t.preset.as_ref().unwrap().id, "test-drums.machine");
+    assert!(t.shows_drum_grid());
+    // Rows follow the pieces array order, not pitch order. Kick sits at
+    // pitch 60 — outside the built-in DRUMS table — proving kit rows are
+    // arbitrary pitches, not the eight synthesized drums.
+    assert_eq!(t.drum_rows(), vec![(42, "Hat"), (60, "Kick"), (39, "Clap")]);
+    assert_eq!(t.patterns[0].name, "Beat 1", "drum-grid naming");
+    let status = ui.app.status.as_ref().expect("add status");
+    assert!(
+        status.text.contains("drum grid"),
+        "status mentions the drum grid: {}",
+        status.text
+    );
+}
+
+#[test]
+fn kit_drum_grid_has_one_row_per_piece_and_paints_piece_pitches() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_preset_track(&test_kit_preset());
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+
+    // Three pieces → three rows; a fourth row index is off the grid.
+    for row in 0..3 {
+        assert!(
+            ui.app.drum_cell_center(row, 0).is_some(),
+            "row {row} on screen"
+        );
+    }
+    assert!(ui.app.drum_cell_center(3, 0).is_none(), "no fourth row");
+
+    // Clicks on rows 0/1/2 write the piece pitches in pieces order:
+    // row 0 = Hat@42, row 1 = Kick@60 (off the built-in drum table),
+    // row 2 = Clap@39.
+    for (row, step) in [(0usize, 0u32), (1, 4), (2, 8)] {
+        let pos = ui.app.drum_cell_center(row, step).expect("cell");
+        ui.click(pos);
+        ui.step();
+    }
+    let pat = ui.pattern(idx, 0);
+    for (pitch, step) in [(42u8, 0u32), (60, 4), (39, 8)] {
+        assert!(
+            ops::drum_hit(pat, pitch, step).is_some(),
+            "piece pitch {pitch} painted at step {step}"
+        );
+    }
+    assert_eq!(pat.notes.len(), 3, "exactly the three painted hits");
+    assert!(
+        pat.notes.iter().all(|n| [39, 42, 60].contains(&n.pitch)),
+        "no note lands on a pitch outside the kit rows"
+    );
+}
+
+#[test]
+fn kit_preset_summary_and_audition_pitch() {
+    let preset = test_kit_preset();
+    assert_eq!(preset_summary(&preset), "kit · 3 pieces");
+    // Melodic presets keep the oscillator summary.
+    assert!(preset_summary(&test_preset()).contains("sine"));
+
+    // audition_note at the serde default (60) falls back to the first piece.
+    let track = crate::model::Track::from_preset(Instrument::Drums, preset.clone());
+    let (pitch, secs) = audition_params(&track, 60);
+    assert_eq!(pitch, 42);
+    assert!((secs - 0.8).abs() < 1e-6, "{secs}");
+
+    // An explicit audition_note wins over the piece fallback.
+    let mut explicit = preset.clone();
+    explicit.audition_note = 48;
+    let track = crate::model::Track::from_preset(Instrument::Drums, explicit);
+    assert_eq!(audition_params(&track, 60).0, 48);
+}
+
+#[test]
+fn melodic_preset_on_a_drums_track_keeps_the_piano_roll() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    // Swap the built-in drums track's sound for a melodic preset before the
+    // first frame so the editor homes on the preset's audition note (55).
+    ui.app.project.tracks[0].preset = Some(test_preset());
+    let id = ui.app.project.tracks[0].id;
+    ui.app.select_track(id);
+    ui.step();
+
+    let t = &ui.app.project.tracks[0];
+    assert!(!t.shows_drum_grid(), "melodic preset → piano roll");
+    assert!(ui.app.drum_cell_center(0, 0).is_none());
+    assert!(
+        ui.app.roll_cell_center(55, 1.0).is_some(),
+        "the piano roll is what rendered, homed on the audition note"
+    );
+}
+
+#[test]
+fn kit_preset_on_a_melodic_track_keeps_the_piano_roll() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.app.add_track(Instrument::Lead);
+    // Apply the kit preset before the first frame: the editor must home on a
+    // real piece pitch (first piece, Hat@42) even though the roll stays.
+    ui.app.project.tracks.last_mut().unwrap().preset = Some(test_kit_preset());
+    ui.step();
+
+    let t = ui.app.project.tracks.last().unwrap();
+    assert_eq!(t.instrument, Instrument::Lead);
+    assert!(!t.shows_drum_grid(), "kit preset on Lead → piano roll");
+    assert_eq!(t.drum_rows(), vec![(42, "Hat"), (60, "Kick"), (39, "Clap")]);
+    assert!(ui.app.drum_cell_center(0, 0).is_none());
+    assert!(
+        ui.app.roll_cell_center(42, 1.0).is_some(),
+        "piano roll homed on the first kit piece pitch"
+    );
+}
+
+// ----- new song + song key ----------------------------------------------------
+
+#[test]
+fn new_song_opens_dialog_instead_of_replacing() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let demo = ui.app.project.clone();
+    ui.app.request(PendingAction::New);
+    assert!(
+        matches!(&ui.app.dialog, Dialog::NewSong(d) if *d == NewSongDraft::default()),
+        "clean song goes straight to the New Song dialog"
+    );
+    ui.steps(2);
+    assert!(matches!(ui.app.dialog, Dialog::NewSong(_)), "stays open");
+    assert_eq!(ui.app.project, demo, "nothing replaced yet");
+}
+
+#[test]
+fn new_song_create_applies_name_and_key() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.request(PendingAction::New);
+    ui.app.dialog = Dialog::NewSong(NewSongDraft {
+        name: "  Moonlit  ".into(),
+        key: SongKey::new(9, KeyMode::Minor),
+    });
+    ui.step();
+    ui.key(Key::Enter);
+    assert!(matches!(ui.app.dialog, Dialog::None));
+    assert_eq!(ui.app.project.name, "Moonlit");
+    assert_eq!(
+        ui.app.project.key,
+        SongKey {
+            root: 9,
+            mode: KeyMode::Minor
+        }
+    );
+    assert_eq!(ui.app.project.tracks.len(), 1);
+    assert!(!ui.app.dirty());
+    let status = ui.app.status.as_ref().unwrap();
+    assert!(status.text.contains("A minor"), "{}", status.text);
+
+    // A blank name falls back to the default.
+    ui.app.create_new_song("   ", SongKey::default());
+    assert_eq!(ui.app.project.name, Project::empty().name);
+    assert_eq!(ui.app.project.key, SongKey::default());
+}
+
+#[test]
+fn new_song_cancel_keeps_the_current_song() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let demo = ui.app.project.clone();
+    ui.app.request(PendingAction::New);
+    ui.step();
+    ui.key(Key::Escape);
+    assert!(matches!(ui.app.dialog, Dialog::None));
+    assert_eq!(ui.app.project, demo);
+}
+
+#[test]
+fn dirty_new_song_asks_to_save_then_opens_new_song_dialog() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.add_track(Instrument::Lead);
+    ui.step();
+    ui.app.request(PendingAction::New);
+    assert!(matches!(ui.app.dialog, Dialog::Unsaved(PendingAction::New)));
+    // "Don't Save" path: the unsaved dialog runs the pending action, which
+    // must leave the New Song dialog open rather than being overwritten.
+    ui.app.dialog = Dialog::None;
+    ui.app.run_pending_action(PendingAction::New);
+    assert!(matches!(ui.app.dialog, Dialog::NewSong(_)));
+    ui.steps(2);
+    assert!(matches!(ui.app.dialog, Dialog::NewSong(_)));
+    assert!(ui.app.dirty(), "old song untouched until Create");
+    ui.key(Key::Enter);
+    assert!(!ui.app.dirty());
+    assert_eq!(ui.app.project.tracks.len(), 1);
+}
+
+// ----- arpeggiator -----------------------------------------------------------
+
+/// Demo with the "Afterglow keys" piano track selected.
+fn arp_ui() -> (Ui, u64, u64) {
+    let mut ui = Ui::demo();
+    ui.step();
+    let track = ui
+        .app
+        .project
+        .tracks
+        .iter()
+        .find(|t| t.instrument == Instrument::Piano)
+        .unwrap();
+    let (tid, pid) = (track.id, track.patterns[0].id);
+    ui.app.select_track(tid);
+    ui.step();
+    (ui, tid, pid)
+}
+
+#[test]
+fn arpeggiator_needs_a_melodic_track_with_a_pattern() {
+    let (mut ui, tid, _) = arp_ui();
+    assert!(ui.app.can_arpeggiate());
+    let drums = ui.app.project.tracks[0].id;
+    assert!(ui.app.project.tracks[0].shows_drum_grid());
+    ui.app.select_track(drums);
+    ui.step();
+    assert!(!ui.app.can_arpeggiate(), "drum grid track");
+    ui.app.open_arpeggiator();
+    assert!(matches!(ui.app.dialog, Dialog::None));
+
+    ui.app.select_track(tid);
+    ui.app.edit("Clear patterns", None, |p| {
+        let t = ops::track_mut(p, tid).unwrap();
+        t.clips.clear();
+        t.patterns.clear();
+    });
+    ui.step();
+    assert!(!ui.app.can_arpeggiate(), "no pattern");
+    assert_eq!(ui.app.arpeggiate(&ops::ArpSpec::default()), None);
+}
+
+#[test]
+fn arpeggiator_defaults_follow_song_key_and_instrument() {
+    let (mut ui, _, _) = arp_ui();
+    ui.app.open_arpeggiator();
+    let Dialog::Arp(draft) = &ui.app.dialog else {
+        panic!("arp dialog open");
+    };
+    // Demo is C minor: the i chord is C minor, rooted at C4 for a piano.
+    let spec = draft.spec(ui.app.project.key);
+    assert_eq!(spec.chord_root, 60);
+    assert_eq!(spec.quality, ChordQuality::Minor);
+    assert_eq!(spec.octaves, 2);
+    assert_eq!(spec.direction, ops::ArpDirection::Up);
+    assert_eq!(spec.rate_steps, 2);
+    assert_eq!(spec.velocity, 0.8);
+    assert!(spec.accent && spec.replace);
+    ui.steps(3);
+    assert!(matches!(ui.app.dialog, Dialog::Arp(_)), "dialog stays open");
+    ui.key(Key::Escape);
+    assert!(matches!(ui.app.dialog, Dialog::None));
+
+    // Degree V of C minor is G minor (natural minor v).
+    let mut draft = ArpDraft::new(ui.app.project.key, 36);
+    draft.degree = Some(4);
+    draft.quality = ui.app.project.key.degree_chord_quality(4);
+    let spec = draft.spec(ui.app.project.key);
+    assert_eq!(spec.chord_root, 43, "G2 for a bass-range instrument");
+    assert_eq!(spec.quality, ChordQuality::Minor);
+}
+
+#[test]
+fn arpeggiate_writes_current_pattern_and_undoes() {
+    let (mut ui, tid, pid) = arp_ui();
+    let before = ui.app.project.clone();
+    let pattern_len = ops::pattern(ops::track(&before, tid).unwrap(), pid)
+        .unwrap()
+        .length;
+    let spec = ops::ArpSpec {
+        chord_root: 60,
+        quality: ChordQuality::Major7,
+        octaves: 1,
+        rate_steps: 4,
+        ..ops::ArpSpec::default()
+    };
+    assert_eq!(ui.app.arpeggiate(&spec), Some(pattern_len as usize / 4));
+    ui.step();
+    let pat = ops::pattern(ops::track(&ui.app.project, tid).unwrap(), pid).unwrap();
+    let pitches: Vec<u8> = pat.notes.iter().take(5).map(|n| n.pitch).collect();
+    assert_eq!(pitches, [60, 64, 67, 71, 60]);
+    assert!(ui.app.dirty());
+    let status = ui.app.status.as_ref().unwrap();
+    assert!(
+        status.text.starts_with("Arpeggio: Cmaj7"),
+        "{}",
+        status.text
+    );
+    ui.app.project.validate().unwrap();
+
+    ui.app.undo();
+    ui.step();
+    assert_eq!(ui.app.project, before, "one undo restores the pattern");
+}
+
+#[test]
+fn arp_key_change_persists_and_drives_the_chord() {
+    let (mut ui, tid, pid) = arp_ui();
+    // The dialog's key picker goes through set_song_key: an undoable edit.
+    ui.app.set_song_key(SongKey::new(2, KeyMode::Major));
+    assert!(ui.app.dirty());
+    let status = ui.app.status.as_ref().unwrap();
+    assert!(status.text.contains("D major"), "{}", status.text);
+    ui.app.open_arpeggiator();
+    ui.step();
+    let Dialog::Arp(draft) = &ui.app.dialog else {
+        panic!("arp dialog open");
+    };
+    let spec = draft.spec(ui.app.project.key);
+    assert_eq!(spec.chord_root, 62, "I of D major");
+    assert_eq!(spec.quality, ChordQuality::Major);
+    ui.app.arpeggiate(&spec);
+    let pat = ops::pattern(ops::track(&ui.app.project, tid).unwrap(), pid).unwrap();
+    assert_eq!(pat.notes[0].pitch, 62);
+    assert_eq!(pat.notes[1].pitch, 66);
+    assert_eq!(ui.app.project.key, SongKey::new(2, KeyMode::Major));
+    ui.app.undo();
+    ui.app.undo();
+    assert_eq!(ui.app.project.key, SongKey::new(0, KeyMode::Minor));
+}
+
+// ----- UI themes -------------------------------------------------------------
+
+/// In-memory `eframe::Storage` for theme persistence tests — no user-data IO.
+#[derive(Default)]
+struct MemStorage {
+    map: std::collections::HashMap<String, String>,
+}
+
+impl eframe::Storage for MemStorage {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.map.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.map.insert(key.to_owned(), value);
+    }
+    fn flush(&mut self) {}
+}
+
+#[test]
+fn theme_defaults_to_graphite() {
+    assert_eq!(ThemeChoice::default(), ThemeChoice::Graphite);
+    assert_eq!(ThemeChoice::from_id(""), ThemeChoice::Graphite);
+    assert_eq!(ThemeChoice::from_id("bogus"), ThemeChoice::Graphite);
+    assert_eq!(ThemeChoice::from_storage(None), ThemeChoice::Graphite);
+    let mut ui = Ui::demo();
+    ui.step();
+    assert_eq!(ui.app.theme, ThemeChoice::Graphite);
+    assert_eq!(ui.app.palette(), ThemeChoice::Graphite.palette());
+}
+
+#[test]
+fn theme_switch_changes_palette_not_the_song() {
+    let mut ui = Ui::demo();
+    ui.step();
+    let before = ui.app.project.clone();
+    let saved = ui.app.history.state();
+    let was_dirty = ui.app.dirty();
+    for choice in [
+        ThemeChoice::Midnight,
+        ThemeChoice::Paper,
+        ThemeChoice::Graphite,
+    ] {
+        ui.app.set_theme(&ui.ctx, choice);
+        ui.step();
+        assert_eq!(ui.app.theme, choice);
+        assert_eq!(ui.app.palette(), choice.palette());
+        assert_eq!(
+            ui.app.project, before,
+            "theme switch must not mutate the song"
+        );
+        assert_eq!(ui.app.history.state(), saved, "no undo step recorded");
+        assert_eq!(ui.app.dirty(), was_dirty, "dirty flag untouched");
+    }
+    // Re-selecting the current theme is a no-op.
+    ui.app.set_theme(&ui.ctx, ThemeChoice::Paper);
+    assert_eq!(ui.app.theme, ThemeChoice::Paper);
+}
+
+#[test]
+fn theme_storage_round_trip_and_fallback() {
+    // Missing key → default.
+    let storage = MemStorage::default();
+    assert_eq!(
+        ThemeChoice::from_storage(Some(&storage)),
+        ThemeChoice::Graphite
+    );
+    // Every known id parses back to its theme.
+    for choice in ThemeChoice::ALL {
+        assert_eq!(ThemeChoice::from_id(choice.id()), choice);
+    }
+    // Unknown / malformed values fall back to Graphite.
+    for bad in ["neon", "MIDNIGHT", " paper ", "0", "light"] {
+        let mut storage = MemStorage::default();
+        storage.set_string(theme::STORAGE_KEY, bad.to_owned());
+        assert_eq!(
+            ThemeChoice::from_storage(Some(&storage)),
+            ThemeChoice::Graphite,
+            "{bad:?} should fall back"
+        );
+    }
+    // App::save writes the id; from_storage reads it back.
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.set_theme(&ui.ctx, ThemeChoice::Midnight);
+    let mut storage = MemStorage::default();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert_eq!(
+        storage.map.get(theme::STORAGE_KEY).map(String::as_str),
+        Some("midnight")
+    );
+    assert_eq!(
+        ThemeChoice::from_storage(Some(&storage)),
+        ThemeChoice::Midnight
+    );
+}
+
+/// Perceived luminance used by the contrast checks below.
+fn luma(c: egui::Color32) -> f32 {
+    0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
+}
+
+#[test]
+fn theme_palettes_keep_text_and_grids_readable() {
+    for choice in ThemeChoice::ALL {
+        let pal = choice.palette();
+        let body = (luma(pal.text) - luma(pal.bg)).abs();
+        assert!(
+            body > 150.0,
+            "{choice:?}: body text must contrast with the background ({body:.0})"
+        );
+        let faint = (luma(pal.text_faint) - luma(pal.canvas)).abs();
+        assert!(
+            faint > 55.0,
+            "{choice:?}: faint text must stay legible on the canvas ({faint:.0})"
+        );
+        // Accent fills (play button, primary buttons) need a readable ink.
+        let ink = theme::ink_on(pal.accent);
+        let ink_contrast = (luma(ink) - luma(pal.accent)).abs();
+        assert!(
+            ink_contrast > 120.0,
+            "{choice:?}: ink_on(accent) must contrast ({ink_contrast:.0})"
+        );
+        // Grid lines must be visible against the canvas but not glare.
+        let grid = (luma(pal.grid_beat) - luma(pal.canvas)).abs();
+        assert!(
+            grid > 8.0,
+            "{choice:?}: beat grid barely visible ({grid:.0})"
+        );
+    }
+    // ink_on picks dark ink on light fills and light ink on dark fills.
+    assert!(luma(theme::ink_on(egui::Color32::WHITE)) < 60.0);
+    assert!(luma(theme::ink_on(egui::Color32::BLACK)) > 190.0);
+}
+
+// ----- soundfonts --------------------------------------------------------------
+
+#[test]
+fn font_pick_assigns_a_soundfont_and_moves_to_the_piano_roll() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let id = ui.app.project.tracks[0].id;
+    assert!(ui.app.project.tracks[0].shows_drum_grid());
+    ui.app.select_track(id);
+    ui.step();
+    // Headless has no fonts installed; assigning still records the reference
+    // (the picker lists it as "not installed" and playback falls back).
+    assert!(ui.app.fonts.fonts.is_empty());
+    let track = ui.app.project.tracks[0].clone();
+    ui.app
+        .apply_font_pick(&track, Some(FontRef::new("GeneralUser", 40)));
+    ui.step();
+    let t = &ui.app.project.tracks[0];
+    assert_eq!(t.font, Some(FontRef::new("GeneralUser", 40)));
+    assert_eq!(
+        t.instrument,
+        Instrument::Lead,
+        "font tracks get the piano roll"
+    );
+    assert!(!t.shows_drum_grid());
+    assert_eq!(
+        t.name, "GeneralUser",
+        "font tracks are named after the font"
+    );
+    assert_eq!(ops::instrument_label(t), "GeneralUser · Violin");
+    assert!(ui.app.dirty());
+    // Undo restores the drum track.
+    ui.app.undo();
+    ui.step();
+    assert!(ui.app.project.tracks[0].font.is_none());
+    assert!(ui.app.project.tracks[0].shows_drum_grid());
+}
+
+#[test]
+fn font_clear_and_sound_pick_restore_the_embedded_sound() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_preset_track(&test_preset());
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    ui.app.select_track(ui.app.project.tracks[idx].id);
+    ui.step();
+
+    // Assign a font on top of the preset track: the preset stays as the
+    // missing-font fallback and the track is renamed after the font.
+    let track = ui.app.project.tracks[idx].clone();
+    ui.app
+        .apply_font_pick(&track, Some(FontRef::new("GeneralUser", 0)));
+    ui.step();
+    {
+        let t = &ui.app.project.tracks[idx];
+        assert!(t.font.is_some());
+        assert_eq!(
+            t.preset.as_ref().unwrap().id,
+            "test-pack.glass",
+            "the preset stays as the missing-font fallback"
+        );
+        assert_eq!(t.name, "GeneralUser");
+        assert_eq!(
+            ops::instrument_label(t),
+            "GeneralUser · Acoustic Grand Piano"
+        );
+    }
+
+    // Clearing the font brings the preset sound (and its name) back.
+    let track = ui.app.project.tracks[idx].clone();
+    ui.app.apply_font_pick(&track, None);
+    ui.step();
+    let t = &ui.app.project.tracks[idx];
+    assert!(t.font.is_none());
+    assert_eq!(t.name, "Glass Bell");
+    assert_eq!(ops::instrument_label(t), "Glass Bell");
+
+    // An explicit built-in pick clears font AND preset — the choice the user
+    // made is the sound that plays.
+    let track = ui.app.project.tracks[idx].clone();
+    ui.app
+        .apply_font_pick(&track, Some(FontRef::new("GeneralUser", 0)));
+    ui.step();
+    let track = ui.app.project.tracks[idx].clone();
+    ui.app.apply_sound_pick(&track, Instrument::Piano, None);
+    ui.step();
+    let t = &ui.app.project.tracks[idx];
+    assert!(t.font.is_none() && t.preset.is_none());
+    assert_eq!(t.instrument, Instrument::Piano);
+    assert_eq!(t.name, "Electric piano");
+}
+
+#[test]
+fn font_audition_params_and_gm_family_names() {
+    // Font tracks preview at the caller's pitch for a fixed 0.8 s, ignoring
+    // preset audition metadata — SoundFonts carry none.
+    let mut track = crate::model::create_track(Instrument::Lead);
+    track.font = Some(FontRef::new("GeneralUser", 40));
+    track.preset = Some(preset_with("x.y", "X", "", 33, 3.0));
+    let (pitch, secs) = audition_params(&track, 60);
+    assert_eq!(pitch, 60);
+    assert!((secs - 0.8).abs() < 1e-6, "{secs}");
+
+    // The 128 GM programs group into 16 families of 8.
+    assert_eq!(gm_family(0), "Piano");
+    assert_eq!(gm_family(7), "Piano");
+    assert_eq!(gm_family(8), "Chromatic Percussion");
+    assert_eq!(gm_family(40), "Strings");
+    assert_eq!(gm_family(56), "Brass");
+    assert_eq!(gm_family(80), "Synth Lead");
+    assert_eq!(gm_family(120), "Sound FX");
+    assert_eq!(gm_family(127), "Sound FX");
+    assert_eq!(
+        gm_family(200),
+        "Sound FX",
+        "out-of-range clamps like gm_program_name"
+    );
+}
+
+#[test]
+fn sound_picker_renders_the_font_section() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    // Fabricate catalog metadata (no parsed SoundFont needed — the picker
+    // only reads FontInfo) plus a load error, then render the Track tab.
+    ui.app.fonts.fonts.push(FontInfo {
+        name: "GeneralUser".into(),
+        key: crate::font::font_key("GeneralUser"),
+        presets: 128,
+    });
+    ui.app.fonts.errors.push("bad.sf2: not a soundfont".into());
+    ui.app.select_track(ui.app.project.tracks[0].id);
+    ui.app.side_tab = SideTab::Track;
+    ui.step();
+
+    // With a font assigned the program combo renders too.
+    let track = ui.app.project.tracks[0].clone();
+    ui.app
+        .apply_font_pick(&track, Some(FontRef::new("GeneralUser", 40)));
+    ui.step();
+    let t = &ui.app.project.tracks[0];
+    assert_eq!(t.font.as_ref().unwrap().program, 40);
+    assert_eq!(ops::instrument_label(t), "GeneralUser · Violin");
+}
+
+// ----- clipboard (copy / paste / cut) -------------------------------------
+
+/// Replaces track `track_idx`'s first pattern with `notes` as
+/// `(pitch, start, duration, velocity)` and selects them all.
+fn plant_selected_notes(ui: &mut Ui, track_idx: usize, notes: &[(u8, f64, f64, f32)]) -> Vec<u64> {
+    let pat = &mut ui.app.project.tracks[track_idx].patterns[0];
+    pat.notes = notes
+        .iter()
+        .map(|&(pitch, start, duration, velocity)| Note::new(pitch, start, duration, velocity))
+        .collect();
+    let ids: Vec<u64> = pat.notes.iter().map(|n| n.id).collect();
+    ui.app.sel.notes = ids.iter().copied().collect();
+    ui.app.focus = super::Focus::Editor;
+    ids
+}
+
+#[test]
+fn clipboard_notes_copy_paste_at_playhead_and_undo() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let orig = plant_selected_notes(&mut ui, idx, &[(60, 2.0, 1.0, 0.8), (64, 6.0, 2.0, 0.5)]);
+
+    // Playhead at song step 20 wraps into the 16-step pattern at step 4;
+    // the selection's left edge (step 2) becomes the paste origin.
+    ui.app.transport.position = 20.0;
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Notes(_)),
+        "notes landed on the clipboard"
+    );
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 4, "paste merges with existing notes");
+    let pasted: Vec<_> = pat
+        .notes
+        .iter()
+        .filter(|n| !orig.contains(&n.id))
+        .map(|n| (n.pitch, n.start, n.duration, n.velocity))
+        .collect();
+    assert_eq!(
+        pasted,
+        vec![(60, 4.0, 1.0, 0.8), (64, 8.0, 2.0, 0.5)],
+        "relative layout preserved at the wrapped playhead"
+    );
+    let sel: BTreeSet<u64> = pat
+        .notes
+        .iter()
+        .filter(|n| !orig.contains(&n.id))
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(ui.app.sel.notes, sel, "pasted notes become the selection");
+
+    ui.app.undo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2, "undo removes the paste");
+    ui.app.redo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 4, "redo restores the paste");
+}
+
+#[test]
+fn clipboard_notes_paste_works_on_the_drum_grid() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    // Track 0 of an empty project is the built-in drums track — the drum
+    // grid. Drum hits are ordinary notes, so the same clipboard applies.
+    let tid = ui.app.project.tracks[0].id;
+    ui.app.select_track(tid);
+    ui.app.focus = super::Focus::Editor;
+    let orig = plant_selected_notes(&mut ui, 0, &[(36, 0.0, 1.0, 1.0), (38, 4.0, 1.0, 0.6)]);
+
+    ui.app.transport.position = 8.0;
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+
+    let pat = ui.pattern(0, 0);
+    assert_eq!(pat.notes.len(), 4);
+    let pasted: Vec<_> = pat
+        .notes
+        .iter()
+        .filter(|n| !orig.contains(&n.id))
+        .map(|n| (n.pitch, n.start))
+        .collect();
+    assert_eq!(pasted, vec![(36, 8.0), (38, 12.0)]);
+}
+
+#[test]
+fn clipboard_copy_prefers_focused_domain_over_stale_selection() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    plant_selected_notes(&mut ui, idx, &[(60, 0.0, 1.0, 0.8)]);
+    // A clip selected earlier in the arranger stays in sel.clips — editor
+    // note selection never clears it. The focused domain must still win,
+    // or ⌘C in the piano roll silently copies a clip instead.
+    let clip_id = ui.app.project.tracks[idx].clips[0].id;
+    ui.app.sel.clips.insert(clip_id);
+
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Notes(_)),
+        "editor-focused note copy beats the stale clip selection"
+    );
+
+    // Back in the arranger with both selections stale-ish, clips win again.
+    ui.app.focus = super::Focus::Arranger;
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Clips(_)),
+        "arranger-focused copy prefers clips"
+    );
+}
+
+#[test]
+fn clipboard_clips_copy_paste_lands_on_same_tracks_at_playhead() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    // One clip per track, both starting at step 0.
+    let c0 = ui.app.project.tracks[0].clips[0].id;
+    let c1 = ui.app.project.tracks[1].clips[0].id;
+    ui.app
+        .set_clip_selection(BTreeSet::from([c0, c1]), Some(c0));
+    ui.app.focus = super::Focus::Arranger;
+    // A selected note as well — clips still win the copy.
+    let nid = {
+        let pat = &mut ui.app.project.tracks[1].patterns[0];
+        pat.notes.push(Note::new(60, 0.0, 1.0, 0.5));
+        pat.notes[0].id
+    };
+    ui.app.sel.notes.insert(nid);
+
+    ui.app.transport.position = 24.0;
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Clips(_)),
+        "clips beat notes on the clipboard"
+    );
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+
+    for (idx, orig) in [(0usize, c0), (1usize, c1)] {
+        let track = &ui.app.project.tracks[idx];
+        assert_eq!(track.clips.len(), 2, "track {idx} gained a pasted clip");
+        let source = track.clips.iter().find(|c| c.id == orig).unwrap();
+        let pasted = track.clips.iter().find(|c| c.id != orig).unwrap();
+        assert_eq!(pasted.start, 24.0, "group's left edge on the playhead");
+        assert_eq!(
+            pasted.pattern_id, source.pattern_id,
+            "clips keep referencing their pattern"
+        );
+        assert_eq!(pasted.loops, source.loops);
+    }
+    let sel = ui.app.selected_clip_ids();
+    assert_eq!(sel.len(), 2, "the two pasted clips are selected");
+    assert!(sel.is_disjoint(&BTreeSet::from([c0, c1])));
+
+    ui.app.undo();
+    assert!(
+        ui.app.project.tracks.iter().all(|t| t.clips.len() == 1),
+        "one undo removes both pasted clips"
+    );
+}
+
+#[test]
+fn clipboard_track_copy_paste_appends_an_independent_track() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let src = ui.app.project.tracks[0].id;
+    {
+        let t = &mut ui.app.project.tracks[0];
+        t.name = "Kit".into();
+        t.volume = 0.4;
+        t.pan = -0.3;
+        t.mute = true;
+        t.patterns[0].notes.push(Note::new(36, 0.0, 1.0, 1.0));
+    }
+    let src_pattern = ui.app.project.tracks[0].patterns[0].id;
+    let src_note = ui.app.project.tracks[0].patterns[0].notes[0].id;
+    ui.app.select_track(src);
+
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(matches!(ui.app.clipboard, Clipboard::Track(_)));
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+
+    assert_eq!(ui.app.project.tracks.len(), 2);
+    let copy = &ui.app.project.tracks[1];
+    assert_eq!(
+        ui.app.sel.track,
+        Some(copy.id),
+        "pasted track gets selected"
+    );
+    assert_eq!(copy.name, "Kit 2", "name uniquified like a new track");
+    assert_ne!(copy.id, src);
+    assert_ne!(
+        copy.patterns[0].id, src_pattern,
+        "patterns are not shared with the source"
+    );
+    assert_ne!(copy.patterns[0].notes[0].id, src_note);
+    assert_eq!(
+        copy.clips[0].pattern_id, copy.patterns[0].id,
+        "clip remapped onto the copy's pattern"
+    );
+    assert!(
+        (copy.volume - 0.4).abs() < 1e-6 && copy.pan == -0.3 && copy.mute,
+        "mixer state carries over"
+    );
+    assert!(ui.app.project.validate().is_ok());
+
+    // Repeated paste stacks another independent copy.
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    assert_eq!(ui.app.project.tracks.len(), 3);
+    assert_eq!(ui.app.project.tracks[2].name, "Kit 3");
+
+    ui.app.undo();
+    ui.app.undo();
+    assert_eq!(ui.app.project.tracks.len(), 1, "undo removes both pastes");
+}
+
+#[test]
+fn clipboard_cut_notes_round_trips_through_paste() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    plant_selected_notes(&mut ui, idx, &[(60, 2.0, 1.0, 0.8), (64, 6.0, 2.0, 0.5)]);
+
+    ui.key_mod(Key::X, Modifiers::COMMAND);
+    assert!(ui.pattern(idx, 0).notes.is_empty(), "cut removes the notes");
+    assert!(ui.app.sel.notes.is_empty());
+    assert!(matches!(ui.app.clipboard, Clipboard::Notes(_)));
+
+    ui.app.transport.position = 12.0;
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 2, "paste restores the cut notes");
+    // Origin 12, relative starts 0 and 4 → 12 and 16→clamped 15.
+    let mut starts: Vec<f64> = pat.notes.iter().map(|n| n.start).collect();
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(starts, vec![12.0, 15.0], "pasted at the playhead");
+
+    ui.app.undo();
+    assert!(
+        ui.pattern(idx, 0).notes.is_empty(),
+        "undo removes the paste"
+    );
+    ui.app.undo();
+    assert_eq!(
+        ui.pattern(idx, 0).notes.len(),
+        2,
+        "second undo restores the cut — cut is one undo step"
+    );
+}
+
+#[test]
+fn clipboard_cut_clips_and_track() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    // Cut the drums track's only clip, then paste it at step 16.
+    let c0 = ui.app.project.tracks[0].clips[0].id;
+    ui.app.set_clip_selection(BTreeSet::from([c0]), Some(c0));
+    ui.app.focus = super::Focus::Arranger;
+    ui.key_mod(Key::X, Modifiers::COMMAND);
+    assert!(
+        ui.app.project.tracks[0].clips.is_empty(),
+        "cut removes the clip"
+    );
+    assert!(matches!(ui.app.clipboard, Clipboard::Clips(_)));
+    ui.app.transport.position = 16.0;
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    let track = &ui.app.project.tracks[0];
+    assert_eq!(track.clips.len(), 1);
+    assert_eq!(track.clips[0].start, 16.0, "pasted clip lands at playhead");
+
+    // Now cut the whole drums track (index 0): only the piano track remains,
+    // and the paste appends the copy at the end rather than restoring index 0.
+    ui.app.clear_selection();
+    let drums = ui.app.project.tracks[0].id;
+    ui.app.select_track(drums);
+    ui.key_mod(Key::X, Modifiers::COMMAND);
+    assert_eq!(ui.app.project.tracks.len(), 1, "cut removes the track");
+    assert_eq!(ui.app.project.tracks[0].instrument, Instrument::Piano);
+    assert!(matches!(ui.app.clipboard, Clipboard::Track(_)));
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    assert_eq!(ui.app.project.tracks.len(), 2);
+    let pasted = &ui.app.project.tracks[1];
+    assert_eq!(pasted.instrument, Instrument::Drums);
+    assert_ne!(pasted.id, drums, "pasted track gets a fresh id");
+    assert_eq!(ui.app.sel.track, Some(pasted.id));
+}
+
+#[test]
+fn clipboard_empty_states_do_not_mutate_the_project() {
+    // A song with no tracks at all: nothing is copyable or cuttable.
+    let mut p = Project::empty();
+    p.tracks.clear();
+    let mut ui = Ui::new(CadenceApp::headless(p));
+    ui.step();
+    assert!(ui.app.sel.track.is_none());
+    let state = ui.app.history.state();
+
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("Nothing to copy"), "{status}");
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("Nothing to paste"), "{status}");
+    ui.key_mod(Key::X, Modifiers::COMMAND);
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("Nothing to cut"), "{status}");
+    assert_eq!(ui.app.history.state(), state, "no undo entries recorded");
+    assert!(!ui.app.dirty());
+
+    // A notes clipboard with no selected track warns instead of mutating.
+    ui.app.clipboard = Clipboard::Notes(vec![ops::NoteSnap {
+        pitch: 60,
+        start: 0.0,
+        duration: 1.0,
+        velocity: 0.8,
+    }]);
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("Select a track"), "{status}");
+    assert_eq!(ui.app.history.state(), state);
+    assert!(!ui.app.dirty());
+}
+
+#[test]
+fn drag_after_text_focus_still_allows_clipboard_shortcuts() {
+    // Regression: `wants_keyboard_input()` stays true while a TextEdit holds
+    // focus, and the default `SurrenderFocusOn::Clicks` only releases it on a
+    // full click — so drag gestures (marquee-selecting notes, scrubbing the
+    // playhead) left stale focus that silently killed every editing shortcut.
+    // `frame()` now configures `SurrenderFocusOn::Presses`.
+    let mut ui = Ui::demo();
+    ui.steps(3);
+
+    // Focus the library search field the way a click on it does.
+    let search = ui.app.library_rects.search;
+    assert!(search.width() > 20.0, "search field rendered: {search:?}");
+    ui.click(search.center());
+    ui.steps(2);
+    assert!(
+        ui.ctx.memory(|m| m.focused().is_some()),
+        "the search field holds keyboard focus"
+    );
+
+    // A press-drag outside the field must hand focus straight back — the
+    // press half of a marquee selection is enough, no click required.
+    ui.drag(pos2(420.0, 420.0), pos2(520.0, 460.0));
+    ui.step();
+    assert!(
+        ui.ctx.memory(|m| m.focused().is_none()),
+        "pointer-down outside the field surrendered focus"
+    );
+
+    // With focus cleared the clipboard shortcuts work again — nothing is
+    // selected, so ⌘C takes the selected-track fallback.
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(
+        !matches!(ui.app.clipboard, Clipboard::None),
+        "⌘C copies once stale focus is gone"
+    );
+}
+
+#[test]
+fn clipboard_dedicated_events_drive_copy_paste_cut() {
+    // egui-winit translates real ⌘C/⌘V/⌘X presses into Event::Copy/Paste/Cut
+    // and drops the key event — the path the desktop app actually takes.
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    plant_selected_notes(&mut ui, idx, &[(60, 2.0, 1.0, 0.8)]);
+
+    ui.event(Event::Copy);
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Notes(_)),
+        "Event::Copy captured the notes"
+    );
+
+    ui.app.transport.position = 8.0;
+    ui.event(Event::Paste("text on the OS clipboard".to_owned()));
+    assert_eq!(
+        ui.pattern(idx, 0).notes.len(),
+        2,
+        "Event::Paste pasted the notes (OS text ignored)"
+    );
+
+    ui.event(Event::Cut);
+    assert_eq!(
+        ui.pattern(idx, 0).notes.len(),
+        1,
+        "Event::Cut removed the selected (pasted) note"
+    );
+    assert!(
+        matches!(ui.app.clipboard, Clipboard::Notes(_)),
+        "cut leaves the notes on the clipboard"
+    );
+}
+
+#[test]
+fn clipboard_v_release_covers_empty_os_clipboard() {
+    // ⌘V against an empty/non-text OS clipboard produces no Event::Paste at
+    // all — the V-release key event is the fallback signal. A release paired
+    // with a real Paste event must not paste a second time.
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    plant_selected_notes(&mut ui, idx, &[(60, 2.0, 1.0, 0.8)]);
+    ui.event(Event::Copy);
+    assert!(matches!(ui.app.clipboard, Clipboard::Notes(_)));
+
+    let v_release = || Event::Key {
+        key: Key::V,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    };
+
+    // Empty-OS-clipboard path: the release alone pastes once.
+    ui.app.transport.position = 8.0;
+    ui.event(v_release());
+    assert_eq!(
+        ui.pattern(idx, 0).notes.len(),
+        2,
+        "V-release pasted when no Paste event existed"
+    );
+
+    // Paired-release path: the Paste event already pasted and armed the
+    // guard, so the following release is swallowed.
+    ui.app.transport.position = 12.0;
+    ui.event(Event::Paste("os text".to_owned()));
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 3, "Paste event pasted");
+    ui.event(v_release());
+    assert_eq!(
+        ui.pattern(idx, 0).notes.len(),
+        3,
+        "the release paired with Paste did not paste again"
+    );
+}
+
+#[test]
+fn clipboard_paste_notes_at_pointer_over_editor() {
+    // With the pointer over the piano-roll grid, ⌘V lands the notes at the
+    // pointer's step — not the playhead — and selects them all.
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let track_id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, track_id, 100);
+    let orig = plant_selected_notes(&mut ui, idx, &[(60, 2.0, 1.0, 0.8)]);
+    ui.key_mod(Key::C, Modifiers::COMMAND);
+    assert!(matches!(ui.app.clipboard, Clipboard::Notes(_)));
+
+    // Playhead sits at step 0; the pointer hovers step 12's cell instead.
+    ui.app.transport.position = 0.0;
+    let center = ui
+        .app
+        .roll_cell_center(100, 12.0)
+        .expect("a grid point inside step 12");
+    ui.at(center);
+    ui.step();
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+
+    let pat = ui.pattern(idx, 0);
+    let pasted: Vec<_> = pat.notes.iter().filter(|n| !orig.contains(&n.id)).collect();
+    assert_eq!(pasted.len(), 1, "one note pasted");
+    assert_eq!(
+        pasted[0].start, 12.0,
+        "pasted at the pointer's step, not the playhead"
+    );
+    assert_eq!(
+        pasted[0].pitch, 100,
+        "the selection transposes so its nearest note lands on the pointer's pitch row"
+    );
+    assert!(
+        ui.app.sel.notes.contains(&pasted[0].id),
+        "pasted notes become the selection"
+    );
+
+    // Pointer off the grid (mixer tab) falls back to the playhead.
+    ui.app.tab = super::Tab::Mixer;
+    ui.app.transport.position = 4.0;
+    ui.key_mod(Key::V, Modifiers::COMMAND);
+    let pat = ui.pattern(idx, 0);
+    let starts: Vec<f64> = pat.notes.iter().map(|n| n.start).collect();
+    assert!(
+        starts.contains(&4.0),
+        "playhead fallback pasted at step 4: {starts:?}"
+    );
+}
+
+// ----- computer keyboard performance & chord strip ---------------------------
+
+use super::editor::{
+    drum_keyboard_pitches, held_keyboard_keys, kb_key_index, key_to_pitch, scale_pitch_classes,
+};
+
+#[test]
+fn keyboard_mapping_is_chromatic_and_octave_aware() {
+    // FL-Studio two-row layout, in chromatic order: whites Z X C V B N M =
+    // C..B on the bottom row, blacks S D G H J = C# D# F# G# A# in the gaps.
+    let order = [
+        Key::Z,
+        Key::S,
+        Key::X,
+        Key::D,
+        Key::C,
+        Key::V,
+        Key::G,
+        Key::B,
+        Key::H,
+        Key::N,
+        Key::J,
+        Key::M,
+    ];
+    for (i, key) in order.iter().enumerate() {
+        assert_eq!(kb_key_index(*key), Some(i), "{key:?} chromatic index");
+        assert_eq!(
+            key_to_pitch(*key, 4),
+            Some(60 + i as u8),
+            "{key:?} in octave 4"
+        );
+    }
+    // Octave shifts move the whole row; unmapped keys — including L (loop),
+    // Q/W (octave controls) and letter E/F/I/K/O/P/R/T/U/Y/A — produce nothing.
+    assert_eq!(key_to_pitch(Key::Z, 2), Some(36), "C2 for bass");
+    assert_eq!(key_to_pitch(Key::M, 5), Some(83));
+    for key in [
+        Key::A,
+        Key::E,
+        Key::F,
+        Key::I,
+        Key::K,
+        Key::L,
+        Key::O,
+        Key::P,
+        Key::Q,
+        Key::R,
+        Key::T,
+        Key::U,
+        Key::W,
+        Key::Y,
+    ] {
+        assert_eq!(key_to_pitch(key, 4), None, "{key:?} must stay unmapped");
+    }
+    // Out-of-range octaves degrade per-key instead of wrapping.
+    assert_eq!(key_to_pitch(Key::Z, 9), Some(120));
+    assert_eq!(key_to_pitch(Key::M, 9), None, "B9 = 131 > 127");
+    assert_eq!(key_to_pitch(Key::Z, -2), None);
+    assert_eq!(key_to_pitch(Key::M, -1), Some(11));
+    // Every mapped key lands on a distinct pitch class.
+    let pcs: BTreeSet<u8> = order
+        .iter()
+        .map(|k| key_to_pitch(*k, 4).unwrap() % 12)
+        .collect();
+    assert_eq!(pcs.len(), 12);
+}
+
+#[test]
+fn drum_keyboard_maps_sorted_piece_pitches() {
+    // Built-in kit: the eight DRUMS rows sorted ascending, capped at 12 keys.
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let pitches = drum_keyboard_pitches(&ui.app.project.tracks[0]);
+    assert_eq!(pitches, vec![36, 38, 39, 42, 45, 46, 49, 51]);
+    // Key order is chromatic, so Z→lowest piece, S→next, …
+    assert_eq!(key_to_pitch(Key::Z, 4), Some(60)); // sanity: melodic path unaffected
+                                                   // A kit preset's pieces sort by pitch regardless of row order, and the
+                                                   // mapping caps at the 12 available keys.
+    let mut preset = test_kit_preset();
+    preset.kit.as_mut().unwrap().pieces.push(KitPiece {
+        name: "Rim".into(),
+        pitch: 70,
+        voice: kit_voice(),
+    });
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_preset_track(&preset);
+    ui.step();
+    let kit_track = ui.app.project.tracks.last().unwrap();
+    let pitches = drum_keyboard_pitches(kit_track);
+    assert_eq!(
+        pitches,
+        vec![39, 42, 60, 70],
+        "sorted, deduped piece pitches"
+    );
+    assert!(pitches.len() <= 12);
+}
+
+#[test]
+fn keyboard_held_keys_track_press_release_and_modifiers() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let tid = ui.app.project.tracks[1].id;
+    ui.app.select_track(tid);
+    ui.step();
+    assert_eq!(ui.app.editor.kb_octave, 4, "piano homes on C4");
+
+    // Hold Z (index 0 = C): the held set reports it until release.
+    ui.next.modifiers = Modifiers::NONE;
+    ui.next.events.push(Event::Key {
+        key: Key::Z,
+        physical_key: Some(Key::Z),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    ui.step();
+    assert!(held_keyboard_keys(&ui.ctx).contains(&0));
+
+    // Alt+X is a shortcut chord, not a note — nothing counts while Alt is down.
+    ui.next.modifiers = Modifiers::ALT;
+    ui.next.events.push(Event::Key {
+        key: Key::X,
+        physical_key: Some(Key::X),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::ALT,
+    });
+    ui.step();
+    assert!(
+        held_keyboard_keys(&ui.ctx).is_empty(),
+        "Alt-held presses are shortcuts, not notes"
+    );
+    // Modifiers released: both held keys count again.
+    ui.next.modifiers = Modifiers::NONE;
+    ui.step();
+    let held = held_keyboard_keys(&ui.ctx);
+    assert!(held.contains(&0) && held.contains(&2), "held: {held:?}");
+
+    // Releases clear the set.
+    for key in [Key::Z, Key::X] {
+        ui.next.events.push(Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    ui.step();
+    assert!(held_keyboard_keys(&ui.ctx).is_empty());
+
+    // Q/W shift the keyboard octave; it clamps inside the MIDI range.
+    ui.key(Key::Q);
+    assert_eq!(ui.app.editor.kb_octave, 3);
+    ui.key(Key::W);
+    ui.key(Key::W);
+    assert_eq!(ui.app.editor.kb_octave, 5);
+    for _ in 0..10 {
+        ui.key(Key::W);
+    }
+    assert_eq!(ui.app.editor.kb_octave, 8, "octave clamps at the top");
+}
+
+#[test]
+fn keyboard_play_auditions_without_touching_the_project() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let tid = ui.app.project.tracks[1].id;
+    ui.app.select_track(tid);
+    ui.step();
+    let state = ui.app.history.state();
+    let was_dirty = ui.app.dirty();
+    for key in [
+        Key::Z,
+        Key::S,
+        Key::X,
+        Key::D,
+        Key::C,
+        Key::V,
+        Key::G,
+        Key::B,
+        Key::H,
+        Key::N,
+        Key::J,
+        Key::M,
+    ] {
+        ui.key(key);
+    }
+    ui.step();
+    assert_eq!(ui.app.history.state(), state, "auditioning is not an edit");
+    assert_eq!(ui.app.dirty(), was_dirty, "audition adds no edits");
+    assert!(ui.pattern(1, 0).notes.is_empty());
+    // No selected track: presses are safely ignored.
+    ui.app.sel.track = None;
+    ui.key(Key::Z);
+    ui.step();
+}
+
+#[test]
+fn chord_strip_stamps_diatonic_chord_block_undoable() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let tid = ui.app.project.tracks[idx].id;
+    ui.app.select_track(tid);
+    ui.step();
+
+    // I chord of the default C-major key = C major triad at the piano's
+    // home octave (C4 area), half the 16-step pattern long.
+    ui.app.stamp_diatonic_chord(0, &ui.ctx);
+    ui.step();
+    let pat = ui.pattern(idx, 0);
+    let mut pitches: Vec<u8> = pat.notes.iter().map(|n| n.pitch).collect();
+    pitches.sort_unstable();
+    assert_eq!(pitches, vec![60, 64, 67], "C4 E4 G4 block chord");
+    assert!(
+        pat.notes
+            .iter()
+            .all(|n| n.start == 0.0 && n.duration == 8.0),
+        "stamped at the playhead, half-pattern duration"
+    );
+    assert_eq!(ui.app.sel.notes.len(), 3, "stamped notes selected");
+    assert_eq!(ui.app.focus, super::Focus::Editor);
+    assert!(
+        ui.app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text.contains("Stamped")),
+        "status reports the stamped chord: {:?}",
+        ui.app.status
+    );
+
+    ui.app.undo();
+    assert!(ui.pattern(idx, 0).notes.is_empty(), "one undo removes it");
+    ui.app.redo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 3, "redo restores it");
+
+    // ii chord of C major = D minor: D4 F4 A4.
+    ui.app.stamp_diatonic_chord(1, &ui.ctx);
+    let sel_pitches: Vec<u8> = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .filter(|n| ui.app.sel.notes.contains(&n.id))
+        .map(|n| n.pitch)
+        .collect();
+    let mut sel_pitches = sel_pitches;
+    sel_pitches.sort_unstable();
+    assert_eq!(sel_pitches, vec![62, 65, 69], "D4 F4 A4 = ii in C");
+}
+
+#[test]
+fn chord_strip_strum_rolls_notes_in_order() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    ui.app.select_track(ui.app.project.tracks[idx].id);
+    ui.step();
+
+    ui.app.editor.chord_spacing = 1.0;
+    ui.app.editor.chord_direction = ops::StrumDirection::Down;
+    ui.app.stamp_diatonic_chord(0, &ui.ctx);
+    ui.step();
+    let mut got: Vec<(u8, f64)> = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .map(|n| (n.pitch, n.start))
+        .collect();
+    got.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    assert_eq!(
+        got,
+        vec![(67, 0.0), (64, 1.0), (60, 2.0)],
+        "Down strum: highest first, one step apart"
+    );
+
+    // Alt direction alternates outside-in: low, high, next-low.
+    ui.app.undo();
+    ui.app.editor.chord_direction = ops::StrumDirection::Alt;
+    ui.app.stamp_diatonic_chord(0, &ui.ctx);
+    let mut got: Vec<(u8, f64)> = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .map(|n| (n.pitch, n.start))
+        .collect();
+    got.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    assert_eq!(
+        got,
+        vec![(60, 0.0), (67, 1.0), (64, 2.0)],
+        "Alt strum: low, high, next-low"
+    );
+}
+
+#[test]
+fn chord_strip_quality_override_changes_tones() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    ui.app.select_track(ui.app.project.tracks[idx].id);
+    ui.step();
+
+    ui.app.editor.chord_quality = Some(ChordQuality::Minor7);
+    ui.app.stamp_diatonic_chord(0, &ui.ctx);
+    let mut pitches: Vec<u8> = ui.pattern(idx, 0).notes.iter().map(|n| n.pitch).collect();
+    pitches.sort_unstable();
+    assert_eq!(
+        pitches,
+        vec![60, 63, 67, 70],
+        "C minor7 = C Eb G Bb overrides the diatonic major triad"
+    );
+}
+
+#[test]
+fn chord_strip_rejects_drum_tracks() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    // Track 0 of an empty project is the built-in drums track.
+    let tid = ui.app.project.tracks[0].id;
+    ui.app.select_track(tid);
+    ui.step();
+    ui.app.stamp_diatonic_chord(0, &ui.ctx);
+    ui.step();
+    assert!(
+        ui.pattern(0, 0).notes.is_empty(),
+        "no chord tones on the drum grid"
+    );
+    let status = ui.app.status.as_ref().expect("a warning status");
+    assert!(
+        status.text.contains("melodic"),
+        "warning explains why: {}",
+        status.text
+    );
+}
+
+#[test]
+fn scale_highlight_toggles_and_marks_scale_pitch_classes() {
+    // C major = the white keys.
+    assert_eq!(
+        scale_pitch_classes(SongKey::new(0, KeyMode::Major)),
+        [true, false, true, false, true, true, false, true, false, true, false, true]
+    );
+    // A natural minor shares C major's collection.
+    assert_eq!(
+        scale_pitch_classes(SongKey::new(9, KeyMode::Minor)),
+        scale_pitch_classes(SongKey::new(0, KeyMode::Major))
+    );
+    // D major adds F# and C#.
+    let d = scale_pitch_classes(SongKey::new(2, KeyMode::Major));
+    assert!(d[1] && d[6] && !d[3], "C# and F# in, D# out");
+
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(!ui.app.editor.scale_highlight);
+    ui.app.toggle_scale_highlight();
+    assert!(ui.app.editor.scale_highlight);
+    ui.app.toggle_scale_highlight();
+    assert!(!ui.app.editor.scale_highlight);
+    // Frames with the tint on exercise the row-highlight paint path.
+    ui.app.editor.scale_highlight = true;
+    ui.steps(2);
 }

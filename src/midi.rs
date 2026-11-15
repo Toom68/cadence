@@ -37,11 +37,12 @@ const SPLIT_STEPS: u32 = 4 * STEPS_PER_BAR;
 pub fn gm_program(instrument: Instrument) -> u8 {
     match instrument {
         Instrument::Drums => 0,
-        Instrument::Piano => 4,  // Electric Piano 1
-        Instrument::Bass => 38,  // Synth Bass 1
-        Instrument::Pluck => 46, // Orchestral Harp
-        Instrument::Pad => 89,   // Pad 2 (warm)
-        Instrument::Lead => 81,  // Lead 2 (sawtooth)
+        Instrument::Piano => 4,   // Electric Piano 1
+        Instrument::Bass => 38,   // Synth Bass 1
+        Instrument::Pluck => 46,  // Orchestral Harp
+        Instrument::Guitar => 24, // Acoustic Guitar (steel)
+        Instrument::Pad => 89,    // Pad 2 (warm)
+        Instrument::Lead => 81,   // Lead 2 (sawtooth)
     }
 }
 
@@ -57,9 +58,10 @@ pub fn instrument_for_program(program: Option<u8>, average_pitch: f64) -> Instru
             }
         }
         Some(p) => match p {
-            0..=7 | 16..=23 => Instrument::Piano,
-            8..=15 | 24..=31 | 45 | 46 | 104..=119 => Instrument::Pluck,
-            32..=39 => Instrument::Bass,
+            0..=7 | 16..=22 => Instrument::Piano,
+            8..=15 | 45 | 46 | 104..=119 => Instrument::Pluck,
+            23..=30 => Instrument::Guitar, // Guitars: nylon…harmonics
+            31..=39 => Instrument::Bass,
             56..=87 => Instrument::Lead,
             _ => Instrument::Pad,
         },
@@ -493,6 +495,7 @@ pub fn import_midi(bytes: &[u8]) -> Result<Project, String> {
         bars,
         master_volume: 0.8,
         tracks,
+        key: Default::default(),
     };
     project
         .validate()

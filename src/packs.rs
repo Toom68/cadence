@@ -29,6 +29,17 @@
 //! `samplehold` fail loudly instead of being silently ignored. Schema version 1
 //! stays backward-compatible: new synthesis controls must be optional and default
 //! to the legacy sound when omitted.
+//!
+//! # Drum kits
+//!
+//! A preset may instead carry an optional `kit` section ([`KitSpec`]): an ordered
+//! list of up to [`MAX_KIT_PIECES`] named pieces, each with a MIDI `pitch` and its
+//! own [`KitVoice`] (the same synthesis fields as a melodic preset, minus
+//! id/name/monophonic/audition). At note-on the audio engine picks the piece whose
+//! pitch is nearest the played note, so one preset can be a whole drum kit. Kit
+//! presets may omit the top-level `oscillators` list entirely — those fields are
+//! inert metadata kept only for validation symmetry — and pair with the drum
+//! editor in the GUI.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -66,6 +77,12 @@ pub const MAX_DESCRIPTION_LEN: usize = 1000;
 
 /// Maximum pack description/author length in characters.
 pub const MAX_PACK_META_LEN: usize = 1000;
+
+/// Maximum pieces in one drum kit ([`KitSpec`]).
+pub const MAX_KIT_PIECES: usize = 32;
+
+/// Maximum kit piece display-name length in characters.
+pub const MAX_KIT_NAME_LEN: usize = 64;
 
 /// Environment variable overriding the user pack directory directly.
 /// Intended for tests, portable installs and diagnostics.
@@ -219,7 +236,8 @@ impl Default for LfoSpec {
 
 /// A data-driven instrument preset that can be embedded in a project or loaded
 /// from a pack. Only `id`, `name` and a non-empty `oscillators` list are
-/// required in JSON; everything else has a sane default.
+/// required in JSON; everything else has a sane default. The oscillator
+/// requirement is waived when `kit` is present (see [`KitSpec`]).
 ///
 /// `id` must be namespaced and slug-safe, e.g. `eight-bit.pulse-lead`
 /// (lowercase `a-z`, `0-9`, `-`, `_`, `.`, must contain a `.`).
@@ -275,6 +293,15 @@ pub struct InstrumentPreset {
         skip_serializing_if = "is_default_audition_duration"
     )]
     pub audition_duration: f32,
+    /// Optional drum kit: when present this preset is a kit of named one-shot
+    /// voices keyed by MIDI pitch instead of a single melodic voice. The
+    /// top-level synthesis fields above become inert metadata (still
+    /// range-validated when present, but the "at least one oscillator"
+    /// requirement is waived) and `monophonic`/`audition_*` keep steering only
+    /// the library preview. Kit-ness is keyed on this field alone: the track's
+    /// `instrument` stays an editor choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kit: Option<KitSpec>,
 }
 
 fn default_filter_cutoff() -> f32 {
@@ -303,6 +330,106 @@ fn default_sample_hold() -> u32 {
 }
 fn default_gain() -> f32 {
     0.9
+}
+
+/// The synthesis fields of one kit piece — identical in shape and ranges to
+/// the melodic fields of [`InstrumentPreset`] (oscillators, envelope,
+/// pitch_envelope, filter_envelope, filter_cutoff, filter_resonance, lfo,
+/// bit_depth, sample_hold, gain). No id/name/monophonic/audition fields.
+/// All fields serde-defaulted; `deny_unknown_fields`.
+///
+/// Every field has the same default as the matching [`InstrumentPreset`]
+/// field, so `"voice": {}` parses (it then fails validation for having no
+/// oscillators, like a melodic preset would).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct KitVoice {
+    pub oscillators: Vec<OscillatorSpec>,
+    pub envelope: Envelope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pitch_envelope: Option<PitchEnvelope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_envelope: Option<FilterEnvelope>,
+    #[serde(default = "default_filter_cutoff")]
+    pub filter_cutoff: f32,
+    #[serde(default, skip_serializing_if = "is_default_filter_resonance")]
+    pub filter_resonance: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lfo: Option<LfoSpec>,
+    #[serde(default = "default_bit_depth")]
+    pub bit_depth: u8,
+    #[serde(default = "default_sample_hold")]
+    pub sample_hold: u32,
+    #[serde(default = "default_gain")]
+    pub gain: f32,
+}
+
+impl Default for KitVoice {
+    /// Mirrors the melodic defaults of [`InstrumentPreset`].
+    fn default() -> Self {
+        Self {
+            oscillators: Vec::new(),
+            envelope: Envelope::default(),
+            pitch_envelope: None,
+            filter_envelope: None,
+            filter_cutoff: default_filter_cutoff(),
+            filter_resonance: 0.0,
+            lfo: None,
+            bit_depth: default_bit_depth(),
+            sample_hold: default_sample_hold(),
+            gain: default_gain(),
+        }
+    }
+}
+
+impl KitVoice {
+    /// Wraps the voice in a throwaway [`InstrumentPreset`] so validation and
+    /// audio conversion reuse the melodic preset paths unchanged. The stub's
+    /// id/name/audition fields are placeholders that always pass validation;
+    /// only the synthesis fields are meaningful. `kit` is `None` so the stub
+    /// validates exactly like a melodic preset (one or more oscillators
+    /// required).
+    pub fn to_preset_stub(&self) -> InstrumentPreset {
+        InstrumentPreset {
+            id: "kit.stub".to_string(),
+            name: "stub".to_string(),
+            description: String::new(),
+            oscillators: self.oscillators.clone(),
+            envelope: self.envelope.clone(),
+            pitch_envelope: self.pitch_envelope.clone(),
+            filter_envelope: self.filter_envelope.clone(),
+            filter_cutoff: self.filter_cutoff,
+            filter_resonance: self.filter_resonance,
+            lfo: self.lfo.clone(),
+            bit_depth: self.bit_depth,
+            sample_hold: self.sample_hold,
+            gain: self.gain,
+            monophonic: false,
+            audition_note: 60,
+            audition_duration: 0.8,
+            kit: None,
+        }
+    }
+}
+
+/// One kit piece: display name, MIDI pitch it answers to, and its voice.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KitPiece {
+    /// Display name, 1..=[`MAX_KIT_NAME_LEN`] characters.
+    pub name: String,
+    /// MIDI pitch this piece plays on, 0..=127. Pitches must be unique within
+    /// a kit; unmapped notes play the nearest piece.
+    pub pitch: u8,
+    pub voice: KitVoice,
+}
+
+/// Ordered piece list; array order is the kit's display/row order.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KitSpec {
+    /// 1..=[`MAX_KIT_PIECES`] pieces with unique pitches.
+    pub pieces: Vec<KitPiece>,
 }
 
 /// A named collection of instrument presets (`schema_version` 1).
@@ -354,6 +481,11 @@ const EMBEDDED_PACKS: &[(&str, &str)] = &[
     ("psy-leads", include_str!("../packs/psy-leads/pack.json")),
     ("psy-arps", include_str!("../packs/psy-arps/pack.json")),
     ("psy-space", include_str!("../packs/psy-space/pack.json")),
+    ("drum-kits", include_str!("../packs/drum-kits/pack.json")),
+    ("guitar", include_str!("../packs/guitar/pack.json")),
+    ("neon", include_str!("../packs/neon/pack.json")),
+    ("one-shots", include_str!("../packs/one-shots/pack.json")),
+    ("mallets", include_str!("../packs/mallets/pack.json")),
 ];
 
 // ---------------------------------------------------------------------------
@@ -377,7 +509,9 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         "description",
     )?;
     let osc_base = format!("{}oscillators", prefix(base));
-    if p.oscillators.is_empty() {
+    // A kit preset may leave the melodic oscillator list empty: its voices live
+    // under `kit.pieces`. Any oscillators that ARE present are still validated.
+    if p.oscillators.is_empty() && p.kit.is_none() {
         return Err(format!(
             "{osc_base}: a preset needs at least one oscillator"
         ));
@@ -472,6 +606,48 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         0.1,
         8.0,
     )?;
+    if let Some(kit) = &p.kit {
+        validate_kit(kit, &field(base, "kit"))?;
+    }
+    Ok(())
+}
+
+/// Validates a [`KitSpec`]: piece count, per-piece name/pitch, each piece's
+/// voice (via [`KitVoice::to_preset_stub`], so errors carry the full
+/// `kit.pieces[i].voice.*` path) and pitch uniqueness.
+fn validate_kit(kit: &KitSpec, base: &str) -> Result<(), String> {
+    let pieces_base = field(base, "pieces");
+    if kit.pieces.is_empty() {
+        return Err(format!(
+            "{pieces_base}: a drum kit needs at least one piece"
+        ));
+    }
+    if kit.pieces.len() > MAX_KIT_PIECES {
+        return Err(format!(
+            "{pieces_base}: too many pieces ({}), max {MAX_KIT_PIECES}",
+            kit.pieces.len()
+        ));
+    }
+    let mut pitch_owner: HashMap<u8, usize> = HashMap::new();
+    for (i, piece) in kit.pieces.iter().enumerate() {
+        let piece_base = format!("{pieces_base}[{i}]");
+        check_text(
+            &piece.name,
+            1,
+            MAX_KIT_NAME_LEN,
+            &field(&piece_base, "name"),
+            "name",
+        )?;
+        check_range_int(&field(&piece_base, "pitch"), piece.pitch, 0, 127, "pitch")?;
+        validate_preset_at(&piece.voice.to_preset_stub(), &field(&piece_base, "voice"))?;
+        if let Some(&first) = pitch_owner.get(&piece.pitch) {
+            return Err(format!(
+                "{piece_base}.pitch: pitch {} is already used by kit piece {first}",
+                piece.pitch
+            ));
+        }
+        pitch_owner.insert(piece.pitch, i);
+    }
     Ok(())
 }
 
@@ -763,6 +939,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
             monophonic: false,
             audition_note: 60,
             audition_duration: 0.8,
+            kit: None,
         }],
     };
     validate_pack(&pack)?;
@@ -1126,6 +1303,7 @@ mod tests {
             monophonic: true,
             audition_note: 60,
             audition_duration: 0.8,
+            kit: None,
         }
     }
 
@@ -1137,6 +1315,84 @@ mod tests {
             description: String::new(),
             author: String::new(),
             instruments: vec![valid_preset()],
+        }
+    }
+
+    /// A valid two-piece kit preset: empty top-level `oscillators` (allowed
+    /// for kits) and per-piece voices.
+    fn kit_preset() -> InstrumentPreset {
+        InstrumentPreset {
+            id: "test-pack.kit".to_string(),
+            name: "Test Kit".to_string(),
+            description: String::new(),
+            oscillators: Vec::new(),
+            envelope: Envelope::default(),
+            pitch_envelope: None,
+            filter_envelope: None,
+            filter_cutoff: 20_000.0,
+            filter_resonance: 0.0,
+            lfo: None,
+            bit_depth: 24,
+            sample_hold: 1,
+            gain: 0.9,
+            monophonic: false,
+            audition_note: 60,
+            audition_duration: 0.8,
+            kit: Some(KitSpec {
+                pieces: vec![
+                    KitPiece {
+                        name: "Kick".to_string(),
+                        pitch: 36,
+                        voice: KitVoice {
+                            oscillators: vec![OscillatorSpec {
+                                waveform: Waveform::Sine,
+                                level: 1.0,
+                                frequency_ratio: 0.5,
+                                ..Default::default()
+                            }],
+                            envelope: Envelope {
+                                attack: 0.001,
+                                decay: 0.4,
+                                sustain: 0.0,
+                                release: 0.05,
+                            },
+                            pitch_envelope: Some(PitchEnvelope {
+                                amount_semitones: -24.0,
+                                decay: 0.08,
+                            }),
+                            filter_cutoff: 4_000.0,
+                            ..Default::default()
+                        },
+                    },
+                    KitPiece {
+                        name: "Snare".to_string(),
+                        pitch: 38,
+                        voice: KitVoice {
+                            oscillators: vec![
+                                OscillatorSpec {
+                                    waveform: Waveform::Noise,
+                                    level: 0.7,
+                                    ..Default::default()
+                                },
+                                OscillatorSpec {
+                                    waveform: Waveform::Triangle,
+                                    level: 0.4,
+                                    frequency_ratio: 1.8,
+                                    ..Default::default()
+                                },
+                            ],
+                            envelope: Envelope {
+                                attack: 0.001,
+                                decay: 0.18,
+                                sustain: 0.0,
+                                release: 0.04,
+                            },
+                            filter_cutoff: 8_000.0,
+                            ..Default::default()
+                        },
+                    },
+                ],
+            }),
         }
     }
 
@@ -1483,8 +1739,9 @@ mod tests {
             }
             total += pack.instruments.len();
         }
-        // 10 eight-bit + 128 psy-bank presets.
-        assert_eq!(total, 138, "embedded preset total changed");
+        // 10 eight-bit + 128 psy-bank + 4 drum-kits + 12 guitar + 16 neon +
+        // 12 one-shots + 14 mallets presets.
+        assert_eq!(total, 196, "embedded preset total changed");
         assert_eq!(seen.len(), total);
 
         // The catalog serves the embedded bank in EMBEDDED_PACKS order with
@@ -1862,5 +2119,209 @@ mod tests {
                 assert!((-1.0..=1.0).contains(&v), "{w:?} at {phase} gave {v}");
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Drum kits
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn kit_preset_validates_with_empty_top_level_oscillators() {
+        let p = kit_preset();
+        assert!(p.oscillators.is_empty());
+        assert!(p.kit.is_some());
+        assert!(validate_preset(&p).is_ok());
+        // A kit preset may still carry melodic oscillators.
+        let mut ok = kit_preset();
+        ok.oscillators = vec![OscillatorSpec::default()];
+        assert!(validate_preset(&ok).is_ok());
+        // Top-level melodic fields stay range-validated when present.
+        let mut bad = kit_preset();
+        bad.gain = 2.0;
+        assert!(validate_preset(&bad).unwrap_err().contains("gain"));
+        let mut bad = kit_preset();
+        bad.oscillators = vec![OscillatorSpec {
+            level: 2.0,
+            ..Default::default()
+        }];
+        assert!(validate_preset(&bad)
+            .unwrap_err()
+            .contains("oscillators[0].level"));
+    }
+
+    #[test]
+    fn kit_json_shape_parses_and_validates() {
+        // The documented authoring shape: nested `voice` objects, no
+        // top-level oscillators.
+        let json = r#"{
+            "id": "my-kit.studio", "name": "Studio Kit",
+            "kit": { "pieces": [
+                { "name": "Kick", "pitch": 36, "voice": {
+                    "oscillators": [{"waveform":"sine","level":1.0,"frequency_ratio":1.0}],
+                    "envelope": {"attack":0.001,"decay":0.4,"sustain":0.0,"release":0.05},
+                    "pitch_envelope": {"amount_semitones":-24.0,"decay":0.08},
+                    "filter_cutoff": 4000.0, "gain": 0.9 } },
+                { "name": "Snare", "pitch": 38, "voice": { "oscillators": [
+                    {"waveform":"noise","level":0.7},{"waveform":"triangle","level":0.4,"frequency_ratio":1.8}],
+                    "envelope": {"attack":0.001,"decay":0.18,"sustain":0.0,"release":0.04},
+                    "filter_cutoff": 8000.0 } }
+            ] } }"#;
+        let preset: InstrumentPreset = serde_json::from_str(json).unwrap();
+        assert!(validate_preset(&preset).is_ok());
+        let kit = preset.kit.as_ref().unwrap();
+        assert_eq!(kit.pieces.len(), 2);
+        assert_eq!(kit.pieces[0].name, "Kick");
+        assert_eq!(kit.pieces[0].pitch, 36);
+        // KitVoice serde defaults mirror the melodic preset defaults.
+        assert_eq!(kit.pieces[1].voice.bit_depth, 24);
+        assert_eq!(kit.pieces[1].voice.sample_hold, 1);
+        assert_eq!(kit.pieces[1].voice.gain, 0.9);
+        assert_eq!(kit.pieces[1].voice.filter_resonance, 0.0);
+        assert_eq!(
+            kit.pieces[0]
+                .voice
+                .pitch_envelope
+                .as_ref()
+                .unwrap()
+                .amount_semitones,
+            -24.0
+        );
+    }
+
+    #[test]
+    fn kit_validation_rules_report_piece_paths() {
+        // Zero pieces.
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces.clear();
+        assert!(validate_preset(&p).unwrap_err().contains("kit.pieces"));
+
+        // Too many pieces.
+        let mut p = kit_preset();
+        let voice = kit_preset().kit.unwrap().pieces[0].voice.clone();
+        p.kit.as_mut().unwrap().pieces = (0..=MAX_KIT_PIECES)
+            .map(|i| KitPiece {
+                name: format!("Piece {i}"),
+                pitch: (i % 128) as u8,
+                voice: voice.clone(),
+            })
+            .collect();
+        // Pitches repeat mod 128 but the count check fires first.
+        assert!(validate_preset(&p).unwrap_err().contains("too many pieces"));
+
+        // Duplicate pitch: error names the piece path, pitch and first index.
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[1].pitch = 36;
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("kit.pieces[1].pitch"), "{err}");
+        assert!(err.contains("36"), "{err}");
+        assert!(err.contains("piece 0"), "{err}");
+
+        // Piece name limits.
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].name = String::new();
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].name"));
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].name = "x".repeat(MAX_KIT_NAME_LEN + 1);
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].name"));
+
+        // Pitch above 127 (u8 allows it; MIDI does not).
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].pitch = 200;
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].pitch"));
+
+        // Piece voice fields are validated through the preset stub path.
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].voice.gain = 1.5;
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].voice.gain"));
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].voice.oscillators[0].level = 2.0;
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].voice.oscillators[0].level"));
+        // A voice with no oscillators fails like a melodic preset.
+        let mut p = kit_preset();
+        p.kit.as_mut().unwrap().pieces[0].voice.oscillators.clear();
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("kit.pieces[0].voice.oscillators"));
+    }
+
+    #[test]
+    fn kit_unknown_fields_are_rejected() {
+        // Strictness extends into the kit section.
+        for bad in [
+            r#"{"id":"a.b","name":"B","kit":{"pieces":[],"bogus":1}}"#,
+            r#"{"id":"a.b","name":"B","kit":{"pieces":[{"name":"K","pitch":36,"voice":{},"extra":1}]}}"#,
+            r#"{"id":"a.b","name":"B","kit":{"pieces":[{"name":"K","pitch":36,"voice":{"oscillators":[{}],"bogus":1}}]}}"#,
+        ] {
+            let err = parse_pack(&format!(r#"{{"id":"a","name":"P","instruments":[{bad}]}}"#))
+                .unwrap_err();
+            assert!(err.contains("unknown field"), "{err}");
+        }
+    }
+
+    #[test]
+    fn kit_voice_stub_maps_fields_and_validates() {
+        let stub = kit_preset().kit.unwrap().pieces[0].voice.to_preset_stub();
+        // Placeholder identity fields always pass validation.
+        assert_eq!(stub.id, "kit.stub");
+        assert_eq!(stub.name, "stub");
+        assert!(!stub.monophonic);
+        assert_eq!(stub.audition_note, 60);
+        assert_eq!(stub.audition_duration, 0.8);
+        assert_eq!(stub.kit, None);
+        // Synthesis fields are copied through.
+        assert_eq!(stub.oscillators.len(), 1);
+        assert_eq!(stub.filter_cutoff, 4_000.0);
+        assert_eq!(
+            stub.pitch_envelope.as_ref().unwrap().amount_semitones,
+            -24.0
+        );
+        assert!(validate_preset(&stub).is_ok());
+
+        // KitVoice defaults mirror the melodic preset defaults.
+        let d = KitVoice::default();
+        assert!(d.oscillators.is_empty());
+        assert_eq!(d.filter_cutoff, 20_000.0);
+        assert_eq!(d.filter_resonance, 0.0);
+        assert_eq!(d.bit_depth, 24);
+        assert_eq!(d.sample_hold, 1);
+        assert_eq!(d.gain, 0.9);
+        assert_eq!(d.pitch_envelope, None);
+        assert_eq!(d.lfo, None);
+        // An empty voice fails exactly like an oscillator-less preset.
+        let err = validate_preset(&KitVoice::default().to_preset_stub()).unwrap_err();
+        assert!(err.contains("oscillators"), "{err}");
+    }
+
+    #[test]
+    fn kit_preset_serialization_roundtrip() {
+        let p = kit_preset();
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(text.contains("\"kit\""), "{text}");
+        let back: InstrumentPreset = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, p);
+
+        // Kit-less presets serialize without the key and parse back equal.
+        let plain = valid_preset();
+        let text = serde_json::to_string(&plain).unwrap();
+        assert!(!text.contains("\"kit\""), "{text}");
+        let parsed: InstrumentPreset = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.kit, None);
+        assert_eq!(parsed, plain);
+
+        // Pack-level round trip keeps the kit intact.
+        let mut pack = valid_pack();
+        pack.instruments[0] = kit_preset();
+        let text = pack_to_json(&pack).unwrap();
+        assert_eq!(parse_pack(&text).unwrap(), pack);
     }
 }

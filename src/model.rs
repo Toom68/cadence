@@ -9,6 +9,7 @@
 //! sizes) but tolerant of musically harmless leftovers such as notes past the end of a
 //! shortened pattern or clips past the end of a shortened song: those are simply inaudible.
 
+use crate::font::gm_program_name;
 use crate::packs::{validate_preset, InstrumentPreset};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -75,16 +76,18 @@ pub enum Instrument {
     Piano,
     Bass,
     Pluck,
+    Guitar,
     Pad,
     Lead,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 6] = [
+    pub const ALL: [Instrument; 7] = [
         Instrument::Drums,
         Instrument::Piano,
         Instrument::Bass,
         Instrument::Pluck,
+        Instrument::Guitar,
         Instrument::Pad,
         Instrument::Lead,
     ];
@@ -95,6 +98,7 @@ impl Instrument {
             Instrument::Piano => "Electric piano",
             Instrument::Bass => "Analog bass",
             Instrument::Pluck => "Glass pluck",
+            Instrument::Guitar => "Acoustic guitar",
             Instrument::Pad => "Warm pad",
             Instrument::Lead => "Mono lead",
         }
@@ -106,6 +110,9 @@ impl Instrument {
             Instrument::Piano => "Warm, bell-like electric keys with a soft tremolo.",
             Instrument::Bass => "Round analog bass with a filter that opens on every note.",
             Instrument::Pluck => "Bright plucked-string tones for melodies and arpeggios.",
+            Instrument::Guitar => {
+                "Physical-modeling steel-string guitar: plucked string, wooden body and pick."
+            }
             Instrument::Pad => "Slow, wide chords from softly detuned oscillators.",
             Instrument::Lead => "A clear monophonic lead with glide and vibrato for hooks.",
         }
@@ -126,6 +133,7 @@ impl Instrument {
             Instrument::Drums | Instrument::Bass => 36,
             Instrument::Piano | Instrument::Pad => 60,
             Instrument::Pluck | Instrument::Lead => 72,
+            Instrument::Guitar => 55,
         }
     }
 
@@ -136,6 +144,7 @@ impl Instrument {
             Instrument::Bass => (24, 60),
             Instrument::Piano => (36, 96),
             Instrument::Pluck => (48, 100),
+            Instrument::Guitar => (40, 83),
             Instrument::Pad => (36, 88),
             Instrument::Lead => (48, 96),
         }
@@ -282,6 +291,44 @@ impl Default for Effects {
     }
 }
 
+/// Reference to a sampled General MIDI sound inside an installed SoundFont
+/// (`.sf2`). Serialized as `{"name": "...", "program": N}`.
+///
+/// `name` is the font's catalog name — the `.sf2` file stem, e.g.
+/// `GeneralUser` — resolved at playback time through [`crate::font::font_key`].
+/// `program` is the General MIDI program number, 0..=127 (see
+/// [`crate::font::GM_PROGRAM_NAMES`]). When the named font is not installed
+/// the track falls back to its preset or built-in instrument.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct FontRef {
+    pub name: String,
+    pub program: u8,
+}
+
+impl FontRef {
+    pub fn new(name: impl Into<String>, program: u8) -> Self {
+        FontRef {
+            name: name.into(),
+            program,
+        }
+    }
+
+    /// Stable key the audio engine uses to look the font up in its catalog.
+    pub fn key(&self) -> u64 {
+        crate::font::font_key(&self.name)
+    }
+
+    /// GM display name of the selected program (e.g. "Acoustic Grand Piano").
+    pub fn program_name(&self) -> &'static str {
+        gm_program_name(self.program)
+    }
+
+    /// "Font Name · Program" label for pickers and track headers.
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.name, self.program_name())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     pub id: u64,
@@ -302,11 +349,22 @@ pub struct Track {
     /// preset is stored in the song so it plays without the pack installed.
     #[serde(default)]
     pub preset: Option<InstrumentPreset>,
+    /// Sampled General MIDI sound from an installed SoundFont. When `Some`, it
+    /// takes precedence over `preset`/`instrument`; if the named font file is
+    /// not installed the track falls back to that preset or built-in sound.
+    /// Songs saved before fonts existed have no `font` field and load as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<FontRef>,
 }
 
 impl Track {
-    /// Name of the sound this track plays: the preset name or the built-in instrument name.
+    /// Name of the sound this track plays: for font tracks the GM program
+    /// name, else the preset name or the built-in instrument name. Use
+    /// [`FontRef::label`] (or `track.font`) when the font name itself matters.
     pub fn sound_name(&self) -> &str {
+        if let Some(font) = &self.font {
+            return font.program_name();
+        }
         self.preset
             .as_ref()
             .map_or(self.instrument.name(), |p| p.name.as_str())
@@ -319,6 +377,45 @@ impl Track {
         track.name = preset.name.chars().take(MAX_NAME_CHARS).collect();
         track.preset = Some(preset);
         track
+    }
+
+    /// A track playing a SoundFont program, named after the font. `instrument`
+    /// picks the editor (drum grid vs. piano roll); any existing preset stays
+    /// as the fallback when the font file is not installed.
+    pub fn from_font(instrument: Instrument, font: FontRef) -> Self {
+        let mut track = create_track(instrument);
+        track.name = font.name.chars().take(MAX_NAME_CHARS).collect();
+        track.font = Some(font);
+        track
+    }
+
+    /// Whether the pattern editor shows the drum step grid for this track
+    /// rather than the piano roll: the built-in drum kit (instrument
+    /// [`Instrument::Drums`] with no preset) or a pack *kit* preset
+    /// ([`InstrumentPreset::kit`]) on a Drums track. A melodic preset — even
+    /// on a Drums track — keeps the piano roll, and a kit preset on a
+    /// melodic track does too (the kit still plays, picked by note pitch).
+    pub fn shows_drum_grid(&self) -> bool {
+        self.instrument.is_drums() && self.preset.as_ref().is_none_or(|p| p.kit.is_some())
+    }
+
+    /// The drum-grid rows for this track as `(pitch, display name)` pairs in
+    /// row order. A kit preset contributes its pieces in `pieces` array
+    /// order (the pack author's chosen row order — deliberately not sorted);
+    /// anything else falls back to the built-in [`DRUMS`] table. An empty
+    /// piece list (only reachable in unvalidated data) also falls back to
+    /// [`DRUMS`], so the grid always has at least one row.
+    pub fn drum_rows(&self) -> Vec<(u8, &str)> {
+        if let Some(kit) = self.preset.as_ref().and_then(|p| p.kit.as_ref()) {
+            if !kit.pieces.is_empty() {
+                return kit
+                    .pieces
+                    .iter()
+                    .map(|piece| (piece.pitch, piece.name.as_str()))
+                    .collect();
+            }
+        }
+        DRUMS.to_vec()
     }
 
     pub fn pattern(&self, id: u64) -> Option<&Pattern> {
@@ -353,6 +450,231 @@ pub struct Project {
     /// 0..=1.
     pub master_volume: f32,
     pub tracks: Vec<Track>,
+    /// The song's key. Songs saved before keys existed have no `key` field and
+    /// load as C major.
+    #[serde(default)]
+    pub key: SongKey,
+}
+
+/// Pitch-class names with ASCII sharps, indexed by `pitch % 12` (C = 0).
+pub const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+/// Scale mode for the song key.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyMode {
+    #[default]
+    Major,
+    /// Natural minor (Aeolian).
+    Minor,
+}
+
+impl KeyMode {
+    pub const ALL: [KeyMode; 2] = [KeyMode::Major, KeyMode::Minor];
+
+    /// Lowercase display name ("major" / "minor").
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyMode::Major => "major",
+            KeyMode::Minor => "minor",
+        }
+    }
+
+    /// The seven scale degrees as semitone offsets from the tonic.
+    pub fn semitones(self) -> [u8; 7] {
+        match self {
+            KeyMode::Major => [0, 2, 4, 5, 7, 9, 11],
+            KeyMode::Minor => [0, 2, 3, 5, 7, 8, 10],
+        }
+    }
+
+    /// Quality of the diatonic triad built on each scale degree.
+    pub fn triads(self) -> [ChordQuality; 7] {
+        use ChordQuality::{Diminished as D, Major as M, Minor as m};
+        match self {
+            KeyMode::Major => [M, m, m, M, M, m, D],
+            KeyMode::Minor => [m, D, M, m, m, M, M],
+        }
+    }
+}
+
+/// The song's key: a pitch class (0..=11, C = 0) plus major/minor mode.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SongKey {
+    pub root: u8,
+    pub mode: KeyMode,
+}
+
+impl SongKey {
+    pub fn new(root: u8, mode: KeyMode) -> Self {
+        SongKey {
+            root: root % 12,
+            mode,
+        }
+    }
+
+    /// e.g. "C major", "A minor".
+    pub fn name(&self) -> String {
+        format!(
+            "{} {}",
+            NOTE_NAMES[self.root as usize % 12],
+            self.mode.name()
+        )
+    }
+
+    /// The seven scale degrees as semitone offsets from the tonic.
+    pub fn semitones(&self) -> [u8; 7] {
+        self.mode.semitones()
+    }
+
+    /// Pitch class (0..=11) of scale degree `degree` (0-based, wraps past 6).
+    pub fn degree_root(&self, degree: usize) -> u8 {
+        (self.root + self.semitones()[degree % 7]) % 12
+    }
+
+    /// Quality of the diatonic triad on scale degree `degree` (0-based, wraps past 6).
+    pub fn degree_chord_quality(&self, degree: usize) -> ChordQuality {
+        self.mode.triads()[degree % 7]
+    }
+
+    /// Roman numeral for scale degree `degree` (0-based): upper case for major
+    /// and augmented triads, lower case for minor, lower case + "°" for diminished.
+    pub fn degree_numeral(&self, degree: usize) -> String {
+        const NUMERALS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
+        let base = NUMERALS[degree % 7];
+        match self.degree_chord_quality(degree) {
+            ChordQuality::Minor => base.to_lowercase(),
+            ChordQuality::Diminished => format!("{}°", base.to_lowercase()),
+            _ => base.to_string(),
+        }
+    }
+}
+
+/// Chord types offered by the arpeggiator.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChordQuality {
+    #[default]
+    Major,
+    Minor,
+    Diminished,
+    Augmented,
+    Sus2,
+    Sus4,
+    Power,
+    Sixth,
+    Minor6,
+    Dominant7,
+    Major7,
+    Minor7,
+    HalfDiminished7,
+    Diminished7,
+    Add9,
+    Dominant9,
+    Major9,
+    Minor9,
+}
+
+impl ChordQuality {
+    pub const ALL: [ChordQuality; 18] = [
+        ChordQuality::Major,
+        ChordQuality::Minor,
+        ChordQuality::Diminished,
+        ChordQuality::Augmented,
+        ChordQuality::Sus2,
+        ChordQuality::Sus4,
+        ChordQuality::Power,
+        ChordQuality::Sixth,
+        ChordQuality::Minor6,
+        ChordQuality::Dominant7,
+        ChordQuality::Major7,
+        ChordQuality::Minor7,
+        ChordQuality::HalfDiminished7,
+        ChordQuality::Diminished7,
+        ChordQuality::Add9,
+        ChordQuality::Dominant9,
+        ChordQuality::Major9,
+        ChordQuality::Minor9,
+    ];
+
+    /// Chord tones as ascending semitone offsets from the root.
+    pub fn intervals(self) -> &'static [u8] {
+        match self {
+            ChordQuality::Major => &[0, 4, 7],
+            ChordQuality::Minor => &[0, 3, 7],
+            ChordQuality::Diminished => &[0, 3, 6],
+            ChordQuality::Augmented => &[0, 4, 8],
+            ChordQuality::Sus2 => &[0, 2, 7],
+            ChordQuality::Sus4 => &[0, 5, 7],
+            ChordQuality::Power => &[0, 7],
+            ChordQuality::Sixth => &[0, 4, 7, 9],
+            ChordQuality::Minor6 => &[0, 3, 7, 9],
+            ChordQuality::Dominant7 => &[0, 4, 7, 10],
+            ChordQuality::Major7 => &[0, 4, 7, 11],
+            ChordQuality::Minor7 => &[0, 3, 7, 10],
+            ChordQuality::HalfDiminished7 => &[0, 3, 6, 10],
+            ChordQuality::Diminished7 => &[0, 3, 6, 9],
+            ChordQuality::Add9 => &[0, 4, 7, 14],
+            ChordQuality::Dominant9 => &[0, 4, 7, 10, 14],
+            ChordQuality::Major9 => &[0, 4, 7, 11, 14],
+            ChordQuality::Minor9 => &[0, 3, 7, 10, 14],
+        }
+    }
+
+    /// Friendly name for menus ("Major", "Dominant 7", ...).
+    pub fn label(self) -> &'static str {
+        match self {
+            ChordQuality::Major => "Major",
+            ChordQuality::Minor => "Minor",
+            ChordQuality::Diminished => "Diminished",
+            ChordQuality::Augmented => "Augmented",
+            ChordQuality::Sus2 => "Sus2",
+            ChordQuality::Sus4 => "Sus4",
+            ChordQuality::Power => "Power chord",
+            ChordQuality::Sixth => "6",
+            ChordQuality::Minor6 => "Minor 6",
+            ChordQuality::Dominant7 => "Dominant 7",
+            ChordQuality::Major7 => "Major 7",
+            ChordQuality::Minor7 => "Minor 7",
+            ChordQuality::HalfDiminished7 => "Half-diminished (m7b5)",
+            ChordQuality::Diminished7 => "Diminished 7",
+            ChordQuality::Add9 => "Add9",
+            ChordQuality::Dominant9 => "Dominant 9",
+            ChordQuality::Major9 => "Major 9",
+            ChordQuality::Minor9 => "Minor 9",
+        }
+    }
+
+    /// Chord-symbol suffix appended to the root name ("" for major, "m", "maj7", ...).
+    pub fn suffix(self) -> &'static str {
+        match self {
+            ChordQuality::Major => "",
+            ChordQuality::Minor => "m",
+            ChordQuality::Diminished => "dim",
+            ChordQuality::Augmented => "aug",
+            ChordQuality::Sus2 => "sus2",
+            ChordQuality::Sus4 => "sus4",
+            ChordQuality::Power => "5",
+            ChordQuality::Sixth => "6",
+            ChordQuality::Minor6 => "m6",
+            ChordQuality::Dominant7 => "7",
+            ChordQuality::Major7 => "maj7",
+            ChordQuality::Minor7 => "m7",
+            ChordQuality::HalfDiminished7 => "m7b5",
+            ChordQuality::Diminished7 => "dim7",
+            ChordQuality::Add9 => "add9",
+            ChordQuality::Dominant9 => "9",
+            ChordQuality::Major9 => "maj9",
+            ChordQuality::Minor9 => "m9",
+        }
+    }
+
+    /// Chord symbol for a root pitch (class), e.g. `symbol(9)` on Minor7 = "Am7".
+    pub fn symbol(self, root: u8) -> String {
+        format!("{}{}", NOTE_NAMES[root as usize % 12], self.suffix())
+    }
 }
 
 /// One flattened, playable note: clip position resolved and clipped to pattern and song end.
@@ -394,10 +716,11 @@ pub fn reserve_id(id: u64) {
 
 /// Note name with sharps in ASCII, middle C (60) = "C4".
 pub fn note_name(pitch: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    format!("{}{}", NAMES[pitch as usize % 12], pitch as i32 / 12 - 1)
+    format!(
+        "{}{}",
+        NOTE_NAMES[pitch as usize % 12],
+        pitch as i32 / 12 - 1
+    )
 }
 
 /// Display name of a drum pitch, falling back to the note name for non-kit pitches.
@@ -475,6 +798,7 @@ pub fn create_track(instrument: Instrument) -> Track {
         Instrument::Bass => (0.7, 0.02, 4000.0),
         Instrument::Piano => (0.62, 0.2, MAX_CUTOFF_HZ),
         Instrument::Pluck => (0.58, 0.2, MAX_CUTOFF_HZ),
+        Instrument::Guitar => (0.6, 0.22, MAX_CUTOFF_HZ),
         Instrument::Pad => (0.5, 0.35, 6000.0),
         Instrument::Lead => (0.56, 0.16, MAX_CUTOFF_HZ),
     };
@@ -503,6 +827,7 @@ pub fn create_track(instrument: Instrument) -> Track {
         }],
         patterns: vec![pattern],
         preset: None,
+        font: None,
     }
 }
 
@@ -572,6 +897,7 @@ impl Project {
             bars: 8,
             master_volume: 0.8,
             tracks: vec![create_track(Instrument::Drums)],
+            key: SongKey::default(),
         }
     }
 
@@ -620,6 +946,12 @@ impl Project {
             ));
         }
         check_name("Song name", &self.name)?;
+        if self.key.root > 11 {
+            return Err(format!(
+                "Song key root {} is not a pitch class (0-11).",
+                self.key.root
+            ));
+        }
         check_range("Tempo", self.bpm, MIN_BPM, MAX_BPM, self.bpm.is_finite())?;
         check_range("Swing", self.swing, 0.0, MAX_SWING, self.swing.is_finite())?;
         check_range("Song length (bars)", self.bars, MIN_BARS, MAX_BARS, true)?;
@@ -675,6 +1007,16 @@ impl Project {
             }
             if let Some(preset) = &track.preset {
                 validate_preset(preset).map_err(|e| format!("{tl} instrument preset: {e}"))?;
+            }
+            if let Some(font) = &track.font {
+                let fl = format!("{tl} font");
+                if font.name.trim().is_empty() {
+                    return Err(format!("{fl} name must not be empty."));
+                }
+                check_name(&format!("{fl} name"), &font.name)?;
+                if font.program > 127 {
+                    return Err(format!("{fl} program must be between 0 and 127."));
+                }
             }
             if track.patterns.len() > MAX_PATTERNS_PER_TRACK {
                 return Err(format!(
@@ -775,6 +1117,7 @@ impl Project {
     pub fn normalize(&mut self) {
         self.version = PROJECT_VERSION;
         clamp_name(&mut self.name, "Untitled song");
+        self.key.root %= 12;
         self.bpm = finite_or(self.bpm, 120.0).clamp(MIN_BPM, MAX_BPM);
         self.swing = finite_or(self.swing, 0.0).clamp(0.0, MAX_SWING);
         self.bars = self.bars.clamp(MIN_BARS, MAX_BARS);
@@ -804,6 +1147,22 @@ impl Project {
             {
                 // An unusable preset falls back to the track's built-in instrument.
                 track.preset = None;
+            }
+            if let Some(font) = &mut track.font {
+                // Repair like other names: drop control characters, cap the
+                // length, trim edges (font_key trims too, so keys still match).
+                font.name = font
+                    .name
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(MAX_NAME_CHARS)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                font.program = font.program.min(127);
+                if font.name.is_empty() {
+                    track.font = None;
+                }
             }
             track.patterns.truncate(MAX_PATTERNS_PER_TRACK);
             let mut pattern_ids = HashSet::new();
@@ -1273,6 +1632,8 @@ fn demo_project() -> Project {
         bars: 8,
         master_volume: 0.8,
         tracks: vec![drums, bass, keys, pluck, pad],
+        // Cm9 - Abmaj7 - Ebmaj7 - Bb9 is i - VI - III - VII in C natural minor.
+        key: SongKey::new(0, KeyMode::Minor),
     }
 }
 
@@ -1363,7 +1724,7 @@ mod tests {
     #[test]
     fn instruments_are_described() {
         let names: HashSet<_> = Instrument::ALL.iter().map(|i| i.name()).collect();
-        assert_eq!(names.len(), 6);
+        assert_eq!(names.len(), Instrument::ALL.len());
         for i in Instrument::ALL {
             assert!(!i.description().is_empty());
             let (lo, hi) = i.pitch_range();
@@ -1377,6 +1738,23 @@ mod tests {
     }
 
     #[test]
+    fn guitar_is_a_first_class_builtin() {
+        // Present in ALL, immediately after Pluck, serialized by lowercase name.
+        assert!(Instrument::ALL.contains(&Instrument::Guitar));
+        assert_eq!(Instrument::Guitar.index(), Instrument::Pluck.index() + 1);
+        let json = serde_json::to_string(&Instrument::Guitar).unwrap();
+        assert_eq!(json, "\"guitar\"");
+        let back: Instrument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Instrument::Guitar);
+        // A track on the instrument round-trips through a whole Project.
+        let mut p = Project::demo();
+        p.tracks[0].instrument = Instrument::Guitar;
+        let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(p, back);
+        back.validate().unwrap();
+    }
+
+    #[test]
     fn note_names() {
         assert_eq!(note_name(60), "C4");
         assert_eq!(note_name(61), "C#4");
@@ -1385,6 +1763,78 @@ mod tests {
         assert_eq!(note_name(127), "G9");
         assert_eq!(drum_name(38), "Snare");
         assert!((pitch_hz(69.0) - 440.0).abs() < 1e-3);
+    }
+
+    /// A two-piece kit preset whose pitches are deliberately out of order:
+    /// `drum_rows` must keep the `pieces` array order, not sort by pitch.
+    fn kit_preset() -> InstrumentPreset {
+        serde_json::from_str(
+            r#"{
+                "id": "test.kit", "name": "Kit",
+                "kit": { "pieces": [
+                    { "name": "Hat", "pitch": 42,
+                      "voice": { "oscillators": [{"waveform": "noise"}] } },
+                    { "name": "Kick", "pitch": 60,
+                      "voice": { "oscillators": [{"waveform": "sine"}] } }
+                ] }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn drum_grid_helpers_cover_builtin_melodic_and_kit_tracks() {
+        // Built-in drums: the grid shows the eight DRUMS rows.
+        let t = create_track(Instrument::Drums);
+        assert!(t.shows_drum_grid());
+        assert_eq!(t.drum_rows(), DRUMS.to_vec());
+
+        // Melodic built-ins keep the piano roll; drum_rows still falls back
+        // to DRUMS (only consulted when the grid is actually shown).
+        for inst in [
+            Instrument::Piano,
+            Instrument::Bass,
+            Instrument::Pluck,
+            Instrument::Guitar,
+            Instrument::Pad,
+            Instrument::Lead,
+        ] {
+            let t = create_track(inst);
+            assert!(!t.shows_drum_grid(), "{inst:?}");
+            assert_eq!(t.drum_rows(), DRUMS.to_vec(), "{inst:?}");
+        }
+
+        // A melodic preset on a Drums track still gets the piano roll.
+        let mut t = create_track(Instrument::Drums);
+        t.preset = Some(
+            crate::packs::template_pack("test-pack", "Test")
+                .unwrap()
+                .instruments[0]
+                .clone(),
+        );
+        assert!(!t.shows_drum_grid());
+        assert_eq!(t.drum_rows(), DRUMS.to_vec());
+
+        // A kit preset on a Drums track gets the grid, one row per piece in
+        // pieces order (Hat@42 before Kick@60 here — 60 is outside DRUMS).
+        let kit = kit_preset();
+        let t = Track::from_preset(Instrument::Drums, kit);
+        assert!(t.shows_drum_grid());
+        assert_eq!(t.drum_rows(), vec![(42, "Hat"), (60, "Kick")]);
+
+        // A kit preset on a melodic track keeps the piano roll, but
+        // drum_rows still reports the kit's pieces.
+        let t = Track::from_preset(Instrument::Lead, kit_preset());
+        assert!(!t.shows_drum_grid());
+        assert_eq!(t.drum_rows(), vec![(42, "Hat"), (60, "Kick")]);
+
+        // An empty piece list (unvalidated data) falls back to DRUMS so the
+        // grid can never divide by zero.
+        let mut empty = kit_preset();
+        empty.kit.as_mut().unwrap().pieces.clear();
+        let t = Track::from_preset(Instrument::Drums, empty);
+        assert!(t.shows_drum_grid());
+        assert_eq!(t.drum_rows(), DRUMS.to_vec());
     }
 
     #[test]
@@ -1722,10 +2172,78 @@ mod tests {
             monophonic: false,
             audition_note: 60,
             audition_duration: 0.8,
+            kit: None,
         });
         assert!(p.validate().unwrap_err().contains("preset"));
         p.normalize();
         assert_eq!(p.tracks[0].preset, None);
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn font_refs_round_trip_and_validate() {
+        let mut p = Project::empty();
+        p.tracks[0] = Track::from_font(Instrument::Piano, FontRef::new("GeneralUser", 0));
+        assert_eq!(
+            p.tracks[0].font,
+            Some(FontRef::new("GeneralUser", 0)),
+            "from_font sets the reference"
+        );
+        assert_eq!(p.tracks[0].sound_name(), "Acoustic Grand Piano");
+        assert_eq!(
+            p.tracks[0].font.as_ref().unwrap().label(),
+            "GeneralUser · Acoustic Grand Piano"
+        );
+        assert_eq!(
+            p.tracks[0].font.as_ref().unwrap().key(),
+            crate::font::font_key("GeneralUser")
+        );
+        p.validate().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            json.contains(r#""font":{"name":"GeneralUser","program":0}"#),
+            "font embedded in song JSON: {json}"
+        );
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tracks[0].font, p.tracks[0].font);
+        back.validate().unwrap();
+
+        // Songs saved before fonts existed have no `font` key and load as None.
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[{"id":2,"name":"Drums","color":[255,132,104],"instrument":"drums","volume":0.8,"pan":0,"mute":false,"solo":false,"effects":{"cutoff_hz":20000,"reverb":0,"delay":0,"drive":0},"patterns":[{"id":3,"name":"Beat 1","length":16,"notes":[]}],"clips":[]}]}"#;
+        let old: Project = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.tracks[0].font, None);
+        old.validate().unwrap();
+        // And a font-free track serializes without the key at all.
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("\"font\""), "{json}");
+    }
+
+    #[test]
+    fn font_validation_rejects_and_normalize_repairs() {
+        let mut p = Project::empty();
+        // Empty/whitespace names are rejected.
+        p.tracks[0].font = Some(FontRef::new("   ", 0));
+        assert!(p.validate().unwrap_err().contains("font"));
+        // Over-long names are rejected.
+        p.tracks[0].font = Some(FontRef::new("x".repeat(MAX_NAME_CHARS + 1), 0));
+        assert!(p.validate().unwrap_err().contains("font"));
+        // Programs above 127 are rejected (u8 can hold up to 255).
+        p.tracks[0].font = Some(FontRef::new("GeneralUser", 200));
+        assert!(p.validate().unwrap_err().contains("font"));
+
+        // Normalize repairs like other names: trims edges, clamps the program.
+        p.tracks[0].font = Some(FontRef::new("  GeneralUser  ", 200));
+        p.normalize();
+        assert_eq!(
+            p.tracks[0].font,
+            Some(FontRef::new("GeneralUser", 127)),
+            "normalize trims and clamps"
+        );
+        p.validate().unwrap();
+        // A name that repairs to nothing drops the whole reference.
+        p.tracks[0].font = Some(FontRef::new(" \n\t ", 0));
+        p.normalize();
+        assert_eq!(p.tracks[0].font, None);
         p.validate().unwrap();
     }
 
@@ -1743,5 +2261,133 @@ mod tests {
         assert_eq!(clip.span(16.0), 16.0);
         p.validate().unwrap();
         assert_eq!(p.events(false).len(), 1);
+    }
+
+    #[test]
+    fn song_key_defaults_names_and_round_trips() {
+        assert_eq!(SongKey::default(), SongKey::new(0, KeyMode::Major));
+        assert_eq!(Project::empty().key, SongKey::default());
+        assert_eq!(SongKey::default().name(), "C major");
+        assert_eq!(SongKey::new(9, KeyMode::Minor).name(), "A minor");
+        assert_eq!(SongKey::new(6, KeyMode::Major).name(), "F# major");
+        assert_eq!(SongKey::new(21, KeyMode::Major).root, 9, "new() wraps");
+        // The demo (Cm9 - Abmaj7 - Ebmaj7 - Bb9) is in C minor.
+        assert_eq!(Project::demo().key, SongKey::new(0, KeyMode::Minor));
+
+        let mut p = Project::empty();
+        p.key = SongKey::new(4, KeyMode::Minor);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            json.contains(r#""key":{"root":4,"mode":"minor"}"#),
+            "{json}"
+        );
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.key, p.key);
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn projects_without_a_key_load_as_c_major() {
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[]}"#;
+        let p: Project = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            p.key,
+            SongKey {
+                root: 0,
+                mode: KeyMode::Major
+            }
+        );
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_and_normalize_repairs_bad_key_root() {
+        let mut p = Project::empty();
+        p.key.root = 12;
+        assert!(p.validate().unwrap_err().contains("key"));
+        p.normalize();
+        assert_eq!(p.key.root, 0);
+        p.validate().unwrap();
+        let bad: Result<Project, _> = serde_json::from_str(
+            r#"{"version":1,"id":1,"name":"x","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[],"key":{"root":1,"mode":"lydian"}}"#,
+        );
+        assert!(bad.is_err(), "unknown modes are rejected by serde");
+    }
+
+    #[test]
+    fn scale_tables() {
+        assert_eq!(KeyMode::Major.semitones(), [0, 2, 4, 5, 7, 9, 11]);
+        assert_eq!(KeyMode::Minor.semitones(), [0, 2, 3, 5, 7, 8, 10]);
+    }
+
+    #[test]
+    fn diatonic_chords_of_c_major_and_a_minor() {
+        let c = SongKey::new(0, KeyMode::Major);
+        let labels: Vec<String> = (0..7)
+            .map(|d| {
+                format!(
+                    "{} {}",
+                    c.degree_numeral(d),
+                    c.degree_chord_quality(d).symbol(c.degree_root(d))
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "I C",
+                "ii Dm",
+                "iii Em",
+                "IV F",
+                "V G",
+                "vi Am",
+                "vii° Bdim"
+            ]
+        );
+        let a = SongKey::new(9, KeyMode::Minor);
+        let labels: Vec<String> = (0..7)
+            .map(|d| {
+                format!(
+                    "{} {}",
+                    a.degree_numeral(d),
+                    a.degree_chord_quality(d).symbol(a.degree_root(d))
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "i Am",
+                "ii° Bdim",
+                "III C",
+                "iv Dm",
+                "v Em",
+                "VI F",
+                "VII G"
+            ]
+        );
+    }
+
+    #[test]
+    fn chord_intervals_are_ascending_and_rooted() {
+        use ChordQuality as Q;
+        assert_eq!(Q::Major.intervals(), &[0, 4, 7]);
+        assert_eq!(Q::Minor.intervals(), &[0, 3, 7]);
+        assert_eq!(Q::Diminished.intervals(), &[0, 3, 6]);
+        assert_eq!(Q::Augmented.intervals(), &[0, 4, 8]);
+        assert_eq!(Q::Dominant7.intervals(), &[0, 4, 7, 10]);
+        assert_eq!(Q::Major7.intervals(), &[0, 4, 7, 11]);
+        assert_eq!(Q::Minor7.intervals(), &[0, 3, 7, 10]);
+        assert_eq!(Q::HalfDiminished7.intervals(), &[0, 3, 6, 10]);
+        assert_eq!(Q::Diminished7.intervals(), &[0, 3, 6, 9]);
+        assert_eq!(Q::Minor9.intervals(), &[0, 3, 7, 10, 14]);
+        let mut labels = HashSet::new();
+        for q in Q::ALL {
+            let iv = q.intervals();
+            assert_eq!(iv[0], 0, "{q:?} starts on the root");
+            assert!(iv.windows(2).all(|w| w[0] < w[1]), "{q:?} ascending");
+            assert!(labels.insert(q.label()), "{q:?} label unique");
+        }
+        assert_eq!(Q::Minor7.symbol(9), "Am7");
     }
 }
