@@ -276,14 +276,31 @@ pub fn export_wav(project: &Project, path: &Path, progress: impl FnMut(f32)) -> 
     write_rendered_wav(&mut job, path, EXPORT_SAMPLE_RATE, progress)
 }
 
-/// Why track `index` gets no stem: mute/solo is honoured exactly like the mixdown — a muted
-/// track is skipped and, while any track is soloed, every non-solo track is skipped too.
-/// `None` means the track is audible in the mix and produces a stem. Callers use the reason
-/// to annotate reports ("skipped …").
+/// Why track `index` gets no stem: the mixdown's gate is honoured exactly, in the same
+/// order as [`Project::is_track_audible`]. The track's bus is checked first — a muted bus
+/// silences its whole group (even a soloed track on it), and while any bus is soloed every
+/// track on a non-soloed bus (including master-routed tracks) is gated too. Then the
+/// track's own gate applies: a muted track is skipped and, while any track is soloed,
+/// every non-solo track is skipped. `None` means the track is audible in the mix and
+/// produces a stem. Callers use the reason to annotate reports ("skipped …").
 pub fn stem_skip_reason(project: &Project, index: usize) -> Option<&'static str> {
     let track = project.tracks.get(index)?;
     if index >= MAX_TRACKS {
         Some("over the track limit")
+    } else if !project.is_bus_audible(track.bus) {
+        // A gated bus: distinguish the mute case for the report. (An
+        // out-of-range route — only reachable on unvalidated data — reads
+        // as inaudible here too, the same way `is_bus_audible` treats it.)
+        if track.bus != 0
+            && project
+                .buses
+                .get(track.bus as usize - 1)
+                .is_some_and(|b| b.mute)
+        {
+            Some("on a muted bus")
+        } else {
+            Some("bus not soloed")
+        }
     } else if track.mute {
         Some("muted")
     } else if project.has_solo() && !track.solo {
@@ -329,8 +346,9 @@ fn stem_file_name(project: &Project, index: usize) -> String {
 /// (created when missing) and returns the written paths in track order. Each stem is a
 /// full render through the playback DSP with only that one track audible — the same signal
 /// it contributes to the mixdown, including its strip (drive/filter/fader/pan), its share
-/// of the reverb/delay sends and the master chain. Mute/solo is honoured like the mix:
-/// tracks that are not audible are skipped and [`stem_skip_reason`] says why.
+/// of the reverb/delay sends and the master chain. Mute/solo is honoured like the mix —
+/// the track's own gate and its bus's gate (see [`Project::is_track_audible`]) — and
+/// tracks that are not audible are skipped; [`stem_skip_reason`] says why.
 ///
 /// `fonts` is the already-loaded SoundFont catalog, shared by every stem so `.sf2` files
 /// are parsed once by the caller. `progress` receives 0..=1 across the whole batch, ending
@@ -362,7 +380,10 @@ pub fn export_stems(
         .map(|i| (i, out_dir.join(stem_file_name(project, i))))
         .collect();
     if targets.is_empty() {
-        return Err("Nothing to export: every track is muted or silenced by solo.".to_owned());
+        return Err(
+            "Nothing to export: every track is muted or silenced by a mute/solo on the track or its bus."
+                .to_owned(),
+        );
     }
     let count = targets.len() as f32;
     let mut written = Vec::with_capacity(targets.len());
@@ -713,6 +734,59 @@ mod tests {
         )
         .is_err());
         assert!(!dir.join("bad").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stem_export_honours_the_bus_gate() {
+        let dir = std::env::temp_dir().join(format!("cadence-stem-bus-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fonts = FontLibrary::empty();
+        let mut p = two_track_song();
+
+        // A track on a muted bus is skipped, solo or not.
+        p.tracks[1].bus = 1;
+        p.buses[0].mute = true;
+        assert_eq!(stem_skip_reason(&p, 1), Some("on a muted bus"));
+        let written = export_stems(
+            &p,
+            &fonts,
+            &dir.join("muted-bus"),
+            EXPORT_SAMPLE_RATE,
+            |_| {},
+        )
+        .expect("stem export");
+        assert_eq!(written.len(), 1);
+        assert!(written[0].ends_with("Keys_Lead-01.wav"));
+        p.tracks[1].solo = true;
+        assert_eq!(stem_skip_reason(&p, 1), Some("on a muted bus"));
+
+        // While a bus is soloed, tracks on other buses — and master-routed
+        // tracks — are gated with their own reason.
+        let mut p = two_track_song();
+        p.tracks[0].bus = 1;
+        p.tracks[1].bus = 2;
+        p.buses[0].solo = true;
+        assert_eq!(stem_skip_reason(&p, 0), None);
+        assert_eq!(stem_skip_reason(&p, 1), Some("bus not soloed"));
+        let written = export_stems(
+            &p,
+            &fonts,
+            &dir.join("bus-solo"),
+            EXPORT_SAMPLE_RATE,
+            |_| {},
+        )
+        .expect("stem export");
+        assert_eq!(written.len(), 1);
+        assert!(written[0].ends_with("Keys_Lead-01.wav"));
+
+        // A bus-gated song with nothing else audible is an error, like an
+        // all-muted one.
+        let mut p = two_track_song();
+        p.buses[0].mute = true;
+        p.tracks[0].bus = 1;
+        p.tracks[1].bus = 1;
+        assert!(export_stems(&p, &fonts, &dir.join("none"), EXPORT_SAMPLE_RATE, |_| {}).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1859,6 +1859,7 @@ mod tests {
             sample_hold: 3,
             gain: 0.9,
             monophonic: false,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,

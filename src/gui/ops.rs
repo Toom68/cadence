@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 
 use crate::model::{
     create_audio_track, create_pattern, create_track, next_id, AudioClip, Automation,
-    AutomationLane, AutomationPoint, ChordEvent, ChordQuality, Clip, FontRef, Instrument, Marker,
-    Note, Pattern, Project, SongKey, Track, MAX_NAME_CHARS,
+    AutomationLane, AutomationPoint, ChordEvent, ChordQuality, Clip, FontRef, Instrument, KeyMode,
+    Marker, Note, Pattern, Project, SongKey, Track, MAX_NAME_CHARS,
 };
 use crate::packs::InstrumentPreset;
 
@@ -2058,6 +2058,182 @@ pub fn diatonic_chords(key: SongKey) -> [DiatonicChord; 7] {
     })
 }
 
+/// Pitch-class names with ASCII flats, indexed by `pitch % 12` (C = 0).
+/// Borrowed chords imply flat spelling ("A♭" is written "Ab"), so the
+/// palette spells its symbols with these names instead of [`NOTE_NAMES`].
+const NOTE_NAMES_FLAT: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+];
+
+/// One entry of the chord strip's borrowed-chord palette: the roman-numeral
+/// role it plays, the [`ChordSpec`] it stamps and the flat-spelled symbol
+/// shown on its chip ("Ab" for ♭VI in C major — the same chord as "G#").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorrowedChord {
+    /// Roman-numeral role: "iv", "bVII", "V/vi" or "N6" (the Neapolitan).
+    pub label: &'static str,
+    /// The chord to stamp.
+    pub spec: ChordSpec,
+    /// Chord symbol with flat spelling, matching `label`'s role.
+    pub symbol: String,
+}
+
+impl BorrowedChord {
+    /// A palette entry: `label` role on pitch class `root` with `quality`;
+    /// the symbol uses flat spelling.
+    fn new(label: &'static str, root: u8, quality: ChordQuality) -> Self {
+        let root = root % 12;
+        BorrowedChord {
+            label,
+            spec: ChordSpec::new(root, quality),
+            symbol: format!("{}{}", NOTE_NAMES_FLAT[root as usize], quality.suffix()),
+        }
+    }
+}
+
+/// The curated borrowed-chords / secondary-dominants palette for `key`, the
+/// chord strip's "Borrowed" tab: colour chords from the parallel mode plus
+/// the most common secondary dominants, each spelled flat-style per its
+/// role. In a major key the borrows come from the parallel minor — the
+/// minor-plagal iv, bVII, bVI and bIII, plus bII as the Neapolitan (N6) —
+/// and the V/vi, V/ii and V/IV secondary dominants. In a minor key they
+/// come from the parallel major (IV, N6) plus the harmonic-minor dominant
+/// V and the V/III, V/iv and V/VI secondary dominants.
+pub fn borrowed_chords(key: SongKey) -> Vec<BorrowedChord> {
+    let r = i32::from(key.root % 12);
+    let pc = |semi: i32| (r + semi).rem_euclid(12) as u8;
+    match key.mode {
+        KeyMode::Major => vec![
+            BorrowedChord::new("iv", pc(5), ChordQuality::Minor),
+            BorrowedChord::new("bVII", pc(10), ChordQuality::Major),
+            BorrowedChord::new("bVI", pc(8), ChordQuality::Major),
+            BorrowedChord::new("bIII", pc(3), ChordQuality::Major),
+            BorrowedChord::new("N6", pc(1), ChordQuality::Major),
+            BorrowedChord::new("V/vi", pc(4), ChordQuality::Dominant7),
+            BorrowedChord::new("V/ii", pc(9), ChordQuality::Dominant7),
+            BorrowedChord::new("V/IV", pc(0), ChordQuality::Dominant7),
+        ],
+        KeyMode::Minor => vec![
+            BorrowedChord::new("IV", pc(5), ChordQuality::Major),
+            BorrowedChord::new("N6", pc(1), ChordQuality::Major),
+            BorrowedChord::new("V", pc(7), ChordQuality::Dominant7),
+            BorrowedChord::new("V/III", pc(10), ChordQuality::Dominant7),
+            BorrowedChord::new("V/iv", pc(0), ChordQuality::Dominant7),
+            BorrowedChord::new("V/VI", pc(3), ChordQuality::Dominant7),
+        ],
+    }
+}
+
+/// A one-click chord progression preset: a named, genre/mood-tagged loop of
+/// chords expressed as scale degrees of the song key, so the same preset
+/// works in any key. Stamps one chord per bar starting at the playhead or
+/// pointer (see [`stamp_progression`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgressionPreset {
+    /// Short chip label ("Pop", "Blues").
+    pub name: &'static str,
+    /// One-line description shown on hover.
+    pub hint: &'static str,
+    /// Scale degrees (0-based, 0 = tonic), one chord per step.
+    pub degrees: &'static [u8],
+    /// Quality per step; `None` keeps the key's diatonic quality on that
+    /// degree. Must match `degrees` in length.
+    pub qualities: &'static [Option<ChordQuality>],
+}
+
+/// The one-click progression presets shown on the chord strip's
+/// Progressions tab, in display order.
+pub const PROGRESSIONS: [ProgressionPreset; 7] = [
+    ProgressionPreset {
+        name: "Pop",
+        hint: "Bright radio-pop loop: I-V-vi-IV.",
+        degrees: &[0, 4, 5, 3],
+        qualities: &[
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Minor),
+            Some(ChordQuality::Major),
+        ],
+    },
+    ProgressionPreset {
+        name: "Rock",
+        hint: "Driving three-chord rock: I-IV-V.",
+        degrees: &[0, 3, 4],
+        qualities: &[Some(ChordQuality::Major); 3],
+    },
+    ProgressionPreset {
+        name: "Jazz",
+        hint: "ii-V-I turnaround with sevenths.",
+        degrees: &[1, 4, 0],
+        qualities: &[
+            Some(ChordQuality::Minor7),
+            Some(ChordQuality::Dominant7),
+            Some(ChordQuality::Major7),
+        ],
+    },
+    ProgressionPreset {
+        name: "Minor epic",
+        hint: "Cinematic climb: i-VI-III-VII.",
+        degrees: &[0, 5, 2, 6],
+        qualities: &[
+            Some(ChordQuality::Minor),
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Major),
+        ],
+    },
+    ProgressionPreset {
+        name: "Classic",
+        hint: "The doo-wop loop: I-vi-IV-V.",
+        degrees: &[0, 5, 3, 4],
+        qualities: &[
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Minor),
+            Some(ChordQuality::Major),
+            Some(ChordQuality::Major),
+        ],
+    },
+    ProgressionPreset {
+        name: "Blues",
+        hint: "Twelve-bar blues, all dominant sevenths.",
+        degrees: &[0, 0, 0, 0, 3, 3, 0, 0, 4, 3, 0, 4],
+        qualities: &[Some(ChordQuality::Dominant7); 12],
+    },
+    ProgressionPreset {
+        name: "Lo-fi",
+        hint: "Dreamy major-seven loop: Imaj7-vi7-ii7-V7.",
+        degrees: &[0, 5, 1, 4],
+        qualities: &[
+            Some(ChordQuality::Major7),
+            Some(ChordQuality::Minor7),
+            Some(ChordQuality::Minor7),
+            Some(ChordQuality::Dominant7),
+        ],
+    },
+];
+
+/// Resolves a [`ProgressionPreset`] against `key`: one [`ChordSpec`] per
+/// step. `override_quality` (the chord strip's Type combo) replaces every
+/// step's quality when set; otherwise the preset's own quality wins, with
+/// the key's diatonic quality as the fallback for `None` steps.
+pub fn progression_specs(
+    key: SongKey,
+    preset: &ProgressionPreset,
+    override_quality: Option<ChordQuality>,
+) -> Vec<ChordSpec> {
+    preset
+        .degrees
+        .iter()
+        .zip(preset.qualities.iter())
+        .map(|(&degree, &quality)| {
+            let quality = override_quality
+                .or(quality)
+                .unwrap_or_else(|| key.degree_chord_quality(degree as usize));
+            ChordSpec::new(key.degree_root(degree as usize), quality)
+        })
+        .collect()
+}
+
 /// Snaps `pitch` to the nearest MIDI pitch whose pitch class belongs to
 /// `key`'s scale — its seven diatonic degrees — for the editor's
 /// snap-to-scale drawing and note drags. In-scale pitches return unchanged.
@@ -2434,6 +2610,44 @@ pub fn stamp_strum(
     let start = if start.is_finite() { start } else { 0.0 };
     let snaps = strum_notes(pitches, spacing, direction, duration, velocity);
     paste_notes(p, &snaps, start)
+}
+
+/// Stamps one chord per slot across `chords` starting at `start` (wrapped
+/// into the looping pattern like [`stamp_chord`]): chord `i` lands at
+/// `start + i * slot_steps` — callers pass [`STEPS_PER_BAR`] for one chord
+/// per bar, starting at the playhead or pointer. Each chord carries its own
+/// pre-voiced ascending MIDI pitches (see [`chord_midi_pitches`]); `strum`
+/// rolls each chord the way [`stamp_strum`] does (`None` = block chords).
+/// A non-positive or non-finite slot falls back to one bar. Returns the new
+/// note ids in write order; writing stops at [`MAX_NOTES_PER_PATTERN`] like
+/// the single-chord ops.
+#[allow(dead_code)]
+pub fn stamp_progression(
+    p: &mut Pattern,
+    start: f64,
+    chords: &[Vec<u8>],
+    slot_steps: f64,
+    duration: f64,
+    velocity: f32,
+    strum: Option<(f64, StrumDirection)>,
+) -> Vec<u64> {
+    let slot = if slot_steps.is_finite() && slot_steps > 0.0 {
+        slot_steps
+    } else {
+        STEPS_PER_BAR as f64
+    };
+    let mut out = Vec::new();
+    for (i, pitches) in chords.iter().enumerate() {
+        let at = start + i as f64 * slot;
+        let ids = match strum {
+            Some((spacing, direction)) => {
+                stamp_strum(p, at, pitches, spacing, direction, duration, velocity)
+            }
+            None => stamp_chord(p, at, pitches, duration, velocity),
+        };
+        out.extend(ids);
+    }
+    out
 }
 
 /// Moves `originals` (snapshots taken at drag start) by a step/pitch delta,
@@ -4109,6 +4323,284 @@ mod tests {
     }
 
     #[test]
+    fn new_chord_qualities_spell_and_voice_correctly() {
+        // Interval tables (ascending semitones from the root), suffix and
+        // label for the six added qualities.
+        let expect: &[(ChordQuality, &[u8], &str)] = &[
+            (ChordQuality::MinorAdd9, &[0, 3, 7, 14], "madd9"),
+            (ChordQuality::Dominant11, &[0, 4, 7, 10, 14, 17], "11"),
+            (ChordQuality::Minor11, &[0, 3, 7, 10, 14, 17], "m11"),
+            (ChordQuality::Dominant13, &[0, 4, 7, 10, 14, 21], "13"),
+            (ChordQuality::Dominant7Sus4, &[0, 5, 7, 10], "7sus4"),
+            (ChordQuality::MinorMajor7, &[0, 3, 7, 11], "mMaj7"),
+        ];
+        for &(q, intervals, suffix) in expect {
+            assert_eq!(q.intervals(), intervals, "{q:?} intervals");
+            assert_eq!(q.suffix(), suffix, "{q:?} suffix");
+            assert!(!q.label().is_empty(), "{q:?} label");
+            assert!(ChordQuality::ALL.contains(&q), "{q:?} missing from ALL");
+            assert_eq!(
+                ChordSpec::new(0, q).symbol(),
+                format!("C{suffix}"),
+                "{q:?} symbol"
+            );
+        }
+        // Exact voicings around C4 (the voicing shifts by whole octaves to
+        // centre the median on middle C, so wide chords sit an octave low).
+        let expect_pitches: &[(ChordQuality, &[u8])] = &[
+            (ChordQuality::MinorAdd9, &[60, 63, 67, 74]),
+            (ChordQuality::Dominant11, &[48, 52, 55, 58, 62, 65]),
+            (ChordQuality::Minor11, &[48, 51, 55, 58, 62, 65]),
+            (ChordQuality::Dominant13, &[48, 52, 55, 58, 62, 69]),
+            (ChordQuality::Dominant7Sus4, &[48, 53, 55, 58]),
+            (ChordQuality::MinorMajor7, &[60, 63, 67, 71]),
+        ];
+        for &(q, pitches) in expect_pitches {
+            let tones = chord_notes(&ChordSpec::new(0, q), 4, 0.8);
+            assert_eq!(chord_midi_pitches(&tones, 60), pitches, "{q:?} voicing");
+        }
+    }
+
+    #[test]
+    fn every_quality_voices_inside_midi_range() {
+        for q in ChordQuality::ALL {
+            let spec = ChordSpec::new(0, q);
+            let tones = chord_notes(&spec, 4, 0.8);
+            for center in [0u8, 1, 60, 100, 127] {
+                let out = chord_midi_pitches(&tones, center);
+                assert!(!out.is_empty(), "{q:?} voices nothing at center {center}");
+                assert!(
+                    out.iter().all(|&p| p <= MAX_PITCH),
+                    "{q:?} exceeds MIDI range at center {center}"
+                );
+                assert!(
+                    out.windows(2).all(|w| w[0] < w[1]),
+                    "{q:?} not ascending at center {center}"
+                );
+                assert!(
+                    out.iter().any(|&p| p % 12 == spec.root),
+                    "{q:?} lost its root at center {center}"
+                );
+            }
+            // Centred at the top of the range every chord clamps, never wraps:
+            // the highest tone sits within a semitone of 127 (a chord whose
+            // top interval is narrow lands a whole step below).
+            let top = chord_midi_pitches(&tones, 127);
+            assert!(
+                *top.last().unwrap() >= 126,
+                "{q:?} does not reach the top: {top:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn borrowed_chords_match_the_song_key() {
+        // C major: parallel-minor borrows + the Neapolitan + three
+        // secondary dominants, spelled flat per role.
+        let c = borrowed_chords(SongKey::new(0, KeyMode::Major));
+        let expect: &[(&str, &str)] = &[
+            ("iv", "Fm"),
+            ("bVII", "Bb"),
+            ("bVI", "Ab"),
+            ("bIII", "Eb"),
+            ("N6", "Db"),
+            ("V/vi", "E7"),
+            ("V/ii", "A7"),
+            ("V/IV", "C7"),
+        ];
+        assert_eq!(c.len(), expect.len());
+        for (chord, &(label, symbol)) in c.iter().zip(expect) {
+            assert_eq!(chord.label, label);
+            assert_eq!(chord.symbol, symbol);
+        }
+        // A minor: parallel-major borrows, the harmonic-minor dominant and
+        // secondary dominants of the natural-minor degrees.
+        let a = borrowed_chords(SongKey::new(9, KeyMode::Minor));
+        let expect: &[(&str, &str)] = &[
+            ("IV", "D"),
+            ("N6", "Bb"),
+            ("V", "E7"),
+            ("V/III", "G7"),
+            ("V/iv", "A7"),
+            ("V/VI", "C7"),
+        ];
+        assert_eq!(a.len(), expect.len());
+        for (chord, &(label, symbol)) in a.iter().zip(expect) {
+            assert_eq!(chord.label, label);
+            assert_eq!(chord.symbol, symbol);
+        }
+        // Every key and mode produces in-range roots with matching symbols.
+        for root in 0..12 {
+            for mode in KeyMode::ALL {
+                let pal = borrowed_chords(SongKey::new(root, mode));
+                assert!(!pal.is_empty());
+                for chord in &pal {
+                    assert!(chord.spec.root < 12, "root {root} {mode:?}");
+                    assert_eq!(
+                        format!(
+                            "{}{}",
+                            NOTE_NAMES_FLAT[chord.spec.root as usize],
+                            chord.spec.quality.suffix()
+                        ),
+                        chord.symbol,
+                        "root {root} {mode:?} {}",
+                        chord.label
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn progression_presets_are_consistent_and_resolve_in_key() {
+        for preset in PROGRESSIONS {
+            assert!(!preset.name.is_empty(), "preset name");
+            assert_eq!(
+                preset.degrees.len(),
+                preset.qualities.len(),
+                "{} degrees/qualities",
+                preset.name
+            );
+            assert!(
+                preset.degrees.iter().all(|&d| d < 7),
+                "{} degree in range",
+                preset.name
+            );
+            let specs = progression_specs(SongKey::new(0, KeyMode::Major), &preset, None);
+            assert_eq!(specs.len(), preset.degrees.len());
+            assert!(specs.iter().all(|s| s.root < 12));
+        }
+        // Pop resolves to the classic I-V-vi-IV in C major.
+        let pop = progression_specs(SongKey::new(0, KeyMode::Major), &PROGRESSIONS[0], None);
+        assert_eq!(
+            pop.iter().map(|s| s.symbol()).collect::<Vec<_>>(),
+            ["C", "G", "Am", "F"]
+        );
+        // Jazz is ii7-V7-Imaj7; the blues preset is twelve bars of C7.
+        let jazz = progression_specs(SongKey::new(0, KeyMode::Major), &PROGRESSIONS[2], None);
+        assert_eq!(
+            jazz.iter().map(|s| s.symbol()).collect::<Vec<_>>(),
+            ["Dm7", "G7", "Cmaj7"]
+        );
+        let blues = progression_specs(SongKey::new(0, KeyMode::Major), &PROGRESSIONS[5], None);
+        assert_eq!(blues.len(), 12);
+        assert_eq!(blues[0].symbol(), "C7");
+        assert_eq!(blues[10].symbol(), "C7");
+        // The same preset works in a minor key: i-VI-III-VII in A minor.
+        let epic = progression_specs(SongKey::new(9, KeyMode::Minor), &PROGRESSIONS[3], None);
+        assert_eq!(
+            epic.iter().map(|s| s.symbol()).collect::<Vec<_>>(),
+            ["Am", "F", "C", "G"]
+        );
+        // An override quality replaces every step's quality.
+        let all = progression_specs(
+            SongKey::new(0, KeyMode::Major),
+            &PROGRESSIONS[0],
+            Some(ChordQuality::Minor7),
+        );
+        assert!(all.iter().all(|s| s.quality == ChordQuality::Minor7));
+    }
+
+    #[test]
+    fn stamp_progression_writes_one_chord_per_bar_and_wraps() {
+        let chords: Vec<Vec<u8>> = vec![
+            vec![60, 64, 67],
+            vec![57, 60, 64],
+            vec![55, 59, 62],
+            vec![53, 57, 60],
+        ];
+        let mut pat = create_pattern(Instrument::Piano, 64);
+        pat.notes.clear();
+        let ids = stamp_progression(&mut pat, 0.0, &chords, 16.0, 8.0, 0.8, None);
+        assert_eq!(ids.len(), 12);
+        assert_eq!(pat.notes.len(), 12);
+        for (i, chord) in chords.iter().enumerate() {
+            let at = i as f64 * 16.0;
+            for &pitch in chord {
+                assert!(
+                    pat.notes
+                        .iter()
+                        .any(|n| n.pitch == pitch && n.start == at && n.duration == 8.0),
+                    "bar {i} pitch {pitch}"
+                );
+            }
+        }
+        // Starting mid-song, slots wrap into the looping pattern and strums
+        // roll each chord the same way the single-chord op does.
+        let mut pat2 = create_pattern(Instrument::Piano, 32);
+        pat2.notes.clear();
+        let ids = stamp_progression(
+            &mut pat2,
+            16.0,
+            &chords,
+            16.0,
+            4.0,
+            0.5,
+            Some((1.0, StrumDirection::Up)),
+        );
+        assert_eq!(ids.len(), 12);
+        assert_eq!(pat2.notes.len(), 12);
+        for (i, chord) in chords.iter().enumerate() {
+            let at = (16.0 + i as f64 * 16.0).rem_euclid(32.0);
+            for (t, &pitch) in chord.iter().enumerate() {
+                assert!(
+                    pat2.notes
+                        .iter()
+                        .any(|n| n.pitch == pitch && n.start == at + t as f64),
+                    "bar {i} tone {t} pitch {pitch}"
+                );
+            }
+        }
+        // Empty input writes nothing; a non-positive slot falls back to one bar.
+        let mut pat3 = create_pattern(Instrument::Piano, 32);
+        pat3.notes.clear();
+        assert!(stamp_progression(&mut pat3, 0.0, &[], 16.0, 1.0, 0.5, None).is_empty());
+        assert!(pat3.notes.is_empty());
+        let ids = stamp_progression(&mut pat3, 0.0, &[vec![60], vec![64]], -1.0, 1.0, 0.5, None);
+        assert_eq!(ids.len(), 2);
+        let starts: Vec<f64> = pat3.notes.iter().map(|n| n.start).collect();
+        assert!(
+            starts.contains(&0.0) && starts.contains(&16.0),
+            "{starts:?}"
+        );
+    }
+
+    #[test]
+    fn new_chord_qualities_survive_a_serde_roundtrip() {
+        // The wire names are the snake_case variant names.
+        for (json_name, q) in [
+            ("minor_add9", ChordQuality::MinorAdd9),
+            ("dominant11", ChordQuality::Dominant11),
+            ("minor11", ChordQuality::Minor11),
+            ("dominant13", ChordQuality::Dominant13),
+            ("dominant7_sus4", ChordQuality::Dominant7Sus4),
+            ("minor_major7", ChordQuality::MinorMajor7),
+        ] {
+            let ev: ChordEvent =
+                serde_json::from_str(&format!(r#"{{"root":0,"quality":"{json_name}"}}"#))
+                    .unwrap_or_else(|e| panic!("{json_name}: {e}"));
+            assert_eq!(ev.quality, q, "{json_name}");
+        }
+        // A project carrying every new quality round-trips and validates.
+        let mut p = Project::empty();
+        let quals = [
+            ChordQuality::MinorAdd9,
+            ChordQuality::Dominant11,
+            ChordQuality::Minor11,
+            ChordQuality::Dominant13,
+            ChordQuality::Dominant7Sus4,
+            ChordQuality::MinorMajor7,
+        ];
+        for (i, q) in quals.iter().enumerate() {
+            add_chord_event(&mut p, (i * 16) as f64, (i * 2) as u8, *q).unwrap();
+        }
+        let json = serde_json::to_string_pretty(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.chord_events, p.chord_events);
+        assert!(back.validate().is_ok());
+    }
+
+    #[test]
     fn humanize_is_deterministic_and_clamps() {
         let build = || {
             let mut pat = create_pattern(Instrument::Piano, 16);
@@ -4302,12 +4794,19 @@ mod tests {
         assert!(cycle_chord_event_quality(&mut p, b, 1));
         assert_eq!(
             p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
-            ChordQuality::Major
+            ChordQuality::MinorAdd9
         );
         assert!(cycle_chord_event_quality(&mut p, b, -1));
         assert_eq!(
             p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
             ChordQuality::Minor9
+        );
+        // And it wraps from the end of the list too.
+        assert!(set_chord_event(&mut p, b, 0, ChordQuality::MinorMajor7));
+        assert!(cycle_chord_event_quality(&mut p, b, 1));
+        assert_eq!(
+            p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
+            ChordQuality::Major
         );
         // And the root wraps at the octave.
         assert!(cycle_chord_event_root(&mut p, b, 13));

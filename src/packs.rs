@@ -566,6 +566,13 @@ pub struct InstrumentPreset {
     pub gain: f32,
     #[serde(default)]
     pub monophonic: bool,
+    /// True for legacy synth emulations of General-MIDI instruments: the
+    /// library demotes these to a "Legacy synth emulations" section instead of
+    /// its main list. Purely presentational — hidden presets still parse,
+    /// validate and play exactly like any other, so songs that already embed
+    /// them keep working.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
     /// MIDI note the library preview/audition centres on (0..=127, default 60).
     /// Preview metadata only: it never affects the rendered instrument signal.
     #[serde(
@@ -626,6 +633,12 @@ fn default_sample_hold() -> u32 {
 }
 fn default_gain() -> f32 {
     0.9
+}
+
+/// `skip_serializing_if` for plain `bool` fields that default to `false` —
+/// keeps the key out of saved JSON unless the flag is actually set.
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// The synthesis fields of one kit piece — identical in shape and ranges to
@@ -707,6 +720,7 @@ impl KitVoice {
             sample_hold: self.sample_hold,
             gain: self.gain,
             monophonic: false,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
@@ -1276,6 +1290,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
             sample_hold: 4,
             gain: 0.8,
             monophonic: false,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
@@ -1644,6 +1659,7 @@ mod tests {
             sample_hold: 4,
             gain: 0.8,
             monophonic: true,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
@@ -1680,6 +1696,7 @@ mod tests {
             sample_hold: 1,
             gain: 0.9,
             monophonic: false,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: Some(KitSpec {
@@ -1766,6 +1783,7 @@ mod tests {
         assert_eq!(preset.audition_note, 60);
         assert_eq!(preset.audition_duration, 0.8);
         assert!(!preset.monophonic);
+        assert!(!preset.hidden);
         assert_eq!(preset.oscillators[0].waveform, Waveform::Saw);
         assert_eq!(preset.oscillators[0].decay, None);
         assert!(validate_preset(&preset).is_ok());
@@ -2072,6 +2090,8 @@ mod tests {
         // user packs; a broken embedded pack would surface as a catalog error.
         let mut seen = std::collections::HashSet::new();
         let mut total = 0;
+        let mut visible = 0;
+        let mut hidden = 0;
         for (label, json) in EMBEDDED_PACKS {
             let pack = parse_pack(json)
                 .unwrap_or_else(|err| panic!("embedded pack '{label}' must parse: {err}"));
@@ -2081,6 +2101,15 @@ mod tests {
                     "duplicate embedded preset id {}",
                     preset.id
                 );
+                // Hidden presets must stay fully valid: songs that already
+                // embed them keep loading and playing.
+                validate_preset(preset)
+                    .unwrap_or_else(|err| panic!("embedded preset '{}' invalid: {err}", preset.id));
+                if preset.hidden {
+                    hidden += 1;
+                } else {
+                    visible += 1;
+                }
             }
             total += pack.instruments.len();
         }
@@ -2088,9 +2117,19 @@ mod tests {
         // 12 one-shots + 14 mallets presets.
         assert_eq!(total, 196, "embedded preset total changed");
         assert_eq!(seen.len(), total);
+        // Legacy GM synth emulations are demoted from the library's main
+        // list: 9 guitar, 14 psy-keys, 7 psy-brass, 2 neon, 2 psy-arps.
+        assert_eq!(hidden, 34, "embedded hidden preset count changed");
+        assert_eq!(
+            visible,
+            total - hidden,
+            "every non-hidden preset is visible"
+        );
+        assert_eq!(visible, 162, "embedded visible preset count changed");
 
         // The catalog serves the embedded bank in EMBEDDED_PACKS order with
-        // no problems on an empty user dir.
+        // no problems on an empty user dir. Hidden presets stay in the
+        // catalog (the flag is presentation-only; the UI filters them).
         let dir = tempfile::tempdir().unwrap();
         let catalog = load_catalog_from(dir.path());
         assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
@@ -2157,6 +2196,58 @@ mod tests {
         let text = pack_to_json(&pack).unwrap();
         let back = parse_pack(&text).unwrap();
         assert_eq!(pack, back);
+    }
+
+    #[test]
+    fn hidden_presets_default_false_round_trip_and_validate() {
+        // `hidden` defaults to false and is omitted from serialized JSON when
+        // unset, so existing files stay byte-stable in spirit.
+        let preset: InstrumentPreset = serde_json::from_str(
+            r#"{"id":"a.b","name":"Minimal","oscillators":[{"waveform":"saw"}]}"#,
+        )
+        .unwrap();
+        assert!(!preset.hidden);
+        let text = serde_json::to_string(&preset).unwrap();
+        assert!(!text.contains("hidden"), "{text}");
+
+        // Explicit `"hidden": true` parses, validates and round-trips.
+        let mut hidden = valid_preset();
+        hidden.hidden = true;
+        assert!(validate_preset(&hidden).is_ok());
+        let text = serde_json::to_string(&hidden).unwrap();
+        assert!(text.contains(r#""hidden":true"#), "{text}");
+        let back: InstrumentPreset = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, hidden);
+        assert!(back.hidden);
+    }
+
+    #[test]
+    fn fx_presets_stay_inside_effects_validation_ranges() {
+        // Mirrors the checks `Project::validate` applies to track effects.
+        for (name, fx) in crate::model::FX_PRESETS {
+            assert!(
+                fx.cutoff_hz >= crate::model::MIN_CUTOFF_HZ
+                    && fx.cutoff_hz <= crate::model::MAX_CUTOFF_HZ
+                    && fx.cutoff_hz.is_finite(),
+                "{name} cutoff out of range: {}",
+                fx.cutoff_hz
+            );
+            for (label, v) in [
+                ("reverb", fx.reverb),
+                ("delay", fx.delay),
+                ("drive", fx.drive),
+            ] {
+                assert!(
+                    v.is_finite() && (0.0..=1.0).contains(&v),
+                    "{name} {label} out of range: {v}"
+                );
+            }
+        }
+        // Preset names are unique so the FX panel has no duplicate labels.
+        let names: std::collections::HashSet<_> =
+            crate::model::FX_PRESETS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names.len(), crate::model::FX_PRESETS.len());
+        assert_eq!(crate::model::FX_PRESETS[0].0, "Clean");
     }
 
     #[test]

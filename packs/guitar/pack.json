@@ -7,6 +7,7 @@
   "instruments": [
     {
       "id": "guitar.electric-clean",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 1.6,
       "name": "Electric Guitar (Clean)",
@@ -64,6 +65,7 @@
     },
     {
       "id": "guitar.acoustic-steel",
+      "hidden": true,
       "audition_note": 57,
       "audition_duration": 1.5,
       "name": "Acoustic Guitar (Steel)",
@@ -83,6 +85,7 @@
     },
     {
       "id": "guitar.acoustic-nylon",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 1.8,
       "name": "Acoustic Guitar (Nylon)",
@@ -101,6 +104,7 @@
     },
     {
       "id": "guitar.bass",
+      "hidden": true,
       "audition_note": 40,
       "audition_duration": 1.1,
       "name": "Bass Guitar",
@@ -119,6 +123,7 @@
     },
     {
       "id": "guitar.bass-pick",
+      "hidden": true,
       "audition_note": 40,
       "audition_duration": 1.0,
       "name": "Bass Guitar (Pick)",
@@ -138,6 +143,7 @@
     },
     {
       "id": "guitar.resonator",
+      "hidden": true,
       "audition_note": 57,
       "audition_duration": 1.2,
       "name": "Resonator Guitar",
@@ -157,6 +163,7 @@
     },
     {
       "id": "guitar.harmonics",
+      "hidden": true,
       "audition_note": 67,
       "audition_duration": 2.0,
       "name": "Natural Harmonics",
@@ -176,6 +183,7 @@
     },
     {
       "id": "guitar.string-squeak",
+      "hidden": true,
       "audition_note": 64,
       "audition_duration": 0.9,
       "name": "String Squeak / Scrape",
@@ -214,6 +222,7 @@
     },
     {
       "id": "guitar.slide",
+      "hidden": true,
       "audition_note": 57,
       "audition_duration": 2.8,
       "name": "Slide Guitar",

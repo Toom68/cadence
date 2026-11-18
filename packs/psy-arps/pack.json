@@ -24,6 +24,7 @@
     },
     {
       "id": "psy-arps.mallet",
+      "hidden": true,
       "audition_note": 60,
       "audition_duration": 0.9,
       "name": "Mallet",
@@ -41,6 +42,7 @@
     },
     {
       "id": "psy-arps.kalimba",
+      "hidden": true,
       "audition_note": 64,
       "audition_duration": 0.8,
       "name": "Kalimba",

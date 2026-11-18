@@ -1001,4 +1001,71 @@ mod tests {
         let s = SongData::from_project(&p);
         assert_eq!(s.tracks[0].bus, NUM_BUSES as u8);
     }
+
+    #[test]
+    fn arp_expansion_stays_bounded_for_dense_chords() {
+        // One 12-note chord held across the whole 128-bar song per track,
+        // Block arp at thirty-second rate over three octaves: each track
+        // wants 4096 iterations × 36 tones = 147 456 hits.
+        fn dense_chord_project(tracks: usize) -> Project {
+            let mut p = Project::empty();
+            p.bars = 128;
+            p.tracks.clear();
+            for _ in 0..tracks {
+                let mut t = create_track(Instrument::Piano);
+                t.patterns[0].length = 2048;
+                t.patterns[0].notes = (60..72)
+                    .map(|pitch| Note::new(pitch, 0.0, 2048.0, 0.9))
+                    .collect();
+                t.arp = ArpSettings {
+                    enabled: true,
+                    rate: ArpRate::ThirtySecond,
+                    octaves: 3,
+                    direction: ArpDirection::Block,
+                    ..ArpSettings::default()
+                };
+                p.tracks.push(t);
+            }
+            p.validate().unwrap();
+            p
+        }
+        // Below the cap the expansion is exact and trivially bounded.
+        let s = SongData::from_project(&dense_chord_project(1));
+        assert_eq!(s.events.len(), 147_456);
+        assert!(s.events.len() <= MAX_SONG_EVENTS);
+
+        // Two tracks want ~295k hits — past MAX_SONG_EVENTS. Expansion stops
+        // at the cap; the final Block hit (36 tones at once) is the only
+        // possible overshoot, and nothing remains to pass through, so the
+        // snapshot lands within one hit of the cap.
+        let s = SongData::from_project(&dense_chord_project(2));
+        assert!(
+            s.events.len() >= MAX_SONG_EVENTS,
+            "the cap was reached: {}",
+            s.events.len()
+        );
+        assert!(
+            s.events.len() <= MAX_SONG_EVENTS + 36,
+            "bounded by the cap plus one Block hit: {}",
+            s.events.len()
+        );
+        assert!(s.events.windows(2).all(|w| w[0].clock <= w[1].clock));
+    }
+
+    #[test]
+    fn arp_fires_in_every_looped_clip_iteration() {
+        // A 16-step pattern holding one 4-step chord, played twice via
+        // clip.loops = 2: the arp hits in both iterations — steps 0..3 and
+        // 16..19 — and nowhere else.
+        let mut p = note_project(Instrument::Piano, 16, CHORD);
+        p.bars = 2;
+        p.tracks[0].clips[0].loops = 2;
+        enable_arp(&mut p, ArpSettings::default());
+        let s = SongData::from_project(&p);
+        let clocks: Vec<f64> = hits(&s).iter().map(|h| h.0).collect();
+        assert_eq!(clocks, [0.0, 1.0, 2.0, 3.0, 16.0, 17.0, 18.0, 19.0]);
+        assert!(hits(&s)
+            .iter()
+            .all(|h| h.0 >= 0.0 && h.0 + h.2 <= s.total_steps + 1e-9));
+    }
 }

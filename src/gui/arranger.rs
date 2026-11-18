@@ -123,6 +123,61 @@ fn loop_clear_rect(band: Rect) -> Rect {
     Rect::from_center_size(pos2(band.right() - 7.0, band.center().y), vec2(s, s))
 }
 
+/// Subtle tints cycled across the section bands between markers: four hues
+/// at ~4% alpha, translucent enough to read as a wash on both themes.
+fn section_band_tints() -> [Color32; 4] {
+    [
+        Color32::from_rgba_unmultiplied(255, 196, 90, 10), // amber
+        Color32::from_rgba_unmultiplied(110, 185, 255, 10), // blue
+        Color32::from_rgba_unmultiplied(140, 235, 160, 10), // green
+        Color32::from_rgba_unmultiplied(228, 140, 235, 10), // violet
+    ]
+}
+
+/// Step ranges of the section bands painted between consecutive markers:
+/// song start to the first marker, marker to marker, then the last marker
+/// to the song end. Markers are sorted by step (then id) after
+/// [`Project::normalize`], so the caller's list is already in order; steps
+/// are clamped into the song and near-duplicates collapse so no zero-width
+/// band is produced.
+fn section_band_ranges(markers: &[Marker], song_steps: f64) -> Vec<(f64, f64)> {
+    let total = song_steps.max(0.0);
+    if markers.is_empty() {
+        return Vec::new();
+    }
+    let mut bounds: Vec<f64> = markers.iter().map(|m| m.step.clamp(0.0, total)).collect();
+    bounds.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let mut ranges = Vec::with_capacity(bounds.len() + 1);
+    let mut prev = 0.0;
+    for b in bounds {
+        if b - prev > 1e-9 {
+            ranges.push((prev, b));
+        }
+        prev = b.max(prev);
+    }
+    if total - prev > 1e-9 {
+        ranges.push((prev, total));
+    }
+    ranges
+}
+
+/// 1-indexed bar count needed for the song to contain `step` (the bar the
+/// step lands in) — the "set song end here" math.
+fn bars_holding_step(step: f64) -> u32 {
+    (step.max(0.0) / ops::STEPS_PER_BAR as f64).ceil().max(1.0) as u32
+}
+
+/// The clip color for an inaudible track: same hue at reduced opacity so
+/// the lane shows through. RGB is preserved, so text ink stays readable.
+fn dimmed(color: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        color.r(),
+        color.g(),
+        color.b(),
+        (color.a() as f32 * alpha.clamp(0.0, 1.0)).round() as u8,
+    )
+}
+
 /// Screen y for an automation `value` inside `rect`: volume multipliers run
 /// [`crate::model::MAX_AUTOMATION_GAIN`]..0 top-to-bottom like a fader, pan
 /// offsets +1..-1. `rect` is the strip's *inner* area (its top/bottom map to
@@ -279,6 +334,11 @@ enum ContextTarget {
     /// Right-click on the ruler's chord lane at bar-aligned `step` — opens
     /// the "Add chord" menu via the ruler's own `context_menu` call.
     ChordLane {
+        step: f64,
+    },
+    /// Right-click on the ruler's bare seek strip (neither a marker chip nor
+    /// the chord lane): opens the structure menu at the clicked step.
+    Ruler {
         step: f64,
     },
     /// Right-click on an open automation strip's empty area (a point under
@@ -519,6 +579,7 @@ impl CadenceApp {
 
         let painter = ui.painter_at(grid);
         self.paint_lanes(&painter, grid, tl, song_steps);
+        self.paint_section_bands(&painter, grid, tl);
         self.paint_clips(&painter, grid, tl);
         self.paint_automation(&painter, grid, tl);
         self.paint_arranger_marquee(&painter);
@@ -528,7 +589,9 @@ impl CadenceApp {
         if px >= grid.left() - 1.0 && px <= grid.right() + 1.0 {
             painter.vline(px, grid.y_range(), Stroke::new(2.0_f32, pal.accent));
         }
-        if let Some(d) = self.arranger.drag.clone().filter(|d| d.moved()) {
+        // Borrowed, not cloned: the drag carries Vec<(u64, Clip)>-sized
+        // snapshots that must not deep-copy every frame.
+        if let Some(d) = self.arranger.drag.as_ref().filter(|d| d.moved()) {
             // `(start, loops, fade_in, fade_out)` for whichever clip kind the
             // gesture holds — pattern clips and imported-WAV clips share the
             // id space, so the kind resolves inside `any_clip_props`.
@@ -549,29 +612,29 @@ impl CadenceApp {
                     )
                 }),
                 ArrangerDrag::Fade { track, clip, edge } => {
-                    label_at(track, clip).map(|(start, _, fi, fo)| {
-                        let v = if edge == FadeEdge::In { fi } else { fo };
+                    label_at(*track, *clip).map(|(start, _, fi, fo)| {
+                        let v = if *edge == FadeEdge::In { fi } else { fo };
                         (
                             start,
                             format!(
                                 "{} fade {:.0} st",
-                                if edge == FadeEdge::In { "In" } else { "Out" },
+                                if *edge == FadeEdge::In { "In" } else { "Out" },
                                 v
                             ),
                         )
                     })
                 }
-                ArrangerDrag::Loop { track, clip, .. } => label_at(track, clip)
+                ArrangerDrag::Loop { track, clip, .. } => label_at(*track, *clip)
                     .map(|(start, loops, ..)| (start, format!("Loops ×{}", loops.max(1)))),
                 ArrangerDrag::Automation {
                     track,
                     param,
                     index,
                     ..
-                } => ops::track(&self.project, track)
+                } => ops::track(&self.project, *track)
                     .and_then(|t| t.automation.as_ref())
-                    .and_then(|a| a.lane(param).get(index))
-                    .map(|pt| (pt.step, auto_point_label(param, pt.value))),
+                    .and_then(|a| a.lane(*param).get(*index))
+                    .map(|pt| (pt.step, auto_point_label(*param, pt.value))),
                 // The marker flag / chord chip itself is the ghost; no
                 // floating label.
                 ArrangerDrag::Marker { .. } | ArrangerDrag::Chord { .. } => None,
@@ -672,6 +735,36 @@ impl CadenceApp {
                     self.edit("Song length", Some("bars"), |p| p.bars = bars.clamp(ops::MIN_BARS, ops::MAX_BARS));
                 }
                 resp.on_hover_text(format!("Song length in bars (1–{}). Placing clips past the end grows the song automatically.", ops::MAX_BARS));
+                // Quick-adjust steppers next to the drag value, clamped to
+                // the model's bar limits like the drag value itself.
+                if theme::icon_button(
+                    ui,
+                    pal,
+                    theme::Icon::Minus,
+                    24.0,
+                    false,
+                    pal.accent,
+                    "One bar shorter",
+                )
+                .clicked()
+                {
+                    let bars = self.project.bars.saturating_sub(1).max(ops::MIN_BARS);
+                    self.edit("Song length", Some("bars"), |p| p.bars = bars);
+                }
+                if theme::icon_button(
+                    ui,
+                    pal,
+                    theme::Icon::Plus,
+                    24.0,
+                    false,
+                    pal.accent,
+                    "One bar longer",
+                )
+                .clicked()
+                {
+                    let bars = self.project.bars.saturating_add(1).min(ops::MAX_BARS);
+                    self.edit("Song length", Some("bars"), |p| p.bars = bars);
+                }
                 ui.add_space(6.0);
                 ui.label(RichText::new("Snap").small().color(pal.text_dim));
                 egui::ComboBox::from_id_salt("arr_snap").width(64.0).selected_text(self.arranger.snap.label()).show_ui(ui, |ui| {
@@ -1134,7 +1227,10 @@ impl CadenceApp {
                 if let Some(m) = self.arranger.marquee.as_mut() {
                     m.current = pos;
                     self.update_arranger_marquee_selection(grid, tl);
-                } else if let Some(d) = self.arranger.drag.clone() {
+                } else if let Some(d) = self.arranger.drag.take() {
+                    // `take` + put-back instead of a per-frame clone: the
+                    // drag state owns Vec-sized snapshots that must not be
+                    // deep-copied on every pointer move.
                     match d {
                         ArrangerDrag::Clip(mut cd) => {
                             self.drag_clip_group(&mut cd, pos.x, tl);
@@ -1142,6 +1238,7 @@ impl CadenceApp {
                         }
                         ArrangerDrag::Fade { track, clip, edge } => {
                             self.drag_clip_fade(track, clip, edge, pos.x, tl);
+                            self.arranger.drag = Some(ArrangerDrag::Fade { track, clip, edge });
                         }
                         ArrangerDrag::Loop {
                             track,
@@ -1150,6 +1247,12 @@ impl CadenceApp {
                             origin_loops,
                         } => {
                             self.drag_clip_loop(track, clip, grab_step, origin_loops, pos.x, tl);
+                            self.arranger.drag = Some(ArrangerDrag::Loop {
+                                track,
+                                clip,
+                                grab_step,
+                                origin_loops,
+                            });
                         }
                         ArrangerDrag::Automation {
                             track,
@@ -1182,8 +1285,10 @@ impl CadenceApp {
                             });
                         }
                         // Marker and chord-chip drags belong to the ruler
-                        // input handler.
-                        ArrangerDrag::Marker { .. } | ArrangerDrag::Chord { .. } => {}
+                        // input handler; the drag goes back untouched.
+                        other @ (ArrangerDrag::Marker { .. } | ArrangerDrag::Chord { .. }) => {
+                            self.arranger.drag = Some(other);
+                        }
                     }
                 }
             }
@@ -1299,8 +1404,12 @@ impl CadenceApp {
         }
         let group = cd.group.as_str();
         if cd.copy && !cd.copied {
-            let originals = cd.originals.clone();
-            let originals_audio = cd.originals_audio.clone();
+            // Borrowed, not cloned: the snapshots ride the drag state and a
+            // per-frame deep copy of every selected clip would stall large
+            // selections. `edit` applies its closure immediately, so the
+            // borrows only need to last the call.
+            let originals = &cd.originals;
+            let originals_audio = &cd.originals_audio;
             let primary_old = cd.clip;
             let mut copied = None;
             self.edit(
@@ -1310,7 +1419,7 @@ impl CadenceApp {
                     "Copy clips"
                 },
                 Some(group),
-                |p| copied = ops::copy_mixed_clip_group(p, &originals, &originals_audio, delta),
+                |p| copied = ops::copy_mixed_clip_group(p, originals, originals_audio, delta),
             );
             match copied {
                 Some(ids) => {
@@ -1347,8 +1456,8 @@ impl CadenceApp {
                 }
             }
         } else {
-            let originals = cd.originals.clone();
-            let originals_audio = cd.originals_audio.clone();
+            let originals = &cd.originals;
+            let originals_audio = &cd.originals_audio;
             self.edit(
                 if originals.len() + originals_audio.len() == 1 {
                     "Move clip"
@@ -1357,8 +1466,8 @@ impl CadenceApp {
                 },
                 Some(group),
                 |p| {
-                    ops::move_clip_group(p, &originals, delta);
-                    ops::move_audio_clip_group(p, &originals_audio, delta);
+                    ops::move_clip_group(p, originals, delta);
+                    ops::move_audio_clip_group(p, originals_audio, delta);
                 },
             );
         }
@@ -1815,6 +1924,8 @@ impl CadenceApp {
                         self.focus = Focus::Editor;
                     }
                 }
+                ui.separator();
+                self.structure_menu(ui, step);
             }
             Some(ContextTarget::AutoStrip { track, param }) => {
                 let lane_name = match param {
@@ -1847,14 +1958,97 @@ impl CadenceApp {
             // The chord-lane menu is owned by the ruler's own context_menu
             // call (`chord_lane_menu`); the grid's menu can't open it.
             Some(ContextTarget::ChordLane { .. }) => {}
+            Some(ContextTarget::Ruler { step }) => {
+                ui.label(
+                    RichText::new(format!("At bar {}", ops::format_position(step).trim()))
+                        .small()
+                        .color(pal.text_faint),
+                );
+                ui.separator();
+                self.structure_menu(ui, step);
+            }
             None => {
                 ui.label(
                     RichText::new("Right-click a lane or clip")
                         .small()
                         .color(pal.text_faint),
                 );
+                ui.separator();
+                self.structure_menu(ui, self.transport.position);
             }
         }
+    }
+
+    /// The "Structure" submenu shared by the arranger and ruler context
+    /// menus: named section markers at `step` (snapped to the arranger
+    /// grid), a free-form "Insert marker…", and "Set song end here". Every
+    /// choice runs through the undoable [`Self::edit`] path.
+    fn structure_menu(&mut self, ui: &mut Ui, step: f64) {
+        let at = snap_round(step, self.arranger.snap.steps()).max(0.0);
+        ui.menu_button("Structure", |ui| {
+            for name in ["Intro", "Verse", "Chorus", "Bridge", "Outro"] {
+                if ui.button(name).clicked() {
+                    self.add_marker_named(at, name.to_string());
+                }
+            }
+            ui.separator();
+            if ui.button("Insert marker…").clicked() {
+                // Default name first, then the inline rename popup opens so
+                // the name can be typed right away.
+                if let Some(id) = self.add_marker_named(at, ops::next_marker_name(&self.project)) {
+                    let text = self
+                        .project
+                        .markers
+                        .iter()
+                        .find(|m| m.id == id)
+                        .map_or_else(String::new, |m| m.name.clone());
+                    self.arranger.marker_rename = Some(MarkerRename { id, text });
+                }
+            }
+        });
+        let bars = bars_holding_step(step).clamp(ops::MIN_BARS, ops::MAX_BARS);
+        if ui
+            .add_enabled(
+                self.project.bars != bars,
+                egui::Button::new(format!("Set song end here (bar {bars})")),
+            )
+            .on_hover_text(format!(
+                "End the song at the bar under the pointer (bars are capped at {}).",
+                ops::MAX_BARS
+            ))
+            .clicked()
+        {
+            self.set_song_end(step);
+        }
+    }
+
+    /// Adds a section marker named `name` at `step` (grid-snapped) through
+    /// the undoable edit path; returns the new marker's id for the caller
+    /// to open the rename popup on, and warns when the cap is reached.
+    fn add_marker_named(&mut self, step: f64, name: String) -> Option<u64> {
+        let step = snap_round(step, self.arranger.snap.steps()).max(0.0);
+        let mut id = None;
+        self.edit("Add marker", None, |p| {
+            id = ops::add_marker(p, step, Some(name))
+        });
+        if id.is_none() {
+            self.set_status(
+                StatusKind::Warning,
+                format!("Songs are limited to {} section markers.", ops::MAX_MARKERS),
+            );
+        }
+        id
+    }
+
+    /// Sets the song length so it ends on the bar containing `step`, then
+    /// grows it back to fit any clips past that point. Clamped to
+    /// [`ops::MIN_BARS`]..[`ops::MAX_BARS`].
+    fn set_song_end(&mut self, step: f64) {
+        let bars = bars_holding_step(step).clamp(ops::MIN_BARS, ops::MAX_BARS);
+        self.edit("Set song end", None, |p| {
+            p.bars = bars;
+            ops::fit_bars_to_content(p);
+        });
     }
 
     fn arranger_ruler_input(
@@ -1912,27 +2106,33 @@ impl CadenceApp {
                             self.arranger.context = Some(ContextTarget::ChordLane { step });
                         }
                     }
-                } else {
+                } else if let Some(id) = self.marker_at(ui.ctx(), pos, ruler, tl) {
                     self.arranger.context = None;
-                    if let Some(id) = self.marker_at(ui.ctx(), pos, ruler, tl) {
-                        self.edit("Delete marker", None, |p| {
-                            ops::delete_marker(p, id);
-                        });
-                        if self
-                            .arranger
-                            .marker_rename
-                            .as_ref()
-                            .is_some_and(|r| r.id == id)
-                        {
-                            self.arranger.marker_rename = None;
-                        }
+                    self.edit("Delete marker", None, |p| {
+                        ops::delete_marker(p, id);
+                    });
+                    if self
+                        .arranger
+                        .marker_rename
+                        .as_ref()
+                        .is_some_and(|r| r.id == id)
+                    {
+                        self.arranger.marker_rename = None;
                     }
+                } else {
+                    // Bare seek strip: the ruler's own context menu opens
+                    // the structure menu at the clicked step.
+                    self.arranger.context = Some(ContextTarget::Ruler {
+                        step: tl.step(pos.x).max(0.0),
+                    });
                 }
             }
         }
         // A marker or chord-chip drag owns the pointer until release and
         // suppresses seeking, so the playhead does not chase the chip.
-        match self.arranger.drag.clone() {
+        // `take` moves the drag out of the view for the frame instead of
+        // cloning it; both arms return, so only the fallthrough puts it back.
+        match self.arranger.drag.take() {
             Some(ArrangerDrag::Marker { id, group }) => {
                 let (primary_down, released) =
                     ui.input(|i| (i.pointer.primary_down(), i.pointer.primary_released()));
@@ -1997,7 +2197,9 @@ impl CadenceApp {
                 }
                 return;
             }
-            _ => {}
+            // Any other drag (clip fades, automation, …) belongs to the
+            // grid handler: put it back untouched.
+            other => self.arranger.drag = other,
         }
         if resp.is_pointer_button_down_on() {
             // Where the press *landed* picks the gesture for its whole
@@ -2075,12 +2277,16 @@ impl CadenceApp {
             }
         }
         // Right-clicking the chord strip's empty area opens the "Add chord"
-        // menu; keep it attached while that target stays current.
+        // menu; keep it attached while that target stays current. A
+        // right-click on the bare seek strip opens the structure menu
+        // instead.
         if matches!(self.arranger.context, Some(ContextTarget::ChordLane { .. })) {
             resp.context_menu(|ui| self.chord_lane_menu(ui));
+        } else if matches!(self.arranger.context, Some(ContextTarget::Ruler { .. })) {
+            resp.context_menu(|ui| self.arranger_context_menu(ui));
         }
         let _ = resp.clone().on_hover_text(
-            "Click or drag to move the playhead (snaps to beats; hold Shift for 1/16)\nDrag the thin top strip to set a loop region\nDouble-click to add a section marker · flags: drag to move, double-click to rename, right-click to delete\nChord strip (bottom): click adds the key's chord, chip click cycles the quality, Shift-click the root, drag moves, right-click deletes",
+            "Click or drag to move the playhead (snaps to beats; hold Shift for 1/16)\nDrag the thin top strip to set a loop region\nDouble-click to add a section marker · flags: drag to move, double-click to rename, right-click to delete\nRight-click the ruler for the Structure menu (markers, song end)\nChord strip (bottom): click adds the key's chord, chip click cycles the quality, Shift-click the root, drag moves, right-click deletes",
         );
     }
 
@@ -2451,6 +2657,31 @@ impl CadenceApp {
         }
     }
 
+    /// Translucent section bands behind the arrangement: one tinted band per
+    /// gap between consecutive markers (song start → first marker → … → song
+    /// end), cycling [`section_band_tints`]. Pure paint over the lane fills
+    /// and under the clips, so the song's structure reads without touching
+    /// the model.
+    fn paint_section_bands(&self, p: &Painter, grid: Rect, tl: Timeline) {
+        let ranges = section_band_ranges(&self.project.markers, self.project.total_steps());
+        if ranges.is_empty() {
+            return;
+        }
+        let tints = section_band_tints();
+        for (i, (a, b)) in ranges.iter().enumerate() {
+            let x0 = tl.x(*a).max(grid.left());
+            let x1 = tl.x(*b).min(grid.right());
+            if x1 - x0 < 1.0 {
+                continue;
+            }
+            p.rect_filled(
+                Rect::from_min_max(pos2(x0, grid.top()), pos2(x1, grid.bottom())),
+                0.0,
+                tints[i % tints.len()],
+            );
+        }
+    }
+
     fn paint_bar_lines(&self, p: &Painter, grid: Rect, tl: Timeline) {
         let pal = self.palette();
         let pps = tl.pps;
@@ -2485,9 +2716,21 @@ impl CadenceApp {
                 break;
             }
             let audible = self.project.is_track_audible(i);
+            // Inaudible tracks paint at reduced opacity so the arrangement
+            // still shows *what* is there without implying it is heard.
             let color = theme::rgb(track.color);
+            let color = if audible { color } else { dimmed(color, 0.45) };
+            // One id→pattern map per track per frame, so the clip loop does
+            // not re-run the linear pattern find for every clip.
+            let patterns: HashMap<u64, &Pattern> =
+                track.patterns.iter().map(|p| (p.id, p)).collect();
             for clip in &track.clips {
-                let len = ops::clip_len(track, clip);
+                // Inline clip length from the map (same math as
+                // `ops::clip_len`, without a second linear find).
+                let pat_len = patterns
+                    .get(&clip.pattern_id)
+                    .map_or(ops::STEPS_PER_BAR as f64, |p| p.length.max(1) as f64);
+                let len = pat_len * clip.loop_count() as f64;
                 let (x0, x1) = (tl.x(clip.start), tl.x(clip.start + len));
                 if x1 < grid.left() || x0 > grid.right() {
                     continue;
@@ -2501,7 +2744,7 @@ impl CadenceApp {
                     r,
                     track,
                     clip,
-                    ops::pattern(track, clip.pattern_id),
+                    patterns.get(&clip.pattern_id).copied(),
                     color,
                     selected,
                     audible,
@@ -2695,13 +2938,22 @@ impl CadenceApp {
                     );
                 }
                 if band.width() >= 16.0 {
+                    let clear = loop_clear_rect(band);
                     p.text(
-                        loop_clear_rect(band).center(),
+                        clear.center(),
                         Align2::CENTER_CENTER,
                         "✕",
                         FontId::proportional(9.0),
                         pal.text,
                     );
+                    // Hover-only interact: the ruler's click handler owns
+                    // the actual clearing in `loop_lane_drag`.
+                    ui.interact(
+                        clear,
+                        ui.id().with(("loop_clear", a.to_bits(), b.to_bits())),
+                        Sense::hover(),
+                    )
+                    .on_hover_text("Clear loop region");
                 }
             }
         }
@@ -2852,6 +3104,13 @@ impl CadenceApp {
                 FontId::proportional(9.5),
                 ink,
             );
+            // Hover-only interact so the chip explains itself; clicks stay
+            // with the ruler's input handler.
+            ui.interact(chip, ui.id().with(("marker_chip", m.id)), Sense::hover())
+                .on_hover_text(format!(
+                    "{} — drag to move · double-click to rename · right-click to delete",
+                    m.name
+                ));
         }
     }
 
@@ -4286,5 +4545,87 @@ mod tests {
         // Reset clears expansion state like a project swap would require.
         app.arranger.reset_gesture();
         assert!(app.arranger.auto_lanes.is_empty());
+    }
+
+    // ----- section bands and structure menu ------------------------------------
+
+    #[test]
+    fn section_band_ranges_split_the_song_between_markers() {
+        // No markers: no bands.
+        assert!(section_band_ranges(&[], 128.0).is_empty());
+        // One marker: song start → marker, marker → song end.
+        let m = Marker::new("Verse", 48.0);
+        assert_eq!(
+            section_band_ranges(&[m], 128.0),
+            vec![(0.0, 48.0), (48.0, 128.0)]
+        );
+        // Sorted markers (the model keeps them sorted) produce consecutive
+        // gaps; a marker past the song end clamps into it.
+        let a = Marker::new("Intro", 0.0);
+        let b = Marker::new("Verse", 32.0);
+        let c = Marker::new("Chorus", 64.0);
+        let d = Marker::new("Outro", 999.0);
+        assert_eq!(
+            section_band_ranges(&[a, b, c, d], 96.0),
+            vec![(0.0, 32.0), (32.0, 64.0), (64.0, 96.0)]
+        );
+        // Duplicate steps collapse so no zero-width band is produced.
+        let e = Marker::new("A", 16.0);
+        let f = Marker::new("B", 16.0);
+        let g = Marker::new("C", 64.0);
+        assert_eq!(
+            section_band_ranges(&[e, f, g], 128.0),
+            vec![(0.0, 16.0), (16.0, 64.0), (64.0, 128.0)]
+        );
+    }
+
+    #[test]
+    fn bars_holding_step_rounds_up_to_the_clicked_bar() {
+        assert_eq!(bars_holding_step(0.0), 1);
+        assert_eq!(bars_holding_step(15.9), 1);
+        assert_eq!(bars_holding_step(16.0), 1);
+        assert_eq!(bars_holding_step(16.1), 2);
+        assert_eq!(bars_holding_step(64.0), 4);
+        assert_eq!(bars_holding_step(-5.0), 1);
+        assert_eq!(bars_holding_step(9999.0), 625);
+    }
+
+    #[test]
+    fn dimmed_keeps_hue_and_cuts_opacity() {
+        let c = Color32::from_rgb(200, 100, 50);
+        let d = dimmed(c, 0.45);
+        assert_eq!(d.a(), (255.0_f32 * 0.45).round() as u8);
+        // egui stores premultiplied RGBA, so the hue is preserved when the
+        // channel/alpha ratio stays the original channel/255 ratio.
+        for (cd, cc) in [(d.r(), c.r()), (d.g(), c.g()), (d.b(), c.b())] {
+            assert!(
+                (cd as f32 / d.a() as f32 - cc as f32 / 255.0).abs() < 0.02,
+                "channel {cd}/{d} drifts from {cc}/255",
+                d = d.a()
+            );
+        }
+    }
+
+    #[test]
+    fn structure_menu_edits_markers_and_song_end_undo_cleanly() {
+        let mut app = CadenceApp::headless(Project::empty());
+        app.arranger.snap = Snap::Step;
+        let before = app.project.bars;
+        // Named marker at the snapped step.
+        let id = app.add_marker_named(34.0, "Verse".to_string());
+        let id = id.expect("marker added");
+        let m = app.project.markers.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(m.name, "Verse");
+        assert_eq!(m.step, 34.0, "snap stays on the step grid");
+        // Setting the song end rewrites bars; content still fits after it.
+        app.set_song_end(80.0);
+        assert_eq!(app.project.bars, 5);
+        app.project.validate().unwrap();
+        // One undo step per edit.
+        assert!(app.history.can_undo());
+        app.undo();
+        assert_eq!(app.project.bars, before);
+        app.undo();
+        assert!(app.project.markers.is_empty());
     }
 }

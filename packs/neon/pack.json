@@ -302,6 +302,7 @@
     },
     {
       "id": "neon.choir-pad",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 3.5,
       "name": "Choir Pad",
@@ -324,6 +325,7 @@
     },
     {
       "id": "neon.neon-organ",
+      "hidden": true,
       "audition_note": 60,
       "audition_duration": 2.0,
       "name": "Neon Organ",

@@ -37,6 +37,13 @@ pub(super) struct TransportState {
     /// `None` (or `looping` off) plays to the song end as before.
     pub loop_region: Option<(f64, f64)>,
     pub metronome: bool,
+    /// MIDI recording armed: performances from the Keyboard tab and the
+    /// computer-keyboard row land in the selected track's pattern. Session
+    /// state only — never saved into the `.cadence` file.
+    pub recording: bool,
+    /// Notes recorded since the last time record was armed, for the status
+    /// line ("Recorded N notes").
+    pub recorded_notes: usize,
     pub peak: [f32; 2],
     pub voices: usize,
     pub engine_error: Option<String>,
@@ -53,6 +60,26 @@ impl CadenceApp {
             self.pause();
         } else {
             self.play();
+        }
+    }
+
+    /// Toggles MIDI recording: notes played from the Keyboard tab or the
+    /// computer-keyboard row are quantized to the Snap grid and inserted
+    /// into the selected track's pattern. Armed while playing = live
+    /// recording; armed while stopped = step recording (the playhead
+    /// advances one Snap step per note).
+    pub(super) fn toggle_record(&mut self) {
+        self.transport.recording = !self.transport.recording;
+        if self.transport.recording {
+            self.transport.recorded_notes = 0;
+            self.editor.record_pending.clear();
+            self.editor.kb_record_pitch = None;
+            self.set_status(
+                StatusKind::Info,
+                "Recording… play and perform, or step-record at the playhead while stopped.",
+            );
+        } else {
+            self.set_status(StatusKind::Info, "Recording stopped.");
         }
     }
 
@@ -267,6 +294,9 @@ impl CadenceApp {
                     if theme::play_button(ui, pal, self.transport.playing, 42.0).clicked() {
                         self.toggle_play();
                     }
+                    if self.record_button(ui).clicked() {
+                        self.toggle_record();
+                    }
                     if theme::icon_button(
                         ui,
                         pal,
@@ -326,6 +356,29 @@ impl CadenceApp {
                     });
                 });
             });
+    }
+
+    /// Round record button between play and stop: a red dot inside a circle
+    /// outline when armed. Recording captures keyboard-tab and computer-key
+    /// performances as MIDI — no audio input.
+    fn record_button(&self, ui: &mut egui::Ui) -> egui::Response {
+        let pal = self.palette();
+        let armed = self.transport.recording;
+        let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+        if ui.is_rect_visible(rect) {
+            let c = rect.center();
+            let r = rect.width() * 0.30;
+            let ink = if armed { pal.danger } else { pal.text_faint };
+            ui.painter().circle_stroke(c, r, Stroke::new(2.0_f32, ink));
+            if armed {
+                ui.painter().circle_filled(c, r * 0.55, pal.danger);
+            }
+        }
+        resp.on_hover_text(if armed {
+            "Recording (R): notes you play land in the selected track's pattern — live while playing, step-by-step while stopped"
+        } else {
+            "Record (R): perform into the selected track's pattern from the Keyboard tab or the Z X C… keys"
+        })
     }
 
     fn brand(&mut self, ui: &mut egui::Ui) {

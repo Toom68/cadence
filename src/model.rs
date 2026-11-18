@@ -429,6 +429,65 @@ impl Default for Effects {
     }
 }
 
+/// Named one-click effect presets for the track FX panel. Every value is
+/// inside the same ranges [`Project::validate`] enforces for [`Effects`].
+pub const FX_PRESETS: &[(&str, Effects)] = &[
+    (
+        "Clean",
+        Effects {
+            cutoff_hz: MAX_CUTOFF_HZ,
+            reverb: 0.15,
+            delay: 0.0,
+            drive: 0.0,
+        },
+    ),
+    (
+        "Warm Tape",
+        Effects {
+            cutoff_hz: 8_000.0,
+            reverb: 0.15,
+            delay: 0.05,
+            drive: 0.35,
+        },
+    ),
+    (
+        "Phone",
+        Effects {
+            cutoff_hz: 1_200.0,
+            reverb: 0.0,
+            delay: 0.0,
+            drive: 0.15,
+        },
+    ),
+    (
+        "Dub Delay",
+        Effects {
+            cutoff_hz: MAX_CUTOFF_HZ,
+            reverb: 0.3,
+            delay: 0.55,
+            drive: 0.0,
+        },
+    ),
+    (
+        "Lo-fi",
+        Effects {
+            cutoff_hz: 4_000.0,
+            reverb: 0.1,
+            delay: 0.1,
+            drive: 0.5,
+        },
+    ),
+    (
+        "Ambient",
+        Effects {
+            cutoff_hz: 12_000.0,
+            reverb: 0.45,
+            delay: 0.2,
+            drive: 0.0,
+        },
+    ),
+];
+
 /// Serde default for [`Bus::name`] on hand-edited files missing the key;
 /// index-aware names ("Bus A"..) come from [`bus_name`].
 fn default_bus_name() -> String {
@@ -1203,10 +1262,16 @@ pub enum ChordQuality {
     Dominant9,
     Major9,
     Minor9,
+    MinorAdd9,
+    Dominant11,
+    Minor11,
+    Dominant13,
+    Dominant7Sus4,
+    MinorMajor7,
 }
 
 impl ChordQuality {
-    pub const ALL: [ChordQuality; 18] = [
+    pub const ALL: [ChordQuality; 24] = [
         ChordQuality::Major,
         ChordQuality::Minor,
         ChordQuality::Diminished,
@@ -1225,6 +1290,12 @@ impl ChordQuality {
         ChordQuality::Dominant9,
         ChordQuality::Major9,
         ChordQuality::Minor9,
+        ChordQuality::MinorAdd9,
+        ChordQuality::Dominant11,
+        ChordQuality::Minor11,
+        ChordQuality::Dominant13,
+        ChordQuality::Dominant7Sus4,
+        ChordQuality::MinorMajor7,
     ];
 
     /// Chord tones as ascending semitone offsets from the root.
@@ -1248,6 +1319,12 @@ impl ChordQuality {
             ChordQuality::Dominant9 => &[0, 4, 7, 10, 14],
             ChordQuality::Major9 => &[0, 4, 7, 11, 14],
             ChordQuality::Minor9 => &[0, 3, 7, 10, 14],
+            ChordQuality::MinorAdd9 => &[0, 3, 7, 14],
+            ChordQuality::Dominant11 => &[0, 4, 7, 10, 14, 17],
+            ChordQuality::Minor11 => &[0, 3, 7, 10, 14, 17],
+            ChordQuality::Dominant13 => &[0, 4, 7, 10, 14, 21],
+            ChordQuality::Dominant7Sus4 => &[0, 5, 7, 10],
+            ChordQuality::MinorMajor7 => &[0, 3, 7, 11],
         }
     }
 
@@ -1272,6 +1349,12 @@ impl ChordQuality {
             ChordQuality::Dominant9 => "Dominant 9",
             ChordQuality::Major9 => "Major 9",
             ChordQuality::Minor9 => "Minor 9",
+            ChordQuality::MinorAdd9 => "Minor add9",
+            ChordQuality::Dominant11 => "Dominant 11",
+            ChordQuality::Minor11 => "Minor 11",
+            ChordQuality::Dominant13 => "Dominant 13",
+            ChordQuality::Dominant7Sus4 => "Dominant 7 sus4",
+            ChordQuality::MinorMajor7 => "Minor-major 7",
         }
     }
 
@@ -1296,6 +1379,12 @@ impl ChordQuality {
             ChordQuality::Dominant9 => "9",
             ChordQuality::Major9 => "maj9",
             ChordQuality::Minor9 => "m9",
+            ChordQuality::MinorAdd9 => "madd9",
+            ChordQuality::Dominant11 => "11",
+            ChordQuality::Minor11 => "m11",
+            ChordQuality::Dominant13 => "13",
+            ChordQuality::Dominant7Sus4 => "7sus4",
+            ChordQuality::MinorMajor7 => "mMaj7",
         }
     }
 
@@ -3158,6 +3247,7 @@ mod tests {
             sample_hold: 0,
             gain: 3.0,
             monophonic: false,
+            hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
@@ -3975,5 +4065,84 @@ mod tests {
         assert_eq!(lane_events(&p), 0, "audio lane ignores pattern clips");
         p.tracks[1].audio = false;
         assert_eq!(lane_events(&p), 1, "the same clip plays when unflagged");
+    }
+
+    #[test]
+    fn chord_events_stay_out_of_note_events() {
+        // Chord events are harmonic annotations, not playable notes:
+        // adding them to the strip leaves `Project::events` untouched.
+        let mut p = Project::empty();
+        p.bars = 2;
+        let t = &mut p.tracks[0];
+        t.patterns[0].notes = vec![n(36, 0.0, 1.0, 1.0), n(38, 8.0, 1.0, 1.0)];
+        let before = p.events(false);
+        assert_eq!(p.events(true), before, "everything audible");
+        p.chord_events = vec![
+            ChordEvent::new(0, ChordQuality::Major, 0.0),
+            ChordEvent::new(5, ChordQuality::Minor, 8.0),
+            ChordEvent::new(9, ChordQuality::Dominant7, 24.0),
+        ];
+        p.validate().unwrap();
+        assert_eq!(p.events(false), before);
+        assert_eq!(p.events(true), before);
+    }
+
+    #[test]
+    fn chord_events_survive_normalize_sorted() {
+        // Valid but unsorted chord events are repaired into step order and
+        // kept — normalize never drops annotations.
+        let mut p = Project::empty();
+        p.chord_events = vec![
+            ChordEvent::new(9, ChordQuality::Major, 48.0),
+            ChordEvent::new(0, ChordQuality::Minor7, 0.0),
+            ChordEvent::new(5, ChordQuality::Dominant9, 24.0),
+        ];
+        p.validate().unwrap();
+        p.normalize();
+        p.validate().unwrap();
+        assert_eq!(p.chord_events.len(), 3);
+        let steps: Vec<f64> = p.chord_events.iter().map(|e| e.step).collect();
+        assert_eq!(steps, [0.0, 24.0, 48.0]);
+        assert!(p.chord_events.windows(2).all(|w| w[0].step <= w[1].step));
+        // Identical through a JSON round trip.
+        let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.chord_events, p.chord_events);
+    }
+
+    #[test]
+    fn normalized_project_events_subset_and_bounds() {
+        // For a normalized project the audible event set is a subset of the
+        // full set (mute/solo only ever removes events), and every event
+        // lies inside the song span.
+        let mut p = Project::empty();
+        p.bars = 2;
+        p.tracks[0].patterns[0].notes = vec![n(36, 0.0, 2.0, 1.0)];
+        p.tracks[0].mute = true;
+        let mut pad = create_track(Instrument::Pad);
+        pad.patterns[0].notes = vec![n(60, 0.0, 4.0, 0.8)];
+        pad.clips.push(clip(&pad.patterns[0], 16.0));
+        p.tracks.push(pad);
+        p.tracks[1].solo = true;
+        p.normalize();
+        p.validate().unwrap();
+
+        let full = p.events(false);
+        let audible = p.events(true);
+        assert!(!full.is_empty() && !audible.is_empty());
+        assert!(
+            audible.iter().all(|e| full.contains(e)),
+            "audible events must be a subset of all events"
+        );
+        assert!(audible.len() < full.len(), "mute/solo actually filters");
+        assert!(
+            audible.iter().all(|e| e.track_index != 0),
+            "the muted track contributes nothing audible"
+        );
+        let end = p.total_steps();
+        assert!(full
+            .iter()
+            .chain(&audible)
+            .all(|e| e.step >= 0.0 && e.step + e.duration <= end + 1e-9));
+        assert!(full.windows(2).all(|w| w[0].step <= w[1].step));
     }
 }

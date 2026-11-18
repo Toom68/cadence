@@ -162,9 +162,57 @@ impl CadenceApp {
                 let shown = path.display().to_string();
                 self.replace_project(project, Some(path), true);
                 self.set_status(StatusKind::Success, format!("Opened {shown}."));
+                self.warn_missing_fonts();
             }
             Err(err) => self.set_status(StatusKind::Error, err),
         }
+    }
+
+    /// After opening a song: when it references SoundFonts this machine
+    /// doesn't have, say how many tracks fall back to their built-in/preset
+    /// sounds. Playback already falls back silently at note-on; this is the
+    /// one status-line follow-up on the open path so the user knows why the
+    /// song sounds different.
+    fn warn_missing_fonts(&mut self) {
+        let mut missing: Vec<String> = self
+            .project
+            .tracks
+            .iter()
+            .filter_map(|t| t.font.as_ref().map(|f| f.name.clone()))
+            .filter(|name| !self.fonts.fonts.iter().any(|i| &i.name == name))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        missing.sort();
+        missing.dedup();
+        let tracks = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.font.as_ref().is_some_and(|f| missing.contains(&f.name)))
+            .count();
+        let names = if missing.len() == 1 {
+            format!("\"{}\"", missing[0])
+        } else {
+            missing
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        self.set_status(
+            StatusKind::Warning,
+            format!(
+                "SoundFont{} {names} not installed here — {} track{} play{} {} fallback sound{}.",
+                super::sidebar::plural(missing.len()),
+                tracks,
+                super::sidebar::plural(tracks),
+                if tracks == 1 { "s" } else { "" },
+                if tracks == 1 { "its" } else { "their" },
+                super::sidebar::plural(tracks),
+            ),
+        );
     }
 
     /// Open…: pick a `.cadence` file. Cancelling changes nothing.
@@ -855,6 +903,7 @@ fn sample_instrument(name: &str, spec: crate::packs::SampleSpec) -> crate::packs
         sample_hold: 1,
         gain: 0.9,
         monophonic: false,
+        hidden: false,
         audition_note: spec.root_pitch.min(127),
         audition_duration: 0.8,
         kit: None,

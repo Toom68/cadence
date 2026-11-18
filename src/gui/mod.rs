@@ -60,6 +60,9 @@ pub(crate) const SC_EDITOR: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num1)
 pub(crate) const SC_MIXER: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num2);
 pub(crate) const SC_KEYS: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num3);
 pub(crate) const SC_HELP: KeyboardShortcut = sc(Modifiers::NONE, Key::F1);
+/// MIDI record toggle — the performance keys (Z X C V B N M, S D G H J) all
+/// sit in the rows below R, so plain R is free.
+pub(crate) const SC_RECORD: KeyboardShortcut = sc(Modifiers::NONE, Key::R);
 
 /// How long after a clipboard paste the matching V-key release is ignored.
 /// egui-winit turns ⌘V into [`Event::Paste`] on key-down and drops the key
@@ -342,6 +345,10 @@ impl CadenceApp {
         self.stop();
         self.transport.position = 0.0;
         self.transport.start_marker = 0.0;
+        // Held recorded notes reference the old song's patterns — dropping
+        // them here keeps a later key release from editing the new song.
+        self.editor.record_pending.clear();
+        self.editor.kb_record_pitch = None;
         // The loop region is session state for this song, not part of it.
         self.transport.loop_region = None;
         self.project = project;
@@ -1381,6 +1388,9 @@ impl CadenceApp {
         if key(Modifiers::NONE, Key::L) {
             self.toggle_loop();
         }
+        if key(SC_RECORD.modifiers, SC_RECORD.logical_key) {
+            self.toggle_record();
+        }
         if key(Modifiers::NONE, Key::Escape) {
             self.clear_selection();
         }
@@ -1681,6 +1691,10 @@ impl CadenceApp {
                         let mut looping = self.transport.looping;
                         if ui.checkbox(&mut looping, "Loop song  (L)").changed() {
                             self.toggle_loop();
+                        }
+                        let mut recording = self.transport.recording;
+                        if ui.checkbox(&mut recording, "Record  (R)").changed() {
+                            self.toggle_record();
                         }
                         let mut metro = self.transport.metronome;
                         if ui.checkbox(&mut metro, "Metronome").changed() {

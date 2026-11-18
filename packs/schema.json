@@ -103,6 +103,11 @@
         },
         "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
         "monophonic": { "type": "boolean", "default": false },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide from the library's main list (legacy synth emulations). Purely presentational: hidden presets still load, validate and play in existing songs."
+        },
         "audition_note": {
           "type": "integer",
           "minimum": 0,

@@ -2257,4 +2257,182 @@ mod tests {
             "a missing staged file renders silence, not an error"
         );
     }
+
+    #[test]
+    fn audio_clip_fades_ramp_gain_over_the_span() {
+        // A 32-step clip with 8-step fades at both ends: the middle reads
+        // full level while windows inside the ramps read fractions of it.
+        let frames = 32 * 6_000; // 4 s of source at 48 kHz, one per step
+        let left: Vec<f32> = (0..frames)
+            .map(|i| 0.5 * (i as f32 * 2.0 * std::f32::consts::PI / 100.0).sin())
+            .collect();
+        let right = left.clone();
+        let p = audio_clip_project();
+        let mut sd = SongData::from_project(&p);
+        sd.audio = vec![wav(48_000, left, right)];
+        sd.audio_clips = vec![SchedAudio {
+            fade_in: 8.0,
+            fade_out: 8.0,
+            ..sched(0.0, 32.0, 1, 0.0)
+        }];
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(sd));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, frames + 4_000);
+        let lat = r.latency();
+        // Step windows 1..2 (fade-in), 16..17 (flat) and 31..31.7 (fade-out).
+        let early = rms(&l[lat + 6_000..lat + 12_000]);
+        let mid = rms(&l[lat + 96_000..lat + 102_000]);
+        let end = rms(&l[lat + 186_000..lat + 190_000]);
+        assert!(mid > 0.05, "flat mid-span is audible: {mid}");
+        assert!(
+            early < mid * 0.35,
+            "fade-in holds the start down: {early} vs {mid}"
+        );
+        assert!(
+            end < mid * 0.3,
+            "fade-out pulls the end down: {end} vs {mid}"
+        );
+        // Past the 32-step clip the song (no notes, no effects) is silent.
+        assert!(l[lat + frames..].iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn audio_clip_resamples_a_22050_source_to_duration() {
+        // A burst at the tail of a 22_050 Hz source: through the ratio path
+        // it lands near the end of each 48 000-output-frame repetition, and
+        // the clip occupies exactly 3 × 8 steps = 144 000 output frames.
+        let n = 22_050usize;
+        let mut left = vec![0.0f32; n];
+        for (i, s) in left.iter_mut().enumerate().skip(n - 2_000) {
+            *s = 0.5 * ((i as f32 - (n - 2_000) as f32) * 2.0 * std::f32::consts::PI / 100.0).sin();
+        }
+        let right = left.clone();
+        let p = audio_clip_project();
+        let mut sd = SongData::from_project(&p);
+        sd.audio = vec![wav(22_050, left, right)];
+        sd.audio_clips = vec![sched(0.0, 8.0, 3, 0.0)];
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(sd));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, 150_000);
+        let lat = r.latency();
+        // The 2 000-source-frame burst starts at output frame
+        // 20_050 / (22_050 / 48_000) ≈ 43 647 within each repetition.
+        let hits = onsets(&l, 1e-3, 12_000);
+        assert_eq!(hits.len(), 3, "one burst per repetition: {hits:?}");
+        for (k, want) in [43_647usize, 91_647, 139_647].iter().enumerate() {
+            assert!(
+                hits[k].abs_diff(want + lat) <= 300,
+                "repetition {k} starts near frame {}: {}",
+                want + lat,
+                hits[k]
+            );
+        }
+        // Nothing after the 24-step span — the clip really ends there. A
+        // small DC-block/limiter decay tail is expected, so allow residue
+        // well below the burst's 0.5 amplitude.
+        assert!(l[lat + 144_000..].iter().all(|s| s.abs() < 1e-2));
+    }
+
+    #[test]
+    fn audio_clip_offset_starts_mid_source() {
+        // A two-second source that is silent for its first second: starting
+        // the clip at offset 1.0 s lands in the loud half, so output is loud
+        // from the very first repetition — an ignored offset would stay
+        // silent for 48 000 output frames instead.
+        let n = 96_000usize;
+        let mut left = vec![0.0f32; n];
+        for (i, s) in left.iter_mut().enumerate().skip(n / 2) {
+            *s = 0.5 * (i as f32 * 2.0 * std::f32::consts::PI / 100.0).sin();
+        }
+        let right = left.clone();
+        let p = audio_clip_project();
+        let mut sd = SongData::from_project(&p);
+        sd.audio = vec![wav(48_000, left, right)];
+        sd.audio_clips = vec![sched(0.0, 8.0, 2, 1.0)];
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(sd));
+        r.play(0.0, false);
+        let (l, _) = run(&mut r, 100_000);
+        let lat = r.latency();
+        assert!(
+            onset(&l, 1e-3) <= lat + 500,
+            "the loud half starts the clip immediately, not a second late"
+        );
+        // Both repetitions play from the offset: the whole span sounds.
+        assert!(rms(&l[lat + 4_000..lat + 44_000]) > 0.05, "first loop loud");
+        assert!(
+            rms(&l[lat + 52_000..lat + 90_000]) > 0.05,
+            "second loop loud"
+        );
+        // The hard cut at the clip's last frame rings through the DC-block
+        // and limiter for a few hundred ms — bounded, then decayed.
+        assert!(l[lat + 96_000..].iter().all(|s| s.abs() < 0.1));
+        assert!(l[lat + 99_000..].iter().all(|s| s.abs() < 1e-2));
+    }
+
+    #[test]
+    fn volume_automation_seek_lands_mid_ramp() {
+        use crate::model::{Automation, AutomationPoint};
+        // A steady clip under a volume lane that falls 1.0 -> 0.0 across a
+        // bar. Seeking to step 8 must settle the fader at the lane's
+        // mid-ramp value (~0.4), not at the ramp start (1.0).
+        let n = 48_000usize;
+        let left: Vec<f32> = (0..n)
+            .map(|i| 0.5 * (i as f32 * 2.0 * std::f32::consts::PI / 100.0).sin())
+            .collect();
+        let right = left.clone();
+        let mut p = audio_clip_project();
+        p.tracks[0].automation = Some(Automation {
+            volume: vec![
+                AutomationPoint {
+                    step: 0.0,
+                    value: 1.0,
+                },
+                AutomationPoint {
+                    step: 16.0,
+                    value: 0.0,
+                },
+            ],
+            pan: vec![],
+        });
+        p.validate().unwrap();
+        let mut sd = SongData::from_project(&p);
+        sd.audio = vec![wav(48_000, left.clone(), right.clone())];
+        sd.audio_clips = vec![sched(0.0, 8.0, 3, 0.0)];
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(sd));
+        r.play(8.0, false);
+        let (l, _) = run(&mut r, 30_000);
+        let lat = r.latency();
+        // Steps 9..10 after the seek: the lane reads ~0.44 down to ~0.38,
+        // so the settled window carries ~0.4 of the un-automated level.
+        let window = rms(&l[lat + 6_000..lat + 12_000]);
+
+        // Reference: the identical seek without automation keeps the fader
+        // at full gain, so the ratio isolates the automation multiplier.
+        let mut plain = audio_clip_project();
+        plain.tracks[0].automation = None;
+        plain.validate().unwrap();
+        let mut sd = SongData::from_project(&plain);
+        sd.audio = vec![wav(48_000, left, right)];
+        sd.audio_clips = vec![sched(0.0, 8.0, 3, 0.0)];
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(sd));
+        r.play(8.0, false);
+        let (ref_l, _) = run(&mut r, 30_000);
+        let lat = r.latency();
+        let reference = rms(&ref_l[lat + 6_000..lat + 12_000]);
+
+        assert!(
+            reference > 0.05,
+            "un-automated clip is audible: {reference}"
+        );
+        let ratio = window / reference;
+        assert!(
+            (0.25..=0.6).contains(&ratio),
+            "seek landed mid-ramp (~0.4), not at the ramp start or end: {ratio}"
+        );
+    }
 }

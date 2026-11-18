@@ -16,6 +16,7 @@ use super::dialogs::{ArpDraft, Dialog, NewSongDraft};
 use super::files::PendingAction;
 use super::sidebar::{
     audition_params, bank_options, gm_family, library_rows, preset_summary, LibraryBank, SideTab,
+    QUICK_ADD_FONT_HINT_RECT, QUICK_ADD_FONT_RECT, QUICK_ADD_OPEN,
 };
 use super::theme::{self, ThemeChoice};
 use super::{arranger, ops, CadenceApp, Clipboard, StatusKind};
@@ -133,6 +134,29 @@ impl Ui {
         self.up(pos);
     }
 
+    /// A click whose press and release land in the *same* frame, like a real
+    /// quick click. Rows wrapped in `dnd_drag_source` start their drag on
+    /// press (egui treats drag-only widgets as dragged immediately), so a
+    /// click split across two frames loses the pending click to the drag.
+    fn quick_click(&mut self, pos: Pos2) {
+        self.next.events.push(Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            self.next.events.push(Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        self.step();
+    }
+
+    /// Two quick clicks in a row; egui counts the second as a double click.
+    fn quick_dclick(&mut self, pos: Pos2) {
+        self.quick_click(pos);
+        self.quick_click(pos);
+    }
+
     /// Two quick primary clicks; egui counts the second as a double click.
     fn dclick(&mut self, pos: Pos2) {
         self.click(pos);
@@ -236,6 +260,7 @@ fn test_preset() -> InstrumentPreset {
         sample_hold: 2,
         gain: 0.8,
         monophonic: false,
+        hidden: false,
         audition_note: 55,
         audition_duration: 1.6,
         kit: None,
@@ -2327,6 +2352,139 @@ fn sound_picker_renders_the_font_section() {
     assert_eq!(ops::instrument_label(t), "GeneralUser · Violin");
 }
 
+// ----- soundfont library bank and quick-add ----------------------------------
+
+#[test]
+fn soundfont_bank_lists_programs_and_double_click_adds_a_track() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.fonts.fonts.push(FontInfo {
+        name: "GeneralUser".into(),
+        key: crate::font::font_key("GeneralUser"),
+        presets: 128,
+    });
+    ui.app.library_bank = LibraryBank::Font;
+    ui.step();
+
+    // The GM catalog renders: 16 families of 8, first row the grand piano.
+    let row = ui.app.library_rects.first_font_row;
+    assert!(row.width() > 20.0, "first program row rendered: {row:?}");
+    // Double-click adds, like every library row.
+    ui.quick_dclick(row.center());
+    assert_eq!(ui.app.project.tracks.len(), 2);
+    let t = &ui.app.project.tracks[1];
+    assert_eq!(t.font, Some(FontRef::new("GeneralUser", 0)));
+    assert_eq!(t.name, "GeneralUser");
+    assert!(!t.shows_drum_grid(), "font tracks use the piano roll");
+    assert_eq!(
+        ops::instrument_label(t),
+        "GeneralUser · Acoustic Grand Piano"
+    );
+    assert!(ui.app.dirty());
+    // The bank view is chrome only: filtering was not part of the edit.
+    ui.app.undo();
+    assert_eq!(ui.app.project.tracks.len(), 1);
+    assert_eq!(ui.app.library_bank, LibraryBank::Font);
+}
+
+#[test]
+fn soundfont_bank_search_filters_programs() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.fonts.fonts.push(FontInfo {
+        name: "GeneralUser".into(),
+        key: crate::font::font_key("GeneralUser"),
+        presets: 128,
+    });
+    ui.app.library_bank = LibraryBank::Font;
+    ui.app.library_filter = "trumpet".into();
+    ui.step();
+    // Search hits the program name; the bank still renders its first row.
+    let row = ui.app.library_rects.first_font_row;
+    assert!(row.width() > 20.0, "filtered program row rendered: {row:?}");
+    ui.app.library_filter = "no such program".into();
+    ui.step();
+    assert_eq!(
+        ui.app.library_rects.first_font_row,
+        Rect::NOTHING,
+        "no rows when nothing matches"
+    );
+}
+
+#[test]
+fn soundfont_bank_without_fonts_shows_the_add_hint() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.library_bank = LibraryBank::Font;
+    ui.step();
+    assert!(ui.app.fonts.fonts.is_empty());
+    let hint = ui.app.library_rects.font_hint;
+    assert!(hint.width() > 20.0, "hint button rendered: {hint:?}");
+    ui.click(hint.center());
+    // Headless has no native file manager: the click describes the folder
+    // instead, proving the no-font path stays graceful.
+    assert!(matches!(
+        &ui.app.status,
+        Some(super::StatusLine { kind: StatusKind::Info, text })
+            if text.contains("SoundFonts folder")
+    ));
+    // The hint adds no track.
+    assert_eq!(ui.app.project.tracks.len(), 1);
+    assert!(!ui.app.dirty());
+}
+
+#[test]
+fn quick_add_soundfont_row_adds_a_font_track() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.fonts.fonts.push(FontInfo {
+        name: "GeneralUser".into(),
+        key: crate::font::font_key("GeneralUser"),
+        presets: 128,
+    });
+    ui.app.side_tab = SideTab::Track;
+    ui.ctx
+        .data_mut(|d| d.insert_temp(egui::Id::new(QUICK_ADD_OPEN), true));
+    ui.step();
+    let row = ui
+        .ctx
+        .data(|d| d.get_temp::<Rect>(egui::Id::new(QUICK_ADD_FONT_RECT)))
+        .expect("quick-add SoundFont row rendered");
+    ui.quick_click(row.center());
+    ui.step();
+    assert_eq!(ui.app.project.tracks.len(), 2);
+    let t = &ui.app.project.tracks[1];
+    assert_eq!(t.font, Some(FontRef::new("GeneralUser", 0)));
+    assert_eq!(t.name, "GeneralUser");
+    assert!(!t.shows_drum_grid());
+    assert!(ui.app.dirty());
+    ui.app.undo();
+    assert_eq!(ui.app.project.tracks.len(), 1);
+}
+
+#[test]
+fn quick_add_without_fonts_shows_a_slim_add_hint() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(ui.app.fonts.fonts.is_empty());
+    ui.app.side_tab = SideTab::Track;
+    ui.ctx
+        .data_mut(|d| d.insert_temp(egui::Id::new(QUICK_ADD_OPEN), true));
+    ui.step();
+    let row = ui
+        .ctx
+        .data(|d| d.get_temp::<Rect>(egui::Id::new(QUICK_ADD_FONT_HINT_RECT)))
+        .expect("quick-add hint row rendered");
+    ui.click(row.center());
+    assert!(matches!(
+        &ui.app.status,
+        Some(super::StatusLine { kind: StatusKind::Info, text })
+            if text.contains("SoundFonts folder")
+    ));
+    assert_eq!(ui.app.project.tracks.len(), 1, "the hint adds no track");
+    assert!(!ui.app.dirty());
+}
+
 // ----- clipboard (copy / paste / cut) -------------------------------------
 
 /// Replaces track `track_idx`'s first pattern with `notes` as
@@ -3205,4 +3363,298 @@ fn scale_highlight_toggles_and_marks_scale_pitch_classes() {
     // Frames with the tint on exercise the row-highlight paint path.
     ui.app.editor.scale_highlight = true;
     ui.steps(2);
+}
+
+// ----- MIDI recording ------------------------------------------------------
+
+/// Adds and selects a piano track — the melodic lane recording tests play
+/// into — and returns its track index.
+fn plant_record_track(ui: &mut Ui) -> usize {
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    ui.app.select_track(ui.app.project.tracks[idx].id);
+    ui.app.focus = super::Focus::Editor;
+    ui.step();
+    idx
+}
+
+fn press_key(ui: &mut Ui, key: Key, pressed: bool) {
+    ui.event(Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+}
+
+#[test]
+fn record_arm_toggles_with_r_and_reports_status() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(!ui.app.transport.recording);
+    // Disarmed, playing a key inserts nothing.
+    ui.key(Key::Z);
+    assert!(
+        ui.pattern(0, 0).notes.is_empty(),
+        "keys only record when armed"
+    );
+    ui.key(Key::R);
+    assert!(ui.app.transport.recording, "R arms recording");
+    let status = ui
+        .app
+        .status
+        .as_ref()
+        .expect("arming sets a status")
+        .text
+        .clone();
+    assert!(status.contains("Recording"), "status: {status}");
+    ui.key(Key::R);
+    assert!(!ui.app.transport.recording, "R disarms recording");
+}
+
+#[test]
+fn record_helpers_snap_starts_durations_and_find_the_covering_pattern() {
+    assert_eq!(super::editor::record_start(10.3, 1.0), 10.0);
+    assert_eq!(super::editor::record_start(10.9, 0.5), 10.5);
+    assert_eq!(super::editor::record_duration(10.0, 12.7, 1.0), 3.0);
+    assert_eq!(
+        super::editor::record_duration(4.0, 4.0, 1.0),
+        1.0,
+        "a tap still lasts one snap cell"
+    );
+    assert_eq!(
+        super::editor::record_duration(30.0, 2.0, 1.0),
+        1.0,
+        "a loop wrap reads as one cell"
+    );
+    // A one-bar clip at step 0 looped twice covers 0..32; a position inside
+    // the second repetition folds back into the pattern.
+    let mut track = crate::model::create_track(Instrument::Lead);
+    track.clips[0].loops = 2;
+    let pid = track.clips[0].pattern_id;
+    assert_eq!(
+        super::editor::covering_pattern(&track, 20.0),
+        Some((pid, 4.0))
+    );
+    assert_eq!(
+        super::editor::covering_pattern(&track, 16.0),
+        Some((pid, 0.0))
+    );
+    assert_eq!(super::editor::covering_pattern(&track, 32.0), None);
+}
+
+#[test]
+fn step_record_inserts_at_the_playhead_and_advances_on_release() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.transport.position = 4.0;
+    ui.app.toggle_record();
+    // Hold Z (= C at the keyboard's home octave)…
+    press_key(&mut ui, Key::Z, true);
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 1, "press inserts while held");
+    assert_eq!(
+        pat.notes[0].pitch,
+        super::editor::key_to_pitch(Key::Z, ui.app.editor.kb_octave).unwrap()
+    );
+    assert_eq!(pat.notes[0].start, 4.0, "inserted at the playhead");
+    assert_eq!(ui.app.transport.position, 4.0, "held: the playhead waits");
+    // …then release: the playhead advances by one Snap cell.
+    press_key(&mut ui, Key::Z, false);
+    assert_eq!(ui.app.transport.position, 5.0, "release advances one snap");
+    assert_eq!(
+        ui.pattern(idx, 0).notes[0].duration,
+        1.0,
+        "one snap cell long"
+    );
+    // The insertion is an ordinary undo step.
+    ui.app.undo();
+    assert!(ui.pattern(idx, 0).notes.is_empty(), "undo removes the note");
+}
+
+#[test]
+fn live_record_quantizes_to_the_snap_grid() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.toggle_record();
+    // The transport is engine-driven during playback; headless tests set it
+    // directly — the insertion code only reads `transport.position`.
+    ui.app.transport.playing = true;
+    ui.app.transport.position = 10.3;
+    let id = ui.app.record_note_on(64).expect("note inserted");
+    let note = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.id == id)
+        .unwrap();
+    assert_eq!(note.start, 10.0, "the start snaps down onto the grid");
+    assert_eq!(
+        note.velocity, ui.app.editor.velocity,
+        "recorded notes use the editor velocity"
+    );
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("Recorded 1 note"), "status: {status}");
+    ui.app.transport.position = 12.7;
+    ui.app.record_note_off(64);
+    let note = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.id == id)
+        .unwrap();
+    assert_eq!(
+        note.duration, 3.0,
+        "duration = ceil((release − start) / snap)"
+    );
+    assert_eq!(
+        ui.app.transport.position, 12.7,
+        "live release must not move the playhead"
+    );
+    // With Snap at 1/8 (2 steps) everything rounds to whole eighth notes.
+    ui.app.editor.snap = 2.0;
+    ui.app.transport.position = 21.0;
+    let id2 = ui.app.record_note_on(65).expect("second note inserted");
+    ui.app.transport.position = 26.5;
+    ui.app.record_note_off(65);
+    let note2 = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.id == id2)
+        .unwrap();
+    assert_eq!(
+        note2.start, 4.0,
+        "step 20 folds into the 16-step pattern at 4"
+    );
+    assert_eq!(note2.duration, 8.0, "6.5 steps rounds up to 4 eighth notes");
+}
+
+#[test]
+fn record_extends_the_current_clip_to_cover_the_playhead() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.toggle_record();
+    // The one-bar clip ends at step 16; recording at step 20 grows its loop
+    // count so the pattern covers the playhead.
+    assert_eq!(ui.app.project.tracks[idx].clips[0].loops, 1);
+    ui.app.transport.position = 20.0;
+    let id = ui.app.record_note_on(62).expect("note inserted");
+    let track = &ui.app.project.tracks[idx];
+    assert_eq!(track.clips[0].loops, 2, "the clip extends to cover step 20");
+    let pat = ops::pattern(track, track.clips[0].pattern_id).unwrap();
+    let note = pat.notes.iter().find(|n| n.id == id).unwrap();
+    assert_eq!(
+        note.start, 4.0,
+        "step 20 folds into the 16-step pattern at 4"
+    );
+    // Both the extension and the note are undo steps.
+    ui.app.undo();
+    ui.app.undo();
+    let track = &ui.app.project.tracks[idx];
+    assert_eq!(track.clips[0].loops, 1);
+    assert!(ops::pattern(track, track.clips[0].pattern_id)
+        .unwrap()
+        .notes
+        .is_empty());
+}
+
+#[test]
+fn record_skips_audio_lanes_and_uncovered_playheads() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_audio_track();
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    ui.app.select_track(ui.app.project.tracks[idx].id);
+    ui.app.toggle_record();
+    assert!(
+        ui.app.record_note_on(60).is_none(),
+        "audio lanes hold no patterns"
+    );
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("MIDI tracks"), "status: {status}");
+
+    // A pattern clip moved past the playhead cannot be extended backwards.
+    let idx2 = plant_record_track(&mut ui);
+    let track = ui.app.project.tracks[idx2].clone();
+    let (tid, clip_id) = (track.id, track.clips[0].id);
+    ui.app.edit("Move clip", None, |p| {
+        let _ = ops::move_clip(p, tid, clip_id, 100.0);
+    });
+    ui.app.transport.position = 5.0;
+    assert!(
+        ui.app.record_note_on(60).is_none(),
+        "clip starts after the playhead"
+    );
+    let status = ui.app.status.as_ref().unwrap().text.clone();
+    assert!(status.contains("no clip covers"), "status: {status}");
+}
+
+/// Regression probe for the library/quick-add click fix: a click interact
+/// *inside* `dnd_drag_source` can never fire (egui drops click hits under a
+/// drag-only top widget), but a click interact registered *after* the drag
+/// source — on the same rect — coexists with it: clicks land on the late
+/// interact while drags still belong to the drag source.
+#[test]
+fn scratch_dnd_row_click_probe() {
+    let ctx = egui::Context::default();
+    let mut inner_clicked = false;
+    let mut outer_clicked = false;
+    let mut run = |ctx: &egui::Context| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let dnd_id = ui.id().with("probe");
+            let dnd = ui.dnd_drag_source(dnd_id, 1usize, |ui| {
+                let (_, resp) =
+                    ui.allocate_exact_size(egui::vec2(200.0, 30.0), egui::Sense::click());
+                inner_clicked |= resp.clicked();
+            });
+            outer_clicked |= ui
+                .interact(
+                    dnd.response.rect,
+                    dnd_id.with("click"),
+                    egui::Sense::click(),
+                )
+                .clicked();
+        });
+    };
+    let mut step = |events: Vec<Event>| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1360.0, 860.0))),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| run(ctx));
+    };
+    step(vec![Event::PointerMoved(pos2(100.0, 20.0))]);
+    step(vec![
+        Event::PointerMoved(pos2(100.0, 20.0)),
+        Event::PointerButton {
+            pos: pos2(100.0, 20.0),
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    step(vec![
+        Event::PointerMoved(pos2(100.0, 20.0)),
+        Event::PointerButton {
+            pos: pos2(100.0, 20.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    step(vec![]);
+    assert!(!inner_clicked, "the body's click interact stays shadowed");
+    assert!(
+        outer_clicked,
+        "the post-drag-source interact receives the click"
+    );
 }

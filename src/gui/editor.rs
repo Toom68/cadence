@@ -2,7 +2,7 @@
 //! Both are custom-painted canvases with their own scroll/zoom, note
 //! draw/drag/resize/box-select, a velocity lane and drum accent painting.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use egui::{
     pos2, vec2, Align, Align2, Color32, Context, CornerRadius, CursorIcon, Event, FontId, Key,
@@ -30,6 +30,9 @@ const PITCHES: usize = (LAST_PITCH - FIRST_PITCH + 1) as usize;
 /// 0..=127 while still reaching C0 for bass.
 const KB_OCTAVE_MIN: i32 = 0;
 const KB_OCTAVE_MAX: i32 = 8;
+
+/// Computer-key press/release pairs as `(key, shift held)`.
+type KeyEvents = Vec<(Key, bool)>;
 
 /// Jitter the Humanize button applies: ±10% velocity and ±0.25 steps (a
 /// 1/64 note) of timing — enough to loosen a rigid line without scattering
@@ -78,6 +81,56 @@ pub(super) fn key_to_pitch(key: Key, octave: i32) -> Option<u8> {
     u8::try_from((octave + 1) * 12 + pc)
         .ok()
         .filter(|&p| p <= ops::MAX_PITCH)
+}
+
+/// Pitch a computer key plays: the track's drum rows on a drum grid,
+/// otherwise the two-row keyboard mapping at `octave` (±12 with Shift).
+fn keyboard_pitch(
+    key: Key,
+    shift: bool,
+    octave: i32,
+    drum_pitches: &Option<Vec<u8>>,
+) -> Option<u8> {
+    match drum_pitches {
+        Some(pitches) => kb_key_index(key).and_then(|i| pitches.get(i).copied()),
+        None => key_to_pitch(key, octave).and_then(|p| {
+            let p = if shift { p.saturating_add(12) } else { p };
+            (p <= ops::MAX_PITCH).then_some(p)
+        }),
+    }
+}
+
+/// The pattern whose clip covers song step `pos` on `track`, plus the
+/// pattern-relative step it maps to (loops fold the step back into the
+/// pattern). `None` when no clip covers the position.
+pub(super) fn covering_pattern(track: &Track, pos: f64) -> Option<(u64, f64)> {
+    track.clips.iter().find_map(|clip| {
+        let plen = ops::pattern(track, clip.pattern_id)?.length.max(1) as f64;
+        let span = clip.span(plen);
+        if pos >= clip.start - 1e-9 && pos < clip.start + span {
+            Some((clip.pattern_id, (pos - clip.start) % plen))
+        } else {
+            None
+        }
+    })
+}
+
+/// Recorded note start: the song step floored onto the snap grid.
+pub(super) fn record_start(pos: f64, snap: f64) -> f64 {
+    snap_floor(pos.max(0.0), snap)
+}
+
+/// Recorded note duration: the release step minus the snapped start,
+/// rounded up to whole snap cells — at least one cell, so a tap still
+/// sounds. Non-finite input (release before start, loop wrap) reads as one
+/// cell.
+pub(super) fn record_duration(start_step: f64, release_step: f64, snap: f64) -> f64 {
+    let dur = ((release_step - start_step) / snap).ceil() * snap;
+    if dur.is_finite() {
+        dur.max(snap)
+    } else {
+        snap
+    }
 }
 
 /// Drum piece pitches the computer keyboard maps onto: the track's drum rows
@@ -146,6 +199,32 @@ fn chord_bass_label(bass: ops::ChordBass, key: SongKey) -> String {
     }
 }
 
+/// The three chord-strip palettes: the key's diatonic chords, borrowed
+/// chords / secondary dominants and one-click progression presets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ChordStripTab {
+    #[default]
+    Diatonic,
+    Borrowed,
+    Progressions,
+}
+
+impl ChordStripTab {
+    pub(super) const ALL: [ChordStripTab; 3] = [
+        ChordStripTab::Diatonic,
+        ChordStripTab::Borrowed,
+        ChordStripTab::Progressions,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            ChordStripTab::Diatonic => "Diatonic",
+            ChordStripTab::Borrowed => "Borrowed",
+            ChordStripTab::Progressions => "Progressions",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NoteDrag {
     /// Snapshots of the dragged notes when the gesture began.
@@ -179,6 +258,20 @@ struct PendingNote {
     pitch: u8,
     start: f64,
     draw_on_click: bool,
+}
+
+/// One held recorded note (MIDI recording): enough to finalize its duration
+/// on release and, in step recording, advance the playhead.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PendingRecord {
+    pub track_id: u64,
+    pub pattern_id: u64,
+    pub note_id: u64,
+    /// Snapped song-space start step the release step is measured against.
+    pub start_step: f64,
+    /// Recorded while the transport was stopped: release advances the
+    /// playhead by one Snap cell instead of only setting the duration.
+    pub step_record: bool,
 }
 
 /// Last-frame editor geometry. `grid` feeds scrollbar logic; the rest is
@@ -249,6 +342,9 @@ pub(super) struct EditorView {
     /// Chord-strip disclosure and stamping options — session view state,
     /// never part of the song.
     pub chord_open: bool,
+    /// Which chord-strip palette is showing: diatonic chords, borrowed
+    /// chords or progression presets.
+    pub chord_tab: ChordStripTab,
     /// `None` keeps each diatonic chord's scale-degree quality.
     pub chord_quality: Option<ChordQuality>,
     pub chord_direction: ops::StrumDirection,
@@ -273,6 +369,15 @@ pub(super) struct EditorView {
     kb_pointer: Option<u8>,
     kb_down: bool,
     kb_last_preview: Option<u8>,
+    /// Held recorded notes by pitch (MIDI recording): press inserts,
+    /// release finalizes the duration / advances the step-record playhead.
+    pub record_pending: HashMap<u8, PendingRecord>,
+    /// Pitch of the on-screen piano key currently being recorded with the
+    /// mouse (Keys tab).
+    pub kb_record_pitch: Option<u8>,
+    /// Whether the Keys-tab pointer was down last frame, for press/release
+    /// edge detection while recording.
+    kb_was_down: bool,
     /// Last-frame geometry, also used by headless tests to compute click points.
     rects: EditorRects,
     grid_id: egui::Id,
@@ -299,6 +404,7 @@ impl Default for EditorView {
             vel_drag: None,
             kb_octave: 4,
             chord_open: false,
+            chord_tab: ChordStripTab::Diatonic,
             chord_quality: None,
             chord_direction: ops::StrumDirection::default(),
             chord_spacing: 0.0,
@@ -309,6 +415,9 @@ impl Default for EditorView {
             kb_pointer: None,
             kb_down: false,
             kb_last_preview: None,
+            record_pending: HashMap::new(),
+            kb_record_pitch: None,
+            kb_was_down: false,
             rects: EditorRects::default(),
             grid_id: egui::Id::NULL,
         }
@@ -327,6 +436,9 @@ impl EditorView {
         self.kb_pointer = None;
         self.kb_down = false;
         self.kb_last_preview = None;
+        self.record_pending.clear();
+        self.kb_record_pitch = None;
+        self.kb_was_down = false;
         self.roll_scroll_x = 0.0;
         self.drum_scroll_x = 0.0;
     }
@@ -2076,6 +2188,10 @@ impl CadenceApp {
         } else {
             self.editor.kb_last_preview = None;
         }
+        // MIDI recording: a mouse key is a note — press inserts it at the
+        // playing transport step (or the step-record playhead), dragging
+        // retriggers per pitch like the computer row, release finalizes.
+        self.keys_record(pointer_pitch, dragging);
         resp.on_hover_cursor(CursorIcon::PointingHand);
 
         // Held pitches: computer keys at the play octave + the mouse key.
@@ -2243,6 +2359,13 @@ impl CadenceApp {
                     .clicked()
                 {
                     self.preview(track_id, *pitch, vel);
+                    if self.transport.recording {
+                        // A pad tap is a full note: insert and release at
+                        // once (one Snap cell long; step recording then
+                        // advances the playhead).
+                        self.record_note_on(*pitch);
+                        self.record_note_off(*pitch);
+                    }
                 }
             }
         });
@@ -2255,29 +2378,41 @@ impl CadenceApp {
     /// full step and holding Shift raises it another octave. Drum tracks map
     /// the keys across the kit's piece pitches instead. Fires once per
     /// physical press (key auto-repeat is ignored) at the editor's velocity;
-    /// release does nothing — previews are fixed-length.
+    /// release does nothing — previews are fixed-length. With record armed
+    /// each press/release instead starts/ends a note in the selected track's
+    /// pattern (live or step recording).
     pub(super) fn keyboard_play(&mut self, ctx: &Context) {
         if self.tab != super::Tab::Editor && self.tab != super::Tab::Keys {
             return;
         }
-        let presses: Vec<(Key, bool)> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    Event::Key {
-                        key,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                        ..
-                    } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
-                        Some((*key, modifiers.shift))
+        let (presses, releases): (KeyEvents, KeyEvents) = ctx.input(|i| {
+            let mut presses = Vec::new();
+            let mut releases = Vec::new();
+            for e in &i.events {
+                let Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } = e
+                else {
+                    continue;
+                };
+                if modifiers.command || modifiers.ctrl || modifiers.alt {
+                    continue;
+                }
+                if *pressed {
+                    if !repeat {
+                        presses.push((*key, modifiers.shift));
                     }
-                    _ => None,
-                })
-                .collect()
+                } else {
+                    releases.push((*key, modifiers.shift));
+                }
+            }
+            (presses, releases)
         });
-        if presses.is_empty() {
+        if presses.is_empty() && releases.is_empty() {
             return;
         }
         let Some(track_id) = self.sel.track else {
@@ -2306,32 +2441,189 @@ impl CadenceApp {
                     _ => {}
                 }
             }
-            let pitch = match &drum_pitches {
-                Some(pitches) => kb_key_index(key).and_then(|i| pitches.get(i).copied()),
-                None => key_to_pitch(key, self.editor.kb_octave).and_then(|p| {
-                    let p = if shift { p.saturating_add(12) } else { p };
-                    (p <= ops::MAX_PITCH).then_some(p)
-                }),
-            };
+            let pitch = keyboard_pitch(key, shift, self.editor.kb_octave, &drum_pitches);
             if let Some(pitch) = pitch {
                 self.preview(track_id, pitch, velocity);
+                self.record_note_on(pitch);
+            }
+        }
+        for (key, shift) in releases {
+            let pitch = keyboard_pitch(key, shift, self.editor.kb_octave, &drum_pitches);
+            if let Some(pitch) = pitch {
+                self.record_note_off(pitch);
             }
         }
     }
 
-    /// MIDI pitches + symbol for diatonic `degree` of the song key under the
-    /// chord strip's quality override, inversion and slash-bass options,
-    /// voiced around the track's home pitch. `None` when the chord voices
-    /// to nothing in MIDI range.
-    fn chord_pitches(&self, track: &Track, degree: usize) -> Option<(Vec<u8>, String)> {
+    // ----- MIDI recording -----------------------------------------------------
+
+    /// The snap grid recording quantizes to: the editor Snap, at least one
+    /// sixty-fourth note.
+    fn record_snap(&self) -> f64 {
+        self.editor.snap.max(ops::MIN_NOTE_DURATION)
+    }
+
+    /// Resolves where a note played at song step `pos` lands: the pattern
+    /// whose clip covers the playhead, plus the pattern-relative start step
+    /// (loops fold the step back into the pattern). When nothing covers the
+    /// position, the active pattern's clip is extended forward to reach it;
+    /// `None` when that is impossible (backwards, or past the loop cap).
+    fn record_target(&mut self, track_id: u64, pos: f64) -> Option<(u64, f64)> {
+        if let Some(hit) = covering_pattern(ops::track(&self.project, track_id)?, pos) {
+            return Some(hit);
+        }
+        let pid = self.current_pattern_id(ops::track(&self.project, track_id)?)?;
+        let (clip_id, clip_start, loops, plen, cap) = {
+            let track = ops::track(&self.project, track_id)?;
+            let clip = track.clips.iter().find(|c| c.pattern_id == pid)?;
+            let plen = ops::pattern(track, pid)?.length.max(1) as f64;
+            (
+                clip.id,
+                clip.start,
+                clip.loop_count(),
+                plen,
+                ops::max_clip_loops(track, clip),
+            )
+        };
+        if pos < clip_start - 1e-9 {
+            return None;
+        }
+        let need = ((pos - clip_start) / plen).floor() as u32 + 1;
+        if need > loops && need <= cap {
+            self.edit("Extend clip for recording", None, |p| {
+                let _ = ops::set_clip_loops(p, track_id, clip_id, need);
+            });
+        }
+        covering_pattern(ops::track(&self.project, track_id)?, pos)
+    }
+
+    /// Starts (or retriggers) a recorded note from the Keyboard tab or the
+    /// computer-keyboard row. While the transport plays, the note starts at
+    /// the snapped transport step; while it is stopped (step recording) the
+    /// note lands at the playhead, which advances one Snap cell on release.
+    /// Each insertion is its own undo step. Returns the new note's id.
+    pub(super) fn record_note_on(&mut self, pitch: u8) -> Option<u64> {
+        if !self.transport.recording {
+            return None;
+        }
+        let track_id = self.sel.track?;
+        if ops::track(&self.project, track_id).is_some_and(|t| t.audio) {
+            self.set_status(
+                StatusKind::Warning,
+                "Recording targets MIDI tracks — audio lanes only hold imported WAV clips.",
+            );
+            return None;
+        }
+        let snap = self.record_snap();
+        let start = record_start(self.transport.position, snap);
+        let Some((pid, rel)) = self.record_target(track_id, start) else {
+            self.set_status(
+                StatusKind::Warning,
+                "Nothing to record into here — no clip covers the playhead.",
+            );
+            return None;
+        };
+        let velocity = self.editor.velocity;
+        let mut note_id = None;
+        self.edit("Record note", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                note_id = ops::add_note(pat, pitch, rel, snap, velocity);
+            }
+        });
+        let Some(id) = note_id else {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not record — the pattern is at the note limit.",
+            );
+            return None;
+        };
+        self.transport.recorded_notes += 1;
+        let n = self.transport.recorded_notes;
+        self.set_status(
+            StatusKind::Success,
+            format!("Recorded {n} note{}", sidebar::plural(n)),
+        );
+        self.editor.record_pending.insert(
+            pitch,
+            PendingRecord {
+                track_id,
+                pattern_id: pid,
+                note_id: id,
+                start_step: start,
+                step_record: !self.transport.playing,
+            },
+        );
+        Some(id)
+    }
+
+    /// Ends a held recorded note: its duration becomes the release step
+    /// minus the snapped start, rounded up to whole Snap cells (at least
+    /// one, so a tap still sounds), clamped inside the pattern. In step
+    /// recording the playhead then advances one Snap cell.
+    pub(super) fn record_note_off(&mut self, pitch: u8) {
+        let Some(held) = self.editor.record_pending.remove(&pitch) else {
+            return;
+        };
+        let snap = self.record_snap();
+        let duration = record_duration(held.start_step, self.transport.position, snap);
+        self.edit("Record note", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, held.track_id, held.pattern_id) {
+                if let Some(n) = pat.notes.iter_mut().find(|n| n.id == held.note_id) {
+                    let room = (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION);
+                    n.duration = duration.clamp(ops::MIN_NOTE_DURATION, room);
+                }
+            }
+        });
+        if held.step_record {
+            self.seek(record_start(held.start_step, snap) + snap);
+        }
+    }
+
+    /// Keys-tab mouse recording state machine: press inserts a note at the
+    /// playing transport step (or the step-record playhead), dragging
+    /// retriggers per pitch like the computer row, release finalizes the
+    /// duration.
+    fn keys_record(&mut self, pointer_pitch: Option<u8>, down: bool) {
+        if !self.transport.recording {
+            self.editor.kb_was_down = false;
+            self.editor.kb_record_pitch = None;
+            return;
+        }
+        let was = self.editor.kb_was_down;
+        self.editor.kb_was_down = down;
+        if down && !was {
+            if let Some(p) = pointer_pitch {
+                self.record_note_on(p);
+                self.editor.kb_record_pitch = Some(p);
+            }
+        } else if down {
+            if let Some(p) = pointer_pitch {
+                if self.editor.kb_record_pitch != Some(p) {
+                    if let Some(prev) = self.editor.kb_record_pitch.take() {
+                        self.record_note_off(prev);
+                    }
+                    self.record_note_on(p);
+                    self.editor.kb_record_pitch = Some(p);
+                }
+            }
+        } else if was {
+            if let Some(p) = self.editor.kb_record_pitch.take() {
+                self.record_note_off(p);
+            }
+        }
+    }
+
+    /// Voices `spec` — a diatonic, borrowed or progression chord resolved
+    /// against the song key — for the chord strip: built in the track's home
+    /// octave, with the strip's inversion and slash-bass options applied,
+    /// centred on the track's audition pitch. The returned symbol gains
+    /// slash notation when the lowest tone isn't the chord root (a
+    /// root-position C stays "C", C/G shows "C/G"). `None` when the chord
+    /// voices to nothing in MIDI range.
+    fn spec_pitches(&self, track: &Track, spec: &ops::ChordSpec) -> Option<(Vec<u8>, String)> {
         let key = self.project.key;
-        let quality = self
-            .editor
-            .chord_quality
-            .unwrap_or_else(|| key.degree_chord_quality(degree));
-        let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
         let home = sidebar::audition_params(track, track.instrument.default_pitch()).0;
-        let mut tones = ops::chord_notes(&spec, kb_home_octave(track), self.editor.velocity);
+        let mut tones = ops::chord_notes(spec, kb_home_octave(track), self.editor.velocity);
         if self.editor.chord_inversion > 0 {
             tones = ops::invert_chord(&tones, usize::from(self.editor.chord_inversion));
         }
@@ -2339,9 +2631,6 @@ impl CadenceApp {
             tones = ops::with_bass(&tones, pc);
         }
         let pitches = ops::chord_midi_pitches(&tones, home);
-        // Slash notation: whatever pitch class ended up lowest — an
-        // inversion's new bass or the slash-bass tone — when it isn't the
-        // chord root (so a root-position C stays "C", C/G shows "C/G").
         let mut symbol = spec.symbol();
         if let Some(&low) = pitches.first() {
             if low % 12 != spec.root {
@@ -2357,6 +2646,21 @@ impl CadenceApp {
     /// the spacing is non-zero. One undo step; the new notes become the
     /// selection and the chord is auditioned.
     pub(super) fn stamp_diatonic_chord(&mut self, degree: usize, ctx: &Context) {
+        let key = self.project.key;
+        let quality = self
+            .editor
+            .chord_quality
+            .unwrap_or_else(|| key.degree_chord_quality(degree));
+        self.stamp_chord_spec(&ops::ChordSpec::new(key.degree_root(degree), quality), ctx);
+    }
+
+    /// Stamps `spec` — a diatonic, borrowed or progression chord resolved
+    /// against the song key — into the selected melodic track's current
+    /// pattern at the pointer (or playhead): a block chord, or a strum
+    /// rolled `chord_spacing` steps in `chord_direction` order when the
+    /// spacing is non-zero. One undo step; the new notes become the
+    /// selection and the chord is auditioned.
+    pub(super) fn stamp_chord_spec(&mut self, spec: &ops::ChordSpec, ctx: &Context) {
         let Some(track) = self.selected_track() else {
             return;
         };
@@ -2371,7 +2675,7 @@ impl CadenceApp {
             return;
         };
         let (track_id, pid) = (track.id, pid);
-        let Some((pitches, symbol)) = self.chord_pitches(track, degree) else {
+        let Some((pitches, symbol)) = self.spec_pitches(track, spec) else {
             self.set_status(
                 StatusKind::Warning,
                 "That chord has no notes in MIDI range.",
@@ -2417,15 +2721,102 @@ impl CadenceApp {
         );
     }
 
-    /// Hover audition for the chord strip: plays the chord's tones once.
-    fn audition_diatonic_chord(&self, degree: usize) {
+    /// Stamps a whole progression preset across consecutive bars starting at
+    /// the pointer (or playhead): one chord per bar, each voiced with the
+    /// strip's inversion and slash-bass options and rolled when the strum
+    /// spacing is non-zero. The Type override replaces every chord's
+    /// quality. One undo step for the whole progression; the new notes
+    /// become the selection and the last chord is auditioned.
+    pub(super) fn stamp_progression(
+        &mut self,
+        preset: &'static ops::ProgressionPreset,
+        ctx: &Context,
+    ) {
         let Some(track) = self.selected_track() else {
             return;
         };
         if track.shows_drum_grid() {
+            self.set_status(
+                StatusKind::Warning,
+                "Chords stamp into melodic tracks — the drum grid has no chord tones.",
+            );
             return;
         }
-        if let Some((pitches, _)) = self.chord_pitches(track, degree) {
+        let Some(pid) = self.current_pattern_id(track) else {
+            return;
+        };
+        let (track_id, pid) = (track.id, pid);
+        let specs = ops::progression_specs(self.project.key, preset, self.editor.chord_quality);
+        let voiced: Vec<Option<(Vec<u8>, String)>> = specs
+            .iter()
+            .map(|spec| self.spec_pitches(track, spec))
+            .collect();
+        if voiced.iter().all(Option::is_none) {
+            self.set_status(
+                StatusKind::Warning,
+                "That progression has no notes in MIDI range.",
+            );
+            return;
+        }
+        let chords: Vec<Vec<u8>> = voiced
+            .iter()
+            .flatten()
+            .map(|(pitches, _)| pitches.clone())
+            .collect();
+        let pattern_len = ops::pattern(track, pid).map_or(16, |p| p.length);
+        let step = self
+            .editor_paste_target(ctx)
+            .map(|(s, _)| s)
+            .unwrap_or(self.transport.position);
+        // A chord slot: half the pattern, capped at one bar.
+        let duration = (f64::from(pattern_len) * 0.5).clamp(4.0, 16.0);
+        let velocity = self.editor.velocity;
+        let spacing = self.editor.chord_spacing;
+        let strum = (spacing > 0.0).then_some((spacing, self.editor.chord_direction));
+        let mut new = Vec::new();
+        self.edit(&format!("Stamp {}", preset.name), None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                new = ops::stamp_progression(
+                    pat,
+                    step,
+                    &chords,
+                    ops::STEPS_PER_BAR as f64,
+                    duration,
+                    velocity,
+                    strum,
+                );
+            }
+        });
+        if new.is_empty() {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Could not stamp {} — the pattern is at the note limit.",
+                    preset.name
+                ),
+            );
+            return;
+        }
+        let n = new.len();
+        self.sel.notes = new.into_iter().collect();
+        self.focus = super::Focus::Editor;
+        if let Some((pitches, _)) = voiced.iter().flatten().last() {
+            for &pitch in pitches.iter().take(4) {
+                self.preview(track_id, pitch, 0.9);
+            }
+        }
+        self.set_status(
+            StatusKind::Success,
+            format!("Stamped {} — {n} note{}.", preset.name, sidebar::plural(n)),
+        );
+    }
+
+    /// Hover audition for the chord strip: plays the chord's tones once.
+    fn audition_chord_spec(&self, track: &Track, spec: &ops::ChordSpec) {
+        if track.shows_drum_grid() {
+            return;
+        }
+        if let Some((pitches, _)) = self.spec_pitches(track, spec) {
             for &pitch in pitches.iter().take(4) {
                 self.preview(track.id, pitch, 0.7);
             }
@@ -2437,11 +2828,13 @@ impl CadenceApp {
         self.editor.scale_highlight = !self.editor.scale_highlight;
     }
 
-    /// Collapsible chord strip above the pattern editor: the seven diatonic
-    /// chords of the song key as one-click stamps, a quality override,
-    /// inversion and slash-bass voicing, strum direction/spacing and the
-    /// scale-highlight toggle. View state lives on [`EditorView`]; stamping
-    /// goes through [`Self::stamp_diatonic_chord`].
+    /// Collapsible chord strip above the pattern editor: three palettes on a
+    /// segmented tab — the seven diatonic chords of the song key, borrowed
+    /// chords / secondary dominants and one-click progression presets — all
+    /// one-click stamps sharing a quality override, inversion and slash-bass
+    /// voicing, strum direction/spacing and the scale-highlight toggle.
+    /// View state lives on [`EditorView`]; stamping goes through
+    /// [`Self::stamp_chord_spec`] and [`Self::stamp_progression`].
     fn chord_strip(&mut self, ui: &mut Ui, track: &Track) {
         let pal = self.palette();
         let open = self.editor.chord_open;
@@ -2470,6 +2863,27 @@ impl CadenceApp {
                             .small()
                             .color(pal.text_faint),
                     );
+                    if open {
+                        ui.separator();
+                        for tab in ChordStripTab::ALL {
+                            let resp = ui
+                                .selectable_label(self.editor.chord_tab == tab, tab.label())
+                                .on_hover_text(match tab {
+                                    ChordStripTab::Diatonic => {
+                                        "The key's seven diatonic chords, I through vii°"
+                                    }
+                                    ChordStripTab::Borrowed => {
+                                        "Colour chords from the parallel key plus secondary dominants"
+                                    }
+                                    ChordStripTab::Progressions => {
+                                        "One-click genre/mood loops stamped one chord per bar"
+                                    }
+                                });
+                            if resp.clicked() {
+                                self.editor.chord_tab = tab;
+                            }
+                        }
+                    }
                     if !track.shows_drum_grid() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let on = self.editor.scale_highlight;
@@ -2503,7 +2917,9 @@ impl CadenceApp {
         }
         let key = self.project.key;
         let mut stamp = None;
-        let mut hover_degree = None;
+        let mut stamp_degree = None;
+        let mut stamp_preset = None;
+        let mut hover_spec = None;
         egui::Frame::new()
             .inner_margin(Margin {
                 left: 12,
@@ -2514,27 +2930,81 @@ impl CadenceApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
-                    for degree in 0..7 {
-                        let quality = self
-                            .editor
-                            .chord_quality
-                            .unwrap_or_else(|| key.degree_chord_quality(degree));
-                        let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
-                        let label = format!("{}·{}", key.degree_numeral(degree), spec.symbol());
-                        let resp = ui
-                            .add(
-                                egui::Button::new(RichText::new(label).small())
-                                    .min_size(vec2(46.0, 24.0)),
-                            )
-                            .on_hover_text(format!(
-                                "{} — click to stamp at the pointer or playhead",
-                                spec.symbol()
-                            ));
-                        if resp.hovered() {
-                            hover_degree = Some(degree);
+                    match self.editor.chord_tab {
+                        ChordStripTab::Diatonic => {
+                            for degree in 0..7 {
+                                let quality = self
+                                    .editor
+                                    .chord_quality
+                                    .unwrap_or_else(|| key.degree_chord_quality(degree));
+                                let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
+                                let label =
+                                    format!("{}·{}", key.degree_numeral(degree), spec.symbol());
+                                let resp = ui
+                                    .add(
+                                        egui::Button::new(RichText::new(label).small())
+                                            .min_size(vec2(46.0, 24.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{} — click to stamp at the pointer or playhead",
+                                        spec.symbol()
+                                    ));
+                                if resp.hovered() {
+                                    hover_spec = Some(spec);
+                                }
+                                if resp.clicked() {
+                                    stamp_degree = Some(degree);
+                                }
+                            }
                         }
-                        if resp.clicked() {
-                            stamp = Some(degree);
+                        ChordStripTab::Borrowed => {
+                            for chord in ops::borrowed_chords(key) {
+                                let label = format!("{}·{}", chord.label, chord.symbol);
+                                let resp = ui
+                                    .add(
+                                        egui::Button::new(RichText::new(label).small())
+                                            .min_size(vec2(46.0, 24.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{} ({} — borrowed from the parallel key) · click to \
+                                         stamp at the pointer or playhead",
+                                        chord.symbol, chord.label
+                                    ));
+                                if resp.hovered() {
+                                    hover_spec = Some(chord.spec);
+                                }
+                                if resp.clicked() {
+                                    stamp = Some(chord.spec);
+                                }
+                            }
+                        }
+                        ChordStripTab::Progressions => {
+                            for preset in &ops::PROGRESSIONS {
+                                let symbols =
+                                    ops::progression_specs(key, preset, self.editor.chord_quality)
+                                        .iter()
+                                        .map(|s| s.symbol())
+                                        .collect::<Vec<_>>()
+                                        .join("-");
+                                let resp = ui
+                                    .add(
+                                        egui::Button::new(RichText::new(preset.name).small())
+                                            .min_size(vec2(46.0, 24.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{} — {} · one chord per bar starting at the pointer or \
+                                         playhead",
+                                        preset.hint, symbols
+                                    ));
+                                if resp.hovered() {
+                                    hover_spec = ops::progression_specs(key, preset, None)
+                                        .into_iter()
+                                        .next();
+                                }
+                                if resp.clicked() {
+                                    stamp_preset = Some(preset);
+                                }
+                            }
                         }
                     }
                     ui.separator();
@@ -2625,7 +3095,14 @@ impl CadenceApp {
                     theme::hint(
                         ui,
                         pal,
-                        "Click a chord to stamp it at the pointer or playhead",
+                        match self.editor.chord_tab {
+                            ChordStripTab::Diatonic | ChordStripTab::Borrowed => {
+                                "Click a chord to stamp it at the pointer or playhead"
+                            }
+                            ChordStripTab::Progressions => {
+                                "Click a preset to stamp it across bars at the pointer or playhead"
+                            }
+                        },
                     );
                 });
             });
@@ -2633,17 +3110,23 @@ impl CadenceApp {
         let hover_id = egui::Id::new("cadence.editor.chord_hover");
         let prev = ui
             .ctx()
-            .data(|d| d.get_temp::<usize>(hover_id))
-            .unwrap_or(usize::MAX);
-        let now = hover_degree.unwrap_or(usize::MAX);
+            .data(|d| d.get_temp::<String>(hover_id))
+            .unwrap_or_default();
+        let now = hover_spec.map_or(String::new(), |s| s.symbol());
         if now != prev {
             ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
-            if let Some(d) = hover_degree {
-                self.audition_diatonic_chord(d);
+            if let Some(spec) = hover_spec {
+                self.audition_chord_spec(track, &spec);
             }
         }
-        if let Some(d) = stamp {
-            self.stamp_diatonic_chord(d, ui.ctx());
+        if let Some(spec) = stamp {
+            self.stamp_chord_spec(&spec, ui.ctx());
+        }
+        if let Some(degree) = stamp_degree {
+            self.stamp_diatonic_chord(degree, ui.ctx());
+        }
+        if let Some(preset) = stamp_preset {
+            self.stamp_progression(preset, ui.ctx());
         }
     }
 

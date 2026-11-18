@@ -7,6 +7,7 @@
   "instruments": [
     {
       "id": "psy-keys.tine-ep",
+      "hidden": true,
       "audition_note": 62,
       "audition_duration": 1.2,
       "name": "Tine EP",
@@ -27,6 +28,7 @@
     },
     {
       "id": "psy-keys.wurli-keys",
+      "hidden": true,
       "audition_note": 58,
       "audition_duration": 1.5,
       "name": "Wurli-Style Keys",
@@ -46,6 +48,7 @@
     },
     {
       "id": "psy-keys.clav-stab",
+      "hidden": true,
       "audition_note": 58,
       "audition_duration": 0.7,
       "name": "Clav Stab",
@@ -65,6 +68,7 @@
     },
     {
       "id": "psy-keys.harpsi",
+      "hidden": true,
       "audition_note": 67,
       "audition_duration": 0.8,
       "name": "Harpsichord Pluck",
@@ -102,6 +106,7 @@
     },
     {
       "id": "psy-keys.celesta",
+      "hidden": true,
       "audition_note": 72,
       "audition_duration": 1.5,
       "name": "Celesta",
@@ -121,6 +126,7 @@
     },
     {
       "id": "psy-keys.reed-keys",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 1.2,
       "name": "Reed Keys",
@@ -160,6 +166,7 @@
     },
     {
       "id": "psy-keys.drawbar",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 1.5,
       "name": "Drawbar Organ",
@@ -178,6 +185,7 @@
     },
     {
       "id": "psy-keys.psy-organ",
+      "hidden": true,
       "audition_note": 60,
       "audition_duration": 2.0,
       "name": "Psychedelic Organ",
@@ -197,6 +205,7 @@
     },
     {
       "id": "psy-keys.soul-organ",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 2.0,
       "name": "Soul Organ",
@@ -216,6 +225,7 @@
     },
     {
       "id": "psy-keys.dub-organ",
+      "hidden": true,
       "audition_note": 48,
       "audition_duration": 3.0,
       "name": "Dub Organ",
@@ -235,6 +245,7 @@
     },
     {
       "id": "psy-keys.rotary",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 1.5,
       "name": "Rotary Organ",
@@ -254,6 +265,7 @@
     },
     {
       "id": "psy-keys.calliope",
+      "hidden": true,
       "audition_note": 62,
       "audition_duration": 1.2,
       "name": "Calliope",
@@ -273,6 +285,7 @@
     },
     {
       "id": "psy-keys.jazz-organ",
+      "hidden": true,
       "audition_note": 55,
       "audition_duration": 2.0,
       "name": "Jazz Organ",
@@ -292,6 +305,7 @@
     },
     {
       "id": "psy-keys.mini-organ",
+      "hidden": true,
       "audition_note": 58,
       "audition_duration": 1.0,
       "name": "Toy Organ",

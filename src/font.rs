@@ -177,6 +177,58 @@ pub fn gm_program_name(program: u8) -> &'static str {
     GM_PROGRAM_NAMES[(program.min(127)) as usize]
 }
 
+/// The 16 General MIDI program families, in standard GM bank order: programs
+/// 0..=127 group into families of [`GM_FAMILY_SIZE`] (8) following
+/// [`GM_PROGRAM_NAMES`].
+pub const GM_FAMILIES: [&str; 16] = [
+    "Piano",
+    "Chromatic Percussion",
+    "Organ",
+    "Guitar",
+    "Bass",
+    "Strings",
+    "Ensemble",
+    "Brass",
+    "Reed",
+    "Pipe",
+    "Synth Lead",
+    "Synth Pad",
+    "Synth FX",
+    "Ethnic",
+    "Percussive",
+    "Sound FX",
+];
+
+/// Programs per GM family (128 programs / 16 families).
+pub const GM_FAMILY_SIZE: usize = 8;
+
+/// Display name of the GM family containing `program` (0..=127); out-of-range
+/// values clamp into the last family like [`gm_program_name`].
+pub fn gm_family(program: u8) -> &'static str {
+    GM_FAMILIES[(program.min(127) as usize) / GM_FAMILY_SIZE]
+}
+
+/// The full GM catalog for listing UIs: every family with its 8 programs as
+/// `(program number, display name)` pairs, in standard GM order. Shared by
+/// the instrument library's SoundFont bank and the program pickers so their
+/// grouping can never drift apart.
+pub fn gm_program_catalog() -> Vec<(&'static str, Vec<(u8, &'static str)>)> {
+    GM_FAMILIES
+        .iter()
+        .enumerate()
+        .map(|(family, name)| {
+            let programs = GM_PROGRAM_NAMES
+                .iter()
+                .enumerate()
+                .skip(family * GM_FAMILY_SIZE)
+                .take(GM_FAMILY_SIZE)
+                .map(|(program, label)| (program as u8, *label))
+                .collect();
+            (*name, programs)
+        })
+        .collect()
+}
+
 /// Stable 64-bit key for a font name, shared by the model (which stores the
 /// name) and the engine (which looks fonts up by key).
 ///
@@ -212,6 +264,42 @@ fn resolve_fonts_dir(env: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
     directories::ProjectDirs::from("studio", "Cadence", "Cadence")
         .map(|dirs| dirs.data_local_dir().join("fonts"))
         .unwrap_or_else(|| std::env::temp_dir().join("cadence-studio").join("fonts"))
+}
+
+/// Opens the user font directory in the platform file manager, creating it
+/// first so `.sf2` files can be dropped straight in. Best-effort: returns the
+/// opened directory or a displayable error when no opener could be spawned.
+/// Desktop only — callers gate this on `io_enabled` like other native
+/// integrations (headless tests never spawn a process).
+pub fn reveal_user_fonts_dir() -> Result<PathBuf, String> {
+    let dir = user_fonts_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    #[cfg(target_os = "windows")]
+    {
+        // `explorer` reports a nonzero exit code even when it opens the
+        // folder, so any successful spawn counts.
+        match std::process::Command::new("explorer").arg(&dir).status() {
+            Ok(_) => Ok(dir),
+            Err(e) => Err(format!("Could not open {}: {e}", dir.display())),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match std::process::Command::new(opener).arg(&dir).status() {
+            Ok(status) if status.success() => Ok(dir),
+            Ok(_) => Err(format!(
+                "The file manager could not open {}.",
+                dir.display()
+            )),
+            Err(e) => Err(format!("Could not open {}: {e}", dir.display())),
+        }
+    }
 }
 
 /// Display metadata for one installed font (no audio data).
@@ -345,6 +433,39 @@ mod tests {
         assert!(GM_PROGRAM_NAMES.iter().all(|n| !n.is_empty()));
         assert_eq!(gm_program_name(0), "Acoustic Grand Piano");
         assert_eq!(gm_program_name(200), "Gunshot", "clamps to 127");
+    }
+
+    #[test]
+    fn gm_catalog_groups_cover_all_128_programs() {
+        let catalog = gm_program_catalog();
+        assert_eq!(catalog.len(), 16, "16 GM families");
+        assert_eq!(catalog[0].0, "Piano");
+        assert_eq!(catalog[15].0, "Sound FX");
+        let mut seen = Vec::new();
+        for (family, programs) in &catalog {
+            assert_eq!(programs.len(), GM_FAMILY_SIZE, "{family} has 8 programs");
+            for (program, name) in programs {
+                assert_eq!(*name, GM_PROGRAM_NAMES[*program as usize]);
+                assert_eq!(gm_family(*program), *family, "program {program}");
+                seen.push(*program);
+            }
+        }
+        assert_eq!(seen.len(), 128);
+        seen.sort();
+        assert_eq!(seen, (0u8..128).collect::<Vec<u8>>(), "no gaps or dupes");
+        // Family boundaries: the first and last program of each family.
+        for (i, family) in GM_FAMILIES.iter().enumerate() {
+            let first = (i * GM_FAMILY_SIZE) as u8;
+            assert_eq!(gm_family(first), *family);
+            assert_eq!(gm_family(first + 7), *family);
+        }
+        assert_eq!(gm_family(128), "Sound FX", "out-of-range clamps");
+        // Spot checks for the instrument library's category headers.
+        assert_eq!(gm_family(0), "Piano");
+        assert_eq!(gm_family(24), "Guitar");
+        assert_eq!(gm_family(40), "Strings");
+        assert_eq!(gm_family(56), "Brass");
+        assert_eq!(gm_family(80), "Synth Lead");
     }
 
     #[test]

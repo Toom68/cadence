@@ -7,7 +7,7 @@ use egui::{
 
 use super::theme::{self, Icon, Palette};
 use super::{ops, CadenceApp, Focus, StatusKind, Tab};
-use crate::font::GM_PROGRAM_NAMES;
+use crate::font::{gm_program_catalog, FontInfo, GM_PROGRAM_NAMES};
 use crate::model::{
     create_track, note_name, ArpDirection, ArpRate, FontRef, Instrument, Track, MAX_ARP_OCTAVES,
     MAX_GLIDE_SECONDS, MIN_ARP_GATE,
@@ -27,8 +27,18 @@ pub(super) enum SideTab {
 /// it survives tab switches and resets on restart, which is fine for view
 /// chrome that is never part of the song.
 const LIBRARY_OPEN: &str = "cadence.sidebar.library_open";
-const QUICK_ADD_OPEN: &str = "cadence.sidebar.quick_add_open";
+/// Temp-data key for the quick-add disclosure — `pub(super)` so headless
+/// tests can open the strip without clicking blind.
+pub(super) const QUICK_ADD_OPEN: &str = "cadence.sidebar.quick_add_open";
 const SIDEBAR_COLLAPSED: &str = "cadence.sidebar.collapsed";
+/// Font name the SoundFont bank currently lists programs for (session view
+/// state, like the other sidebar chrome).
+const LIBRARY_FONT: &str = "cadence.sidebar.library_font";
+/// Last-frame rect of the first quick-add SoundFont row (for headless tests,
+/// stored in temp data so mod.rs owns no extra fields).
+pub(super) const QUICK_ADD_FONT_RECT: &str = "cadence.sidebar.quick_add_font_rect";
+/// Last-frame rect of the quick-add "Add a SoundFont…" hint row.
+pub(super) const QUICK_ADD_FONT_HINT_RECT: &str = "cadence.sidebar.quick_add_font_hint_rect";
 
 pub(super) fn instrument_color(inst: Instrument) -> [u8; 3] {
     inst.color()
@@ -86,6 +96,9 @@ pub(super) enum LibraryBank {
     BuiltIn,
     /// One pack bank, keyed by preset-id namespace ("psy-bass").
     Pack(String),
+    /// The SoundFont catalog: 128 GM programs grouped by family, played by
+    /// an installed `.sf2` font.
+    Font,
 }
 
 /// Last-frame library chrome geometry. Headless tests aim scroll and click
@@ -98,6 +111,11 @@ pub(super) struct LibraryRects {
     pub list: Rect,
     /// Scroll offset of the instrument list.
     pub scroll: egui::Vec2,
+    /// First GM program row of the SoundFont bank (`Rect::NOTHING` when the
+    /// bank isn't showing rows).
+    pub first_font_row: Rect,
+    /// "Add a SoundFont…" button of the no-font hint card.
+    pub font_hint: Rect,
 }
 
 impl Default for LibraryRects {
@@ -107,6 +125,8 @@ impl Default for LibraryRects {
             bank: Rect::NOTHING,
             list: Rect::NOTHING,
             scroll: egui::Vec2::ZERO,
+            first_font_row: Rect::NOTHING,
+            font_hint: Rect::NOTHING,
         }
     }
 }
@@ -122,6 +142,7 @@ fn bank_title(bank: &LibraryBank) -> String {
         LibraryBank::All => "All".to_owned(),
         LibraryBank::BuiltIn => "Built-in".to_owned(),
         LibraryBank::Pack(ns) => pack_title(ns),
+        LibraryBank::Font => "SoundFont".to_owned(),
     }
 }
 
@@ -148,6 +169,9 @@ pub(super) fn bank_options(catalog: &PackCatalog) -> Vec<(LibraryBank, usize)> {
             Instrument::ALL.len() + catalog.instruments.len(),
         ),
         (LibraryBank::BuiltIn, Instrument::ALL.len()),
+        // The GM catalog always offers 128 programs, whatever fonts are
+        // installed — the bank body explains when none are.
+        (LibraryBank::Font, GM_PROGRAM_NAMES.len()),
     ];
     options.extend(
         packs
@@ -180,7 +204,7 @@ pub(super) fn library_rows<'a>(
             .copied()
             .filter(|i| text_hit(&[i.name(), i.description(), "Built-in"]))
             .collect(),
-        LibraryBank::Pack(_) => Vec::new(),
+        LibraryBank::Pack(_) | LibraryBank::Font => Vec::new(),
     };
     let presets = catalog
         .instruments
@@ -188,7 +212,7 @@ pub(super) fn library_rows<'a>(
         .filter(|p| {
             let bank_ok = match bank {
                 LibraryBank::All => true,
-                LibraryBank::BuiltIn => false,
+                LibraryBank::BuiltIn | LibraryBank::Font => false,
                 LibraryBank::Pack(b) => b == preset_namespace(&p.id),
             };
             bank_ok
@@ -201,6 +225,28 @@ pub(super) fn library_rows<'a>(
         })
         .collect();
     LibraryRows { builtins, presets }
+}
+
+/// The GM programs the SoundFont bank lists, grouped by family in GM order
+/// and filtered by `query` (trimmed, lowercased; empty matches everything).
+/// Search hits the program name, the family name or the word "soundfont";
+/// families left with no hits drop out entirely.
+pub(super) fn font_rows(query: &str) -> Vec<(&'static str, Vec<(u8, &'static str)>)> {
+    gm_program_catalog()
+        .into_iter()
+        .filter_map(|(family, programs)| {
+            let hits: Vec<(u8, &'static str)> = programs
+                .into_iter()
+                .filter(|(_, name)| {
+                    query.is_empty()
+                        || name.to_lowercase().contains(query)
+                        || family.to_lowercase().contains(query)
+                        || "soundfont".contains(query)
+                })
+                .collect();
+            (!hits.is_empty()).then_some((family, hits))
+        })
+        .collect()
 }
 
 /// MIDI pitch a kit preset's library audition should strike. An explicit
@@ -244,6 +290,10 @@ enum LibraryAction {
     AddPreset(InstrumentPreset),
     Audition(Instrument),
     AuditionPreset(InstrumentPreset),
+    /// Add a track playing this GM program on its SoundFont.
+    AddFont(FontRef),
+    /// Audition this GM program on its SoundFont.
+    AuditionFont(FontRef),
 }
 
 /// A SoundFont choice made inside the sound picker popup.
@@ -255,32 +305,47 @@ enum FontPick {
 }
 
 /// A sound the quick-add row can offer and a library row can drag onto the
-/// arranger: a built-in instrument or a pack preset (owned — adding a
+/// arranger: a built-in instrument, a pack preset (owned — adding a
 /// preset track embeds the whole preset anyway, so the clone is cheap and
-/// keeps `&mut self` calls borrow-free). The preset is boxed to keep the
-/// enum small next to the 1-byte `Instrument`. `QuickSound` is also the
-/// egui drag-and-drop payload between the library and the arranger, so it
-/// must stay `Send + Sync + 'static`.
+/// keeps `&mut self` calls borrow-free) or a SoundFont GM program. The preset
+/// is boxed to keep the enum small next to the 1-byte `Instrument`.
+/// `QuickSound` is also the egui drag-and-drop payload between the library
+/// and the arranger, so it must stay `Send + Sync + 'static`.
 #[derive(Clone)]
 pub(super) enum QuickSound {
     BuiltIn(Instrument),
     Preset(Box<InstrumentPreset>),
+    /// A GM program played by the named installed SoundFont.
+    Font(FontRef),
 }
+
+/// Accent color for SoundFont rows: a violet from the track palette, so font
+/// sounds read differently from built-ins and packs at a glance.
+pub(super) const FONT_COLOR: [u8; 3] = theme::TRACK_PALETTE[8];
 
 impl QuickSound {
     pub(super) fn name(&self) -> &str {
         match self {
             Self::BuiltIn(i) => i.name(),
             Self::Preset(p) => p.name.as_str(),
+            Self::Font(f) => f.program_name(),
         }
     }
 
     /// Hover text: the built-in description, or the preset's description plus
-    /// its synthesis summary like the full library rows show.
+    /// its synthesis summary like the full library rows show; for fonts the
+    /// GM program, its family and the font that plays it.
     fn tip(&self) -> String {
         match self {
             Self::BuiltIn(i) => i.description().to_owned(),
             Self::Preset(p) => format!("{}\n\n{}", p.description, preset_summary(p)),
+            Self::Font(f) => format!(
+                "{}\n\nGM program {} · {} · {}.sf2",
+                f.program_name(),
+                f.program,
+                gm_family(f.program),
+                f.name
+            ),
         }
     }
 
@@ -288,6 +353,7 @@ impl QuickSound {
         match self {
             Self::BuiltIn(i) => instrument_color(*i),
             Self::Preset(p) => ops::preset_color(&p.id),
+            Self::Font(_) => FONT_COLOR,
         }
     }
 
@@ -297,7 +363,8 @@ impl QuickSound {
 }
 
 /// The quick-add picker's groups, best first: sounds already in the song,
-/// then built-ins, then a few pack presets.
+/// then built-ins, then a few pack presets, then GM programs from an
+/// installed SoundFont.
 struct QuickPicks {
     /// Sounds already on tracks in this song, newest track first.
     recent: Vec<QuickSound>,
@@ -305,39 +372,32 @@ struct QuickPicks {
     builtins: Vec<QuickSound>,
     /// The first preset of a few pack banks, for sounds beyond built-ins.
     presets: Vec<QuickSound>,
+    /// A few iconic GM programs from an installed SoundFont.
+    fonts: Vec<QuickSound>,
 }
 
 impl QuickPicks {
     fn count(&self) -> usize {
-        self.recent.len() + self.builtins.len() + self.presets.len()
+        self.recent.len() + self.builtins.len() + self.presets.len() + self.fonts.len()
     }
 }
 
-/// The 16 General MIDI program families: programs 0..=127 group into families
-/// of 8 in the standard GM bank order used by [`GM_PROGRAM_NAMES`].
-const GM_FAMILIES: [&str; 16] = [
-    "Piano",
-    "Chromatic Percussion",
-    "Organ",
-    "Guitar",
-    "Bass",
-    "Strings",
-    "Ensemble",
-    "Brass",
-    "Reed",
-    "Pipe",
-    "Synth Lead",
-    "Synth Pad",
-    "Synth FX",
-    "Ethnic",
-    "Percussive",
-    "Sound FX",
-];
+/// The GM programs the quick-add SoundFont group spotlights — one iconic
+/// real-instrument sound each, in catalog order.
+const QUICK_FONT_PROGRAMS: [u8; 3] = [0, 24, 40];
+
+/// Translucent lift painted over a clickable card while hovered. The row
+/// bodies can't show hover themselves: their interacts sit *under* the
+/// drag source's, so hover is painted by the caller after the real click
+/// interact is registered (see [`quick_section`] and [`library_row`]).
+const HOVER_LIFT: Color32 = Color32::from_rgba_premultiplied(10, 10, 10, 10);
+/// Slightly stronger lift for the small buttons inside a library row.
+const BUTTON_LIFT: Color32 = Color32::from_rgba_premultiplied(22, 22, 22, 22);
 
 /// Display name of the GM family containing `program` (0..=127); out-of-range
 /// values clamp into the last family like [`crate::font::gm_program_name`].
 pub(super) fn gm_family(program: u8) -> &'static str {
-    GM_FAMILIES[(program.min(127) / 8) as usize]
+    crate::font::gm_family(program)
 }
 
 /// Whether the track still carries its auto-assigned sound name — the
@@ -555,6 +615,14 @@ impl CadenceApp {
         let list = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Stale geometry from a previous frame's bank must not leak
+                // into hit-tests; `font_bank_ui` re-fills its rects.
+                self.library_rects.first_font_row = Rect::NOTHING;
+                self.library_rects.font_hint = Rect::NOTHING;
+                if bank == LibraryBank::Font {
+                    self.font_bank_ui(ui, pal, &query, full, &mut action);
+                    return;
+                }
                 let rows = library_rows(&bank, &query, &self.catalog);
                 if !rows.builtins.is_empty() {
                     ui.add_space(2.0);
@@ -653,6 +721,10 @@ impl CadenceApp {
                 t.preset = Some(p);
                 self.audition_instrument(&t, 60);
             }
+            Some(LibraryAction::AddFont(f)) => self.add_font_track(&f),
+            Some(LibraryAction::AuditionFont(f)) => {
+                self.audition_instrument(&Track::from_font(Instrument::Lead, f), 60);
+            }
             None => {}
         }
     }
@@ -690,6 +762,213 @@ impl CadenceApp {
         });
     }
 
+    /// The SoundFont bank body: a font chooser (when several are installed),
+    /// then the 128 GM programs grouped under collapsible family headers.
+    /// Rows add a track playing that program on the chosen font; ▶ auditions
+    /// it through the engine's font bank.
+    fn font_bank_ui(
+        &mut self,
+        ui: &mut Ui,
+        pal: Palette,
+        query: &str,
+        full: bool,
+        action: &mut Option<LibraryAction>,
+    ) {
+        let fonts: Vec<FontInfo> = self.fonts.fonts.clone();
+        if fonts.is_empty() {
+            // No .sf2 installed: a slim hint card pointing at the folder.
+            self.fonts_hint_card(ui, pal);
+            return;
+        }
+        // Session font choice, kept in egui temp data like the disclosures.
+        let stored = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<String>(egui::Id::new(LIBRARY_FONT)));
+        let selected = stored
+            .filter(|name| fonts.iter().any(|i| &i.name == name))
+            .unwrap_or_else(|| fonts[0].name.clone());
+        if fonts.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(theme::kicker_text(pal, "FONT"));
+                let mut pick = None;
+                egui::ComboBox::from_id_salt("library-font")
+                    .width((ui.available_width() - 30.0).max(90.0))
+                    .selected_text(selected.clone())
+                    .show_ui(ui, |ui| {
+                        for info in &fonts {
+                            if ui
+                                .selectable_label(info.name == selected, &info.name)
+                                .on_hover_text(format!("SoundFont · {} presets", info.presets))
+                                .clicked()
+                            {
+                                pick = Some(info.name.clone());
+                            }
+                        }
+                    });
+                if let Some(name) = pick {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new(LIBRARY_FONT), name));
+                }
+            });
+            ui.add_space(4.0);
+        }
+        let rows = font_rows(query);
+        let mut first_row = Rect::NOTHING;
+        for (family, programs) in &rows {
+            egui::CollapsingHeader::new(
+                RichText::new(family.to_uppercase())
+                    .text_style(theme::kicker())
+                    .color(pal.text_faint),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for (program, label) in programs {
+                    let next = ui.available_rect_before_wrap();
+                    let font = FontRef::new(selected.clone(), *program);
+                    if let Some(a) = library_row(
+                        ui,
+                        pal,
+                        label,
+                        &format!(
+                            "SoundFont · GM program {program} · {family} · {selected}\n\n\
+                             Click + to add a track, ▶ to hear it."
+                        ),
+                        theme::rgb(FONT_COLOR),
+                        false,
+                        !full,
+                        ui.id().with(("library-row", "font", program)),
+                        QuickSound::Font(font.clone()),
+                    ) {
+                        *action = Some(if a {
+                            LibraryAction::AddFont(font)
+                        } else {
+                            LibraryAction::AuditionFont(font)
+                        });
+                    }
+                    if first_row == Rect::NOTHING {
+                        first_row = Rect::from_min_size(next.min, vec2(next.width(), 42.0));
+                    }
+                }
+            });
+        }
+        self.library_rects.first_font_row = first_row;
+        if rows.is_empty() {
+            theme::hint(ui, pal, "No SoundFont programs match.");
+        }
+        let n = self.fonts.errors.len();
+        if n > 0 {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{n} font file{} failed to load", plural(n)))
+                    .small()
+                    .color(pal.warn),
+            )
+            .on_hover_text(self.fonts.errors.join("\n"));
+        }
+        ui.add_space(10.0);
+    }
+
+    /// The no-fonts hint card: explains what SoundFonts are and offers one
+    /// "Add a SoundFont…" button that opens (and creates) the user font
+    /// folder, plus a click-to-copy path line like the packs footer.
+    fn fonts_hint_card(&mut self, ui: &mut Ui, pal: Palette) {
+        Frame::new()
+            .fill(pal.raised)
+            .corner_radius(8)
+            .inner_margin(Margin::same(10))
+            .stroke(Stroke::new(1.0_f32, pal.border_soft))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(theme::kicker_text(pal, "SOUNDFONT"));
+                ui.label(
+                    RichText::new(
+                        "SoundFonts (.sf2) play real sampled General MIDI \
+                         instruments — pianos, guitars, strings and more.",
+                    )
+                    .small()
+                    .color(pal.text_dim),
+                );
+                ui.add_space(4.0);
+                let resp = ui
+                    .add(egui::Button::new("Add a SoundFont…").min_size(vec2(0.0, 26.0)))
+                    .on_hover_text("Open the SoundFonts folder so you can drop .sf2 files into it");
+                self.library_rects.font_hint = resp.rect;
+                if resp.clicked() {
+                    self.reveal_fonts_folder();
+                }
+                let dir = crate::font::user_fonts_dir();
+                let path = ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Folder: {}", dir.display()))
+                            .small()
+                            .color(pal.text_faint),
+                    )
+                    .truncate()
+                    .sense(Sense::click()),
+                );
+                if path
+                    .on_hover_text(format!("{}\nClick to copy the path", dir.display()))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(dir.display().to_string());
+                    self.set_status(
+                        StatusKind::Info,
+                        "Copied the SoundFonts folder path to the clipboard.",
+                    );
+                }
+            });
+    }
+
+    /// Opens the user font directory in the platform file manager (creating
+    /// it first). Headless sessions describe the folder instead of spawning.
+    fn reveal_fonts_folder(&mut self) {
+        let dir = crate::font::user_fonts_dir();
+        if !self.io_enabled {
+            self.set_status(
+                StatusKind::Info,
+                format!("SoundFonts folder: {}", dir.display()),
+            );
+            return;
+        }
+        match crate::font::reveal_user_fonts_dir() {
+            Ok(dir) => self.set_status(
+                StatusKind::Success,
+                format!(
+                    "Opened the SoundFonts folder ({}). Drop .sf2 files there; they appear within a couple of seconds.",
+                    dir.display()
+                ),
+            ),
+            Err(err) => self.set_status(StatusKind::Error, err),
+        }
+    }
+
+    /// Adds a new track playing GM `program` on `font`. The track starts on
+    /// the piano roll (fonts only play pitched programs) and is named after
+    /// the font, matching [`Track::from_font`]; its sound label reads
+    /// "Font · Program".
+    pub(super) fn add_font_track(&mut self, font: &FontRef) {
+        let program_name = font.program_name().to_owned();
+        let mut id = None;
+        self.edit(&format!("Add {program_name} track"), None, |p| {
+            let unique = ops::unique_name(&font.name, p.tracks.iter().map(|t| t.name.clone()));
+            id = ops::add_track(p, Instrument::Lead);
+            if let Some(track) = id {
+                ops::set_track_font(p, track, Some(font.clone()));
+                if let Some(t) = ops::track_mut(p, track) {
+                    t.name = unique;
+                }
+            }
+        });
+        self.finish_track_add(
+            id,
+            format!(
+                "Added {program_name} ({}). Draw notes in the piano roll; its clip is already in the arrangement at bar 1.",
+                font.name
+            ),
+        );
+    }
+
     pub(super) fn add_preset_track(&mut self, preset: &InstrumentPreset) {
         let mut id = None;
         self.edit(&format!("Add {} track", preset.name), None, |p| {
@@ -718,6 +997,18 @@ impl CadenceApp {
             id = match sound {
                 QuickSound::BuiltIn(inst) => ops::add_track(p, *inst),
                 QuickSound::Preset(preset) => ops::add_preset_track(p, preset),
+                QuickSound::Font(font) => {
+                    let unique =
+                        ops::unique_name(&font.name, p.tracks.iter().map(|t| t.name.clone()));
+                    let added = ops::add_track(p, Instrument::Lead);
+                    if let Some(track) = added {
+                        ops::set_track_font(p, track, Some(font.clone()));
+                        if let Some(t) = ops::track_mut(p, track) {
+                            t.name = unique;
+                        }
+                    }
+                    added
+                }
             };
             if let Some(track) = id {
                 let last = p.tracks.len().saturating_sub(1);
@@ -735,6 +1026,9 @@ impl CadenceApp {
                     "the piano roll"
                 };
                 format!("Added {name}. Draw notes in {editor}; its clip is already in the arrangement at bar 1.")
+            }
+            QuickSound::Font(_) => {
+                format!("Added {name}. Draw notes in the piano roll; its clip is already in the arrangement at bar 1.")
             }
         };
         self.finish_track_add(id, success);
@@ -778,9 +1072,10 @@ impl CadenceApp {
     }
 
     /// The "+ Track" fast path at the top of the Track tab: a collapsible
-    /// strip of common sounds — the song's own sounds first, then built-ins
-    /// and a few pack presets — that adds a track without opening the full
-    /// instrument library. Open state lives in egui temp data.
+    /// strip of common sounds — the song's own sounds first, then built-ins,
+    /// a few pack presets and SoundFont GM programs — that adds a track
+    /// without opening the full instrument library. Open state lives in egui
+    /// temp data.
     fn quick_add_ui(&mut self, ui: &mut Ui) {
         let pal = self.palette();
         let picks = self.quick_picks();
@@ -799,22 +1094,70 @@ impl CadenceApp {
             )),
             false,
         );
+        // Keep stale rects out of hit-tests when the strip is folded.
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new(QUICK_ADD_FONT_RECT), Rect::NOTHING);
+            d.insert_temp(egui::Id::new(QUICK_ADD_FONT_HINT_RECT), Rect::NOTHING);
+        });
         if !open {
             return;
         }
         ui.add_space(2.0);
         let full = self.project.tracks.len() >= ops::MAX_TRACKS;
         let mut picked = None;
+        let mut font_row = Rect::NOTHING;
+        let mut font_hint_row = Rect::NOTHING;
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
-            quick_section(ui, pal, "IN THIS SONG", &picks.recent, full, &mut picked);
-            quick_section(ui, pal, "BUILT-IN", &picks.builtins, full, &mut picked);
-            quick_section(ui, pal, "PACKS", &picks.presets, full, &mut picked);
+            quick_section(
+                ui,
+                pal,
+                "IN THIS SONG",
+                &picks.recent,
+                full,
+                &mut picked,
+                None,
+            );
+            quick_section(
+                ui,
+                pal,
+                "BUILT-IN",
+                &picks.builtins,
+                full,
+                &mut picked,
+                None,
+            );
+            quick_section(ui, pal, "PACKS", &picks.presets, full, &mut picked, None);
+            if picked.is_none() {
+                if self.fonts.fonts.is_empty() {
+                    // No .sf2 installed: a slim hint row that opens the folder.
+                    let next = ui.available_rect_before_wrap();
+                    if quick_add_font_hint_row(ui, pal) {
+                        self.reveal_fonts_folder();
+                    }
+                    font_hint_row = Rect::from_min_size(next.min, vec2(next.width(), 30.0));
+                } else {
+                    quick_section(
+                        ui,
+                        pal,
+                        "SOUNDFONT",
+                        &picks.fonts,
+                        full,
+                        &mut picked,
+                        Some(&mut font_row),
+                    );
+                }
+            }
+        });
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new(QUICK_ADD_FONT_RECT), font_row);
+            d.insert_temp(egui::Id::new(QUICK_ADD_FONT_HINT_RECT), font_hint_row);
         });
         if let Some(sound) = picked {
             match sound {
                 QuickSound::BuiltIn(inst) => self.add_track(inst),
                 QuickSound::Preset(p) => self.add_preset_track(&p),
+                QuickSound::Font(f) => self.add_font_track(&f),
             }
         }
         ui.add_space(2.0);
@@ -827,7 +1170,7 @@ impl CadenceApp {
             .sense(Sense::click()),
         );
         if resp
-            .on_hover_text("Every built-in and pack preset, searchable")
+            .on_hover_text("Every built-in, pack preset and SoundFont program, searchable")
             .clicked()
         {
             self.side_tab = SideTab::Library;
@@ -837,20 +1180,27 @@ impl CadenceApp {
 
     /// The sounds [`Self::quick_add_ui`] offers, best first. `recent` mirrors
     /// the sounds already on tracks (newest track first) so layering another
-    /// part is one click; SoundFont tracks are skipped because a font can't
-    /// be re-created by the quick add — fonts attach to a track after it
-    /// exists.
+    /// part is one click. Font tracks appear under recents while their font
+    /// is installed here (they couldn't be re-created before the quick add
+    /// learned to offer fonts); a font that isn't installed can't be
+    /// re-created, so those tracks are skipped.
     fn quick_picks(&self) -> QuickPicks {
         const MAX_RECENT: usize = 4;
         const MAX_PRESETS: usize = 3;
         let mut recent: Vec<QuickSound> = Vec::new();
         let mut used_inst: Vec<Instrument> = Vec::new();
         let mut used_preset: Vec<String> = Vec::new();
+        let mut used_font: Vec<FontRef> = Vec::new();
         for track in self.project.tracks.iter().rev() {
             if recent.len() >= MAX_RECENT {
                 break;
             }
-            if track.font.is_some() {
+            if let Some(font) = &track.font {
+                let installed = self.fonts.fonts.iter().any(|i| i.name == font.name);
+                if installed && !used_font.contains(font) {
+                    used_font.push(font.clone());
+                    recent.push(QuickSound::Font(font.clone()));
+                }
                 continue;
             }
             if let Some(p) = &track.preset {
@@ -887,10 +1237,25 @@ impl CadenceApp {
             used_preset.push(p.id.clone());
             presets.push(QuickSound::Preset(Box::new(p.clone())));
         }
+        // Iconic GM programs from an installed SoundFont — the font the song
+        // already uses when it has one, else the first installed font.
+        let font_name = used_font
+            .first()
+            .map(|f| f.name.clone())
+            .or_else(|| self.fonts.fonts.first().map(|i| i.name.clone()));
+        let fonts = font_name
+            .into_iter()
+            .flat_map(|name| {
+                QUICK_FONT_PROGRAMS
+                    .iter()
+                    .map(move |program| QuickSound::Font(FontRef::new(name.clone(), *program)))
+            })
+            .collect();
         QuickPicks {
             recent,
             builtins,
             presets,
+            fonts,
         }
     }
 
@@ -1604,16 +1969,13 @@ impl CadenceApp {
             .selected_text(font.program_name())
             .height(360.0)
             .show_ui(ui, |ui| {
-                for (family, name) in GM_FAMILIES.iter().enumerate() {
+                for (family, programs) in gm_program_catalog() {
                     ui.separator();
-                    ui.label(theme::kicker_text(pal, &name.to_uppercase()));
-                    for (program, label) in
-                        GM_PROGRAM_NAMES.iter().enumerate().skip(family * 8).take(8)
-                    {
-                        let program = program as u8;
+                    ui.label(theme::kicker_text(pal, &family.to_uppercase()));
+                    for (program, label) in programs {
                         if ui
-                            .selectable_label(font.program == program, *label)
-                            .on_hover_text(format!("GM program {program} · {}", gm_family(program)))
+                            .selectable_label(font.program == program, label)
+                            .on_hover_text(format!("GM program {program} · {family}"))
                             .clicked()
                         {
                             pick = Some(program);
@@ -1672,13 +2034,16 @@ impl CadenceApp {
 
 /// One library entry. `drag_id` names the row's drag-and-drop source and
 /// must be unique — the caller salts it with the preset id or the built-in
-/// name. `payload` is what an arranger drop turns into a track. Click vs
-/// drag is egui's usual disambiguation: the drag only wins once the pointer
-/// is "decidedly dragging" (a few px of movement), so plain clicks still
-/// reach the ▶ and + buttons and double-click still adds. While the row is
-/// dragged `dnd_drag_source` repaints it on the tooltip layer at the
-/// pointer, which is the drag ghost.
-/// Returns `Some(true)` for add, `Some(false)` for audition.
+/// name. `payload` is what an arranger drop turns into a track.
+///
+/// The click targets are registered *after* the drag source on purpose:
+/// `dnd_drag_source` claims a drag interact on the row rect that would sit
+/// on top of any interact inside the body, and egui drops click hits under
+/// a drag-only top widget entirely — so interacts inside the body could
+/// never fire. Registered here instead, they're the topmost click widgets
+/// while drags still resolve to the row's drag source. Hover feedback is
+/// painted afterwards for the same reason. Returns `Some(true)` for add,
+/// `Some(false)` for audition.
 #[allow(clippy::too_many_arguments)]
 fn library_row(
     ui: &mut Ui,
@@ -1691,14 +2056,62 @@ fn library_row(
     drag_id: egui::Id,
     payload: QuickSound,
 ) -> Option<bool> {
-    ui.dnd_drag_source(drag_id, payload, |ui| {
+    let dnd = ui.dnd_drag_source(drag_id, payload, |ui| {
         library_row_body(ui, pal, name, description, color, kit, can_add)
-    })
-    .inner
+    });
+    let rect = dnd.response.rect;
+    let audition_rect = Rect::from_center_size(
+        Pos2::new(rect.right() - 50.0, rect.center().y),
+        vec2(26.0, 26.0),
+    );
+    let add_rect = Rect::from_center_size(
+        Pos2::new(rect.right() - 18.0, rect.center().y),
+        vec2(26.0, 26.0),
+    );
+    let row = ui
+        .interact(rect, drag_id.with("row"), Sense::click())
+        .on_hover_text(format!(
+            "{description}\n\nClick + to add a track, ▶ to hear it. Double-click the row to add, or drag it onto the arrangement."
+        ));
+    row.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, can_add, format!("Add {name}"))
+    });
+    let audition = ui
+        .interact(audition_rect, drag_id.with("audition"), Sense::click())
+        .on_hover_text(format!("Audition {name}"));
+    let add = ui
+        .interact(add_rect, drag_id.with("add"), Sense::click())
+        .on_hover_text(if can_add {
+            format!("Add a {name} track")
+        } else {
+            "Track limit reached".to_owned()
+        });
+    let p = ui.painter();
+    if row.hovered() || audition.hovered() || add.hovered() {
+        p.rect_filled(rect, 8.0, HOVER_LIFT);
+    }
+    for (r, hot) in [
+        (audition_rect, audition.hovered()),
+        (add_rect, add.hovered() && can_add),
+    ] {
+        if hot {
+            p.rect_filled(r, 6.0, BUTTON_LIFT);
+        }
+    }
+    if audition.clicked() {
+        Some(false)
+    } else if can_add && (add.clicked() || row.double_clicked()) {
+        Some(true)
+    } else {
+        None
+    }
 }
 
-/// The painted, interactive body of [`library_row`] (split out so the row
-/// can run inside [`Ui::dnd_drag_source`]).
+/// The painted body of [`library_row`] (split out so the row can run inside
+/// [`Ui::dnd_drag_source`]). Paints the base, non-hover state only: hover and
+/// clicks live in [`library_row`], which registers its interacts *after* the
+/// drag source — interacts here would sit under the drag interact and could
+/// never fire.
 #[allow(clippy::too_many_arguments)]
 fn library_row_body(
     ui: &mut Ui,
@@ -1708,9 +2121,9 @@ fn library_row_body(
     color: Color32,
     kit: bool,
     can_add: bool,
-) -> Option<bool> {
+) {
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 42.0), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 42.0), Sense::hover());
     let audition_rect = Rect::from_center_size(
         Pos2::new(rect.right() - 50.0, rect.center().y),
         vec2(26.0, 26.0),
@@ -1719,19 +2132,12 @@ fn library_row_body(
         Pos2::new(rect.right() - 18.0, rect.center().y),
         vec2(26.0, 26.0),
     );
-    let audition = ui.interact(audition_rect, resp.id.with("audition"), Sense::click());
-    let add = ui.interact(add_rect, resp.id.with("add"), Sense::click());
-    let hovered = resp.hovered() || audition.hovered() || add.hovered();
     let p = ui.painter();
     p.rect(
         rect,
         8.0,
-        if hovered {
-            pal.control_hover
-        } else {
-            pal.control
-        },
-        Stroke::new(1.0_f32, if hovered { pal.border } else { pal.border_soft }),
+        pal.control,
+        Stroke::new(1.0_f32, pal.border_soft),
         StrokeKind::Inside,
     );
     let bar = Rect::from_min_size(rect.min + vec2(8.0, 9.0), vec2(4.0, rect.height() - 18.0));
@@ -1774,14 +2180,11 @@ fn library_row_body(
             pal.text_faint,
         );
     }
-    for (r, hot) in [
-        (audition_rect, audition.hovered()),
-        (add_rect, add.hovered()),
-    ] {
+    for r in [audition_rect, add_rect] {
         p.rect(
             r,
             6.0,
-            if hot { pal.control_active } else { pal.raised },
+            pal.raised,
             Stroke::new(1.0_f32, pal.border),
             StrokeKind::Inside,
         );
@@ -1790,43 +2193,14 @@ fn library_row_body(
         p,
         Rect::from_center_size(audition_rect.center() + vec2(1.0, 0.0), vec2(9.0, 10.0)),
         Icon::Play,
-        if audition.hovered() {
-            pal.link
-        } else {
-            pal.text_dim
-        },
+        pal.text_dim,
     );
     theme::paint_icon(
         p,
         Rect::from_center_size(add_rect.center(), vec2(10.0, 10.0)),
         Icon::Plus,
-        if !can_add {
-            pal.text_faint
-        } else if add.hovered() {
-            pal.accent
-        } else {
-            pal.text
-        },
+        if can_add { pal.text } else { pal.text_faint },
     );
-    let audition = audition.on_hover_text(format!("Audition {name}"));
-    let add = add.on_hover_text(if can_add {
-        format!("Add a {name} track")
-    } else {
-        "Track limit reached".to_owned()
-    });
-    let resp = resp.on_hover_text(format!(
-        "{description}\n\nClick + to add a track, ▶ to hear it. Double-click the row to add, or drag it onto the arrangement."
-    ));
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, can_add, format!("Add {name}"))
-    });
-    if audition.clicked() {
-        Some(false)
-    } else if can_add && (add.clicked() || resp.double_clicked()) {
-        Some(true)
-    } else {
-        None
-    }
 }
 
 /// Slim clickable section header with a disclosure chevron (▸ closed, ▾
@@ -1917,6 +2291,8 @@ fn paint_disclosure(p: &egui::Painter, r: Rect, open: bool, color: Color32) {
 
 /// One labelled group inside the quick-add list: a kicker plus slim rows.
 /// Stops early once `picked` is set — only one add can fire per frame.
+/// `first_row` (when given) receives the rect of the group's first row so
+/// headless tests can aim clicks at it.
 fn quick_section(
     ui: &mut Ui,
     pal: Palette,
@@ -1924,6 +2300,7 @@ fn quick_section(
     sounds: &[QuickSound],
     full: bool,
     picked: &mut Option<QuickSound>,
+    mut first_row: Option<&mut Rect>,
 ) {
     if sounds.is_empty() || picked.is_some() {
         return;
@@ -1939,46 +2316,116 @@ fn quick_section(
         } else {
             sound.tip()
         };
+        let next = ui.available_rect_before_wrap();
+        let dnd_id = ui.id().with(("quick-add", label, i));
         // Draggable like the library rows: the row paints the ghost while
         // dragged, and dropping it on the arranger adds the track there.
-        if ui
-            .dnd_drag_source(ui.id().with(("quick-add", label, i)), sound.clone(), |ui| {
-                quick_add_row(ui, pal, sound, &tip, !full)
-            })
-            .inner
-        {
+        let dnd = ui.dnd_drag_source(dnd_id, sound.clone(), |ui| {
+            quick_add_row(ui, pal, sound, !full)
+        });
+        // The drag interact sits on top of the body, which would swallow any
+        // click target inside it — register the click here, on top, so clicks
+        // and drags resolve to different senses of the same row.
+        let clicked = ui
+            .interact(dnd.response.rect, dnd_id.with("click"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(&tip);
+        if clicked.hovered() && !full {
+            ui.painter().rect(
+                dnd.response.rect,
+                7.0,
+                HOVER_LIFT,
+                Stroke::new(1.0_f32, pal.border),
+                StrokeKind::Inside,
+            );
+        }
+        if clicked.clicked() && !full {
             *picked = Some(sound.clone());
+        }
+        if let Some(out) = first_row.as_deref_mut() {
+            if *out == Rect::NOTHING {
+                *out = Rect::from_min_size(next.min, vec2(next.width(), 30.0));
+            }
         }
     }
 }
 
-/// One compact quick-add entry: the whole row adds a track with that sound.
-/// Returns true when the add should fire this frame. Same visual language as
-/// [`library_row`] — rounded card, color bar, name — but a single click
-/// target and a third of the height, since this is a fast path, not a
-/// replacement for the full library.
-fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, tip: &str, can_add: bool) -> bool {
+/// The slim "Add a SoundFont…" row the quick-add strip shows while no `.sf2`
+/// is installed: same card look as the other quick rows, one click opens the
+/// fonts folder. Returns true when the click should fire.
+fn quick_add_font_hint_row(ui: &mut Ui, pal: Palette) -> bool {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
     let p = ui.painter();
     p.rect(
         rect,
         7.0,
-        if !can_add {
-            pal.panel
-        } else if resp.hovered() {
+        if resp.hovered() {
             pal.control_hover
         } else {
             pal.control
         },
         Stroke::new(
             1.0_f32,
-            if can_add && resp.hovered() {
+            if resp.hovered() {
                 pal.border
             } else {
                 pal.border_soft
             },
         ),
+        StrokeKind::Inside,
+    );
+    let bar = Rect::from_min_size(rect.min + vec2(7.0, 6.0), vec2(3.0, rect.height() - 12.0));
+    p.rect_filled(bar, 1.5, theme::rgb(FONT_COLOR));
+    let galley = ui.fonts_mut(|f| {
+        f.layout_no_wrap(
+            "Add a SoundFont…".to_owned(),
+            FontId::proportional(12.5),
+            pal.text,
+        )
+    });
+    p.with_clip_rect(Rect::from_min_size(
+        rect.min,
+        vec2(rect.width() - 48.0, rect.height()),
+    ))
+    .galley(
+        Pos2::new(rect.left() + 18.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        pal.text,
+    );
+    theme::paint_icon(
+        p,
+        Rect::from_center_size(
+            Pos2::new(rect.right() - 15.0, rect.center().y),
+            vec2(9.0, 9.0),
+        ),
+        Icon::Plus,
+        pal.text_dim,
+    );
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add a SoundFont…")
+    });
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(
+            "SoundFonts (.sf2) play real sampled instruments. Opens the SoundFonts folder.",
+        )
+        .clicked()
+}
+
+/// The painted body of a quick-add row: rounded card, color bar, name. The
+/// click target lives in [`quick_section`], which must register it *after*
+/// [`Ui::dnd_drag_source`]'s drag interact — a drag-only widget on top makes
+/// egui drop the click hit entirely, so an interact inside the body could
+/// never fire. Hover feedback is painted by the caller for the same reason.
+fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, can_add: bool) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
+    let p = ui.painter();
+    p.rect(
+        rect,
+        7.0,
+        if can_add { pal.control } else { pal.panel },
+        Stroke::new(1.0_f32, pal.border_soft),
         StrokeKind::Inside,
     );
     let bar = Rect::from_min_size(rect.min + vec2(7.0, 6.0), vec2(3.0, rect.height() - 12.0));
@@ -2017,17 +2464,6 @@ fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, tip: &str, can_a
             pal.text_faint
         },
     );
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            can_add,
-            format!("Add {}", sound.name()),
-        )
-    });
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(tip)
-        .clicked()
-        && can_add
 }
 
 /// Display text for the per-track glide knob: "Off" at zero, else seconds.
@@ -2104,7 +2540,7 @@ mod tests {
             .iter()
             .map(|s| match s {
                 QuickSound::Preset(p) => p.id.as_str(),
-                QuickSound::BuiltIn(_) => "",
+                QuickSound::BuiltIn(_) | QuickSound::Font(_) => "",
             })
             .collect();
         assert_eq!(ids, ["test-a.kick", "test-b.pad", "test-c.wide"]);
@@ -2117,8 +2553,9 @@ mod tests {
         app.catalog = catalog(&["test-a.kick", "test-a.lead", "test-b.pad"]);
         app.add_track(Instrument::Piano);
         app.add_preset_track(&preset("test-a.kick"));
-        // A SoundFont track can't be re-created by quick-add: it must not
-        // appear under recents (its fallback preset would mislead).
+        // No fonts are installed in headless, so this font track's sound
+        // can't be re-created by the quick add and must stay out of recents
+        // (its fallback preset would mislead).
         let font_track = app.project.tracks.last().unwrap().clone();
         app.project.tracks.push({
             let mut t = font_track;
@@ -2138,6 +2575,7 @@ mod tests {
             picks.recent[1],
             QuickSound::BuiltIn(Instrument::Piano)
         ));
+        assert!(picks.fonts.is_empty(), "no installed font, no font picks");
         // Sounds already listed are not repeated in the other groups.
         assert!(!picks
             .builtins
@@ -2164,5 +2602,84 @@ mod tests {
         let picks = app.quick_picks();
         assert_eq!(picks.recent.len(), 4);
         assert_eq!(picks.builtins.len(), 3);
+    }
+
+    /// Installs a fabricated font catalog entry (no parsed SoundFont needed —
+    /// the picker only reads `FontInfo`).
+    fn install_font(app: &mut CadenceApp, name: &str) {
+        app.fonts.fonts.push(FontInfo {
+            name: name.to_owned(),
+            key: crate::font::font_key(name),
+            presets: 128,
+        });
+    }
+
+    #[test]
+    fn quick_picks_offer_iconic_soundfont_programs() {
+        let mut app = app();
+        install_font(&mut app, "GeneralUser");
+        let picks = app.quick_picks();
+        assert_eq!(picks.fonts.len(), 3);
+        let programs: Vec<(String, u8)> = picks
+            .fonts
+            .iter()
+            .map(|s| match s {
+                QuickSound::Font(f) => (f.name.clone(), f.program),
+                other => panic!("expected a font pick, got {}", other.name()),
+            })
+            .collect();
+        assert_eq!(
+            programs,
+            vec![
+                ("GeneralUser".to_owned(), 0),
+                ("GeneralUser".to_owned(), 24),
+                ("GeneralUser".to_owned(), 40),
+            ]
+        );
+        assert_eq!(picks.fonts[0].name(), "Acoustic Grand Piano");
+        assert_eq!(picks.fonts[1].name(), "Acoustic Guitar (nylon)");
+        assert_eq!(picks.fonts[2].name(), "Violin");
+        assert_eq!(picks.count(), Instrument::ALL.len() + 3);
+    }
+
+    #[test]
+    fn quick_picks_recent_recreates_installed_font_tracks() {
+        let mut app = app();
+        install_font(&mut app, "GeneralUser");
+        app.add_font_track(&FontRef::new("GeneralUser", 40));
+        let picks = app.quick_picks();
+        // The song's font track is re-creatable now, so it leads recents.
+        assert_eq!(picks.recent.len(), 1);
+        assert!(matches!(
+            &picks.recent[0],
+            QuickSound::Font(f) if f.name == "GeneralUser" && f.program == 40
+        ));
+        // The spotlight group prefers the font the song already uses.
+        assert!(picks.fonts.iter().all(|s| matches!(
+            s,
+            QuickSound::Font(f) if f.name == "GeneralUser"
+        )));
+    }
+
+    #[test]
+    fn font_rows_group_all_programs_and_filter_by_search() {
+        let all = font_rows("");
+        assert_eq!(all.len(), 16, "16 family groups");
+        assert_eq!(all.iter().map(|(_, p)| p.len()).sum::<usize>(), 128);
+        assert_eq!(all[0].0, "Piano");
+        assert_eq!(all[0].1[0], (0, "Acoustic Grand Piano"));
+        assert_eq!(all[15].1[7], (127, "Gunshot"));
+        // Search hits program names (both trumpets live in the Brass family)…
+        let trumpet = font_rows("trumpet");
+        assert_eq!(trumpet.len(), 1);
+        assert_eq!(trumpet[0].0, "Brass");
+        assert_eq!(trumpet[0].1, [(56, "Trumpet"), (59, "Muted Trumpet")]);
+        // …and family names (the whole family stays together).
+        let piano = font_rows("piano");
+        assert_eq!(piano.len(), 1);
+        assert_eq!(piano[0].1.len(), 8);
+        // "soundfont" matches the whole catalog, for discoverability.
+        assert_eq!(font_rows("soundfont").len(), 16);
+        assert!(font_rows("definitely nothing").is_empty());
     }
 }
