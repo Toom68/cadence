@@ -3,10 +3,16 @@
 //! Instrument packs are pure JSON documents (`schema_version` 1) describing
 //! synthesis presets: oscillators, optional oscillator/pitch/filter/LFO motion,
 //! a resonant low-pass filter, an ADSR-style envelope, bit depth,
-//! sample-and-hold and output gain. Packs contain no executable code and no audio
-//! samples, so adding new sounds never requires a Rust change or a rebuild: drop
-//! a `.json` pack into the user pack directory (or ship one under `packs/`) and
-//! the app picks it up on *Reload Packs*.
+//! sample-and-hold and output gain. Packs contain no executable code, so
+//! adding new sounds never requires a Rust change or a rebuild: drop a
+//! `.json` pack into the user pack directory (or ship one under `packs/`)
+//! and the app picks it up on *Reload Packs*.
+//!
+//! A preset may also carry an embedded PCM clip (`sample`, see
+//! [`SampleSpec`]): mono 16-bit PCM base64-encoded inside the preset JSON
+//! (≤ [`MAX_SAMPLE_BYTES`] decoded). Embedding keeps songs and packs fully
+//! portable — no file paths, nothing to install — which is why a clip
+//! travels *inside* the preset rather than by reference.
 //!
 //! # Pipeline
 //!
@@ -83,6 +89,20 @@ pub const MAX_KIT_PIECES: usize = 32;
 
 /// Maximum kit piece display-name length in characters.
 pub const MAX_KIT_NAME_LEN: usize = 64;
+
+/// Maximum *decoded* sample payload in bytes for a preset `sample` block.
+/// The clip is stored as base64 little-endian 16-bit mono PCM inside the
+/// preset JSON, so 2 MiB of decoded data is ~2.8 MB of JSON text —
+/// deliberately sized so one max-length clip still fits a `.cadence` song
+/// (20 MB cap) but a maxed-out *pack* file will hit the honest
+/// [`MAX_PACK_BYTES`] limit instead. ≈ 24 s at 44.1 kHz.
+pub const MAX_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Lowest sample rate a `sample` clip may declare, in Hz.
+pub const MIN_SAMPLE_RATE: u32 = 8_000;
+
+/// Highest sample rate a `sample` clip may declare, in Hz.
+pub const MAX_SAMPLE_RATE: u32 = 192_000;
 
 /// Environment variable overriding the user pack directory directly.
 /// Intended for tests, portable installs and diagnostics.
@@ -234,10 +254,277 @@ impl Default for LfoSpec {
     }
 }
 
+/// An embedded mono PCM clip a preset (or kit piece) plays instead of
+/// oscillators: 16-bit little-endian samples, base64-encoded straight into
+/// the preset JSON. Embedding — rather than referencing a file path — was
+/// chosen so songs and packs stay fully self-contained and portable (the
+/// same reason presets are copied into tracks): there is nothing to install,
+/// relocate or break when a song moves between machines. The honesty cost
+/// is size: decoded payload is capped at [`MAX_SAMPLE_BYTES`] (≈ 2 MiB, so
+/// ~24 s of 44.1 kHz mono), enforced by [`validate_sample`] on the decoded
+/// length, not the encoded length.
+///
+/// Valid ranges: `data_base64` is strict base64 of whole little-endian i16
+/// frames (ASCII whitespace is ignored when decoding so pack authors may
+/// line-wrap it), `sample_rate` [`MIN_SAMPLE_RATE`]..=[`MAX_SAMPLE_RATE`]
+/// Hz, `root_pitch` 0..=127 (the MIDI note that plays the clip un-resampled;
+/// playback pitch is `2^((note - root)/12)`), `loop` false/true (one-shot
+/// vs looped-while-held). All fields serde-default to a 44.1 kHz clip with
+/// no data, so `{"sample": {"data_base64": "…"}}` is a complete spec.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SampleSpec {
+    /// Base64 of little-endian signed-16-bit mono PCM frames.
+    pub data_base64: String,
+    /// Clip sample rate in Hz.
+    #[serde(default = "default_sample_rate")]
+    pub sample_rate: u32,
+    /// MIDI note that plays the clip at unity speed.
+    #[serde(default = "default_root_pitch")]
+    pub root_pitch: u8,
+    /// Loop the clip while the note is held instead of playing once.
+    #[serde(rename = "loop")]
+    pub looped: bool,
+}
+
+fn default_sample_rate() -> u32 {
+    44_100
+}
+
+fn default_root_pitch() -> u8 {
+    60
+}
+
+impl SampleSpec {
+    /// Builds a spec from mono f32 frames (quantized to i16 little-endian).
+    /// The frames are stored verbatim — callers wanting the size cap should
+    /// truncate themselves ([`SampleSpec::from_wav`] does) or let
+    /// [`validate_sample`] report the overflow.
+    pub fn from_frames(frames: &[f32], sample_rate: u32, root_pitch: u8, looped: bool) -> Self {
+        let mut bytes = Vec::with_capacity(frames.len() * 2);
+        for &s in frames {
+            let q = (s.clamp(-1.0, 1.0) * 32768.0)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16;
+            bytes.extend_from_slice(&q.to_le_bytes());
+        }
+        SampleSpec {
+            data_base64: base64_encode(&bytes),
+            sample_rate,
+            root_pitch,
+            looped,
+        }
+    }
+
+    /// Decodes the clip into mono f32 frames in roughly [-1, 1]. The
+    /// [`MAX_SAMPLE_BYTES`] cap is enforced on the decoded size, so an
+    /// oversized spec fails here and in validation identically.
+    pub fn decode(&self) -> Result<Vec<f32>, String> {
+        let bytes = base64_decode(&self.data_base64)?;
+        if bytes.len() % 2 != 0 {
+            return Err("payload is not whole 16-bit frames".to_string());
+        }
+        if bytes.len() > MAX_SAMPLE_BYTES {
+            return Err(format!(
+                "decoded sample is too large ({:.1} MB, max {:.1} MB)",
+                bytes.len() as f64 / (1024.0 * 1024.0),
+                MAX_SAMPLE_BYTES as f64 / (1024.0 * 1024.0)
+            ));
+        }
+        Ok(bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
+            .collect())
+    }
+
+    /// Stable content key for the clip: FNV-1a over the `data_base64` text
+    /// (identical specs share one registered audio buffer). 0 means "no
+    /// clip"; the audio thread treats a missing buffer as silent fallback.
+    pub fn key(&self) -> u64 {
+        if self.data_base64.is_empty() {
+            return 0;
+        }
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for &b in self.data_base64.as_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h.max(1)
+    }
+
+    /// Decodes a `.wav` file into a mono [`SampleSpec`]: channels are mixed
+    /// down by averaging, integer PCM is normalized by its bit depth (with
+    /// the RIFF unsigned correction for ≤ 8-bit data, which `hound` reports
+    /// as signed), float data is clamped, and the result is truncated at
+    /// [`MAX_SAMPLE_BYTES`] worth of frames so the spec always fits the
+    /// embedding cap. `root_pitch` sets the note the clip plays un-resampled
+    /// (typically 60). Returns the spec plus whether the clip had to be
+    /// truncated to fit.
+    pub fn from_wav(path: &Path, root_pitch: u8) -> Result<(Self, bool), String> {
+        let shown = path.display();
+        let mut reader =
+            hound::WavReader::open(path).map_err(|err| format!("Could not open {shown}: {err}"))?;
+        let spec = reader.spec();
+        let channels = spec.channels as usize;
+        if channels == 0 {
+            return Err(format!("{shown} has no audio channels."));
+        }
+        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate) {
+            return Err(format!(
+                "{shown} has a {rate} Hz sample rate; clips must be {MIN_SAMPLE_RATE}–{MAX_SAMPLE_RATE} Hz.",
+                rate = spec.sample_rate
+            ));
+        }
+        let max_frames = MAX_SAMPLE_BYTES / 2; // one i16 per frame
+        let mut frames: Vec<f32> = Vec::new();
+        let truncated = match spec.sample_format {
+            hound::SampleFormat::Float => {
+                read_wav_frames(&mut reader, channels, |s: f32| s, &mut frames, max_frames)
+            }
+            hound::SampleFormat::Int => {
+                if !(8..=32).contains(&spec.bits_per_sample) {
+                    return Err(format!(
+                        "{shown} has an unsupported bit depth of {}.",
+                        spec.bits_per_sample
+                    ));
+                }
+                let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
+                // RIFF stores ≤ 8-bit PCM unsigned, but hound reads it as
+                // signed — re-offset so real 8-bit files decode correctly.
+                let unsigned = spec.bits_per_sample <= 8;
+                read_wav_frames(
+                    &mut reader,
+                    channels,
+                    |s: i32| {
+                        let v = if unsigned { (s & 0xFF) - 128 } else { s };
+                        v as f32 * scale
+                    },
+                    &mut frames,
+                    max_frames,
+                )
+            }
+        }
+        .map_err(|err| format!("Could not read {shown}: {err}"))?;
+        if frames.is_empty() {
+            return Err(format!("{shown} contains no audio."));
+        }
+        Ok((
+            SampleSpec::from_frames(&frames, spec.sample_rate, root_pitch, false),
+            truncated,
+        ))
+    }
+}
+
+/// Mono-mixes a `hound` sample stream into `frames`, stopping (and
+/// reporting truncation) once `max_frames` is reached so pathological files
+/// cannot make the import run unbounded. `to_f32` maps one raw sample to
+/// roughly [-1, 1].
+fn read_wav_frames<S: hound::Sample>(
+    reader: &mut hound::WavReader<impl std::io::Read>,
+    channels: usize,
+    mut to_f32: impl FnMut(S) -> f32,
+    frames: &mut Vec<f32>,
+    max_frames: usize,
+) -> Result<bool, String> {
+    let mut acc = 0.0f32;
+    let mut chan = 0usize;
+    for sample in reader.samples::<S>() {
+        let s = sample.map_err(|err| format!("bad audio data: {err}"))?;
+        acc += to_f32(s).clamp(-1.5, 1.5);
+        chan += 1;
+        if chan == channels {
+            frames.push((acc / channels as f32).clamp(-1.0, 1.0));
+            acc = 0.0;
+            chan = 0;
+            if frames.len() >= max_frames {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Standard-alphabet base64 (RFC 4648, with `=` padding). Kept in-crate so
+/// the feature adds no dependency.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len() / 3 * 4 + 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Standard-alphabet base64 decode. ASCII whitespace is ignored (pack
+/// authors may line-wrap long clips); anything else non-alphabet, `=`
+/// padding out of place or a dangling partial quantum is an error.
+fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    fn value(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some(u32::from(b - b'A')),
+            b'a'..=b'z' => Some(u32::from(b - b'a' + 26)),
+            b'0'..=b'9' => Some(u32::from(b - b'0' + 52)),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3 + 3);
+    let mut acc = 0u32;
+    let mut nbits = 0u32;
+    let mut padding = 0u32;
+    for &b in text.as_bytes() {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'=' {
+            padding += 1;
+            if padding > 2 {
+                return Err("too much '=' padding".to_string());
+            }
+            continue;
+        }
+        if padding > 0 {
+            return Err("data found after '=' padding".to_string());
+        }
+        let Some(v) = value(b) else {
+            return Err(format!("invalid character {:?}", b as char));
+        };
+        acc = (acc << 6) | v;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((acc >> nbits) as u8);
+        }
+    }
+    // A length-1 mod 4 quantum (6 leftover bits) can never be whole bytes.
+    if nbits >= 6 {
+        return Err("truncated base64 data".to_string());
+    }
+    Ok(out)
+}
+
 /// A data-driven instrument preset that can be embedded in a project or loaded
 /// from a pack. Only `id`, `name` and a non-empty `oscillators` list are
 /// required in JSON; everything else has a sane default. The oscillator
-/// requirement is waived when `kit` is present (see [`KitSpec`]).
+/// requirement is waived when `kit` (see [`KitSpec`]) or `sample` (see
+/// [`SampleSpec`]) is present.
 ///
 /// `id` must be namespaced and slug-safe, e.g. `eight-bit.pulse-lead`
 /// (lowercase `a-z`, `0-9`, `-`, `_`, `.`, must contain a `.`).
@@ -302,6 +589,15 @@ pub struct InstrumentPreset {
     /// `instrument` stays an editor choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kit: Option<KitSpec>,
+    /// Optional embedded PCM clip ([`SampleSpec`]): when present the preset
+    /// plays the sample — resampled around its `root_pitch` through the same
+    /// envelope/filter/gain path as a melodic preset — instead of the
+    /// oscillator list, which then stays range-validated but inert (exactly
+    /// like a kit preset's top-level fields). When `kit` is also present the
+    /// kit still wins: this field is inert metadata at preset level and each
+    /// *piece* voice may carry its own `sample`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SampleSpec>,
 }
 
 fn default_filter_cutoff() -> f32 {
@@ -362,6 +658,11 @@ pub struct KitVoice {
     pub sample_hold: u32,
     #[serde(default = "default_gain")]
     pub gain: f32,
+    /// Optional embedded PCM clip ([`SampleSpec`]): a piece may be a sample
+    /// instead of oscillators (the `oscillators` requirement is waived while
+    /// `sample` is present).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SampleSpec>,
 }
 
 impl Default for KitVoice {
@@ -378,6 +679,7 @@ impl Default for KitVoice {
             bit_depth: default_bit_depth(),
             sample_hold: default_sample_hold(),
             gain: default_gain(),
+            sample: None,
         }
     }
 }
@@ -387,8 +689,8 @@ impl KitVoice {
     /// audio conversion reuse the melodic preset paths unchanged. The stub's
     /// id/name/audition fields are placeholders that always pass validation;
     /// only the synthesis fields are meaningful. `kit` is `None` so the stub
-    /// validates exactly like a melodic preset (one or more oscillators
-    /// required).
+    /// validates exactly like a melodic preset (oscillators required, unless
+    /// `sample` is present).
     pub fn to_preset_stub(&self) -> InstrumentPreset {
         InstrumentPreset {
             id: "kit.stub".to_string(),
@@ -408,6 +710,7 @@ impl KitVoice {
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
+            sample: self.sample.clone(),
         }
     }
 }
@@ -510,10 +813,11 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
     )?;
     let osc_base = format!("{}oscillators", prefix(base));
     // A kit preset may leave the melodic oscillator list empty: its voices live
-    // under `kit.pieces`. Any oscillators that ARE present are still validated.
-    if p.oscillators.is_empty() && p.kit.is_none() {
+    // under `kit.pieces`. A sample preset may too: the clip is its source.
+    // Any oscillators that ARE present are still validated.
+    if p.oscillators.is_empty() && p.kit.is_none() && p.sample.is_none() {
         return Err(format!(
-            "{osc_base}: a preset needs at least one oscillator"
+            "{osc_base}: a preset needs at least one oscillator, a kit or a sample"
         ));
     }
     if p.oscillators.len() > MAX_OSCILLATORS {
@@ -606,9 +910,44 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         0.1,
         8.0,
     )?;
+    if let Some(sample) = &p.sample {
+        validate_sample(sample, &field(base, "sample"))?;
+    }
     if let Some(kit) = &p.kit {
         validate_kit(kit, &field(base, "kit"))?;
     }
+    Ok(())
+}
+
+/// Validates a [`SampleSpec`]: the payload must decode (strict base64 of
+/// whole i16 frames, [`MAX_SAMPLE_BYTES`] decoded cap enforced inside
+/// [`SampleSpec::decode`]), be non-empty, and the rate/root must be in
+/// range. Called for preset-level clips and — through
+/// [`KitVoice::to_preset_stub`] — for kit piece clips, so errors carry the
+/// full `kit.pieces[i].voice.sample.*` path.
+fn validate_sample(s: &SampleSpec, base: &str) -> Result<(), String> {
+    let data_base = field(base, "data_base64");
+    if s.data_base64.is_empty() {
+        return Err(format!("{data_base}: a sample needs audio data"));
+    }
+    let frames = s.decode().map_err(|err| format!("{data_base}: {err}"))?;
+    if frames.is_empty() {
+        return Err(format!("{data_base}: a sample needs at least one frame"));
+    }
+    check_range_u64(
+        &field(base, "sample_rate"),
+        u64::from(s.sample_rate),
+        u64::from(MIN_SAMPLE_RATE),
+        u64::from(MAX_SAMPLE_RATE),
+        "sample rate",
+    )?;
+    check_range_int(
+        &field(base, "root_pitch"),
+        s.root_pitch,
+        0,
+        127,
+        "root pitch",
+    )?;
     Ok(())
 }
 
@@ -940,6 +1279,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
+            sample: None,
         }],
     };
     validate_pack(&pack)?;
@@ -1125,7 +1465,10 @@ fn too_large_message(bytes: u64) -> String {
     )
 }
 
-fn slugify(text: &str) -> String {
+/// Turns arbitrary text into a slug-safe fragment (`[a-z0-9-]` runs); used
+/// for preset ids and sample-import instrument names. Crate-visible so the
+/// GUI's sample importer can name presets consistently.
+pub(crate) fn slugify(text: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
     for c in text.chars().flat_map(|c| c.to_lowercase()) {
@@ -1304,6 +1647,7 @@ mod tests {
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
+            sample: None,
         }
     }
 
@@ -1393,6 +1737,7 @@ mod tests {
                     },
                 ],
             }),
+            sample: None,
         }
     }
 
@@ -2323,5 +2668,312 @@ mod tests {
         pack.instruments[0] = kit_preset();
         let text = pack_to_json(&pack).unwrap();
         assert_eq!(parse_pack(&text).unwrap(), pack);
+    }
+
+    // ------------------------------------------------------------------
+    // Embedded samples
+    // ------------------------------------------------------------------
+
+    /// A 100 ms 220 Hz sine clip at 22.05 kHz, root 60 — small enough to
+    /// embed anywhere, loud enough to test with.
+    fn sample_spec() -> SampleSpec {
+        let rate = 22_050u32;
+        let frames: Vec<f32> = (0..rate as usize / 10)
+            .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / rate as f32).sin() * 0.8)
+            .collect();
+        SampleSpec::from_frames(&frames, rate, 60, false)
+    }
+
+    fn sample_preset() -> InstrumentPreset {
+        InstrumentPreset {
+            id: "test.sample".to_string(),
+            name: "Sample".to_string(),
+            sample: Some(sample_spec()),
+            ..valid_preset()
+        }
+    }
+
+    #[test]
+    fn sample_spec_round_trips_and_decodes() {
+        let spec = sample_spec();
+        assert_eq!(spec.sample_rate, 22_050);
+        assert_eq!(spec.root_pitch, 60);
+        assert!(!spec.looped);
+        let frames = spec.decode().unwrap();
+        assert_eq!(frames.len(), 2_205);
+        // The i16 round trip preserves the signal within a quantization step.
+        // 220 Hz at 22.05 kHz: ~100.2 frames per cycle, so the first peak
+        // (0.8) lands at frame 25, a quarter period in.
+        assert!((frames[25] - 0.8).abs() < 0.001, "{}", frames[25]);
+        assert!(frames.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        // Keys are stable, content-addressed and never 0 for real data.
+        assert_eq!(spec.key(), spec.key());
+        assert_ne!(spec.key(), 0);
+        assert_eq!(SampleSpec::default().key(), 0);
+    }
+
+    #[test]
+    fn sample_base64_strictness_and_whitespace() {
+        let spec = sample_spec();
+        // Line-wrapped data still decodes to the same clip.
+        let wrapped: String = spec
+            .data_base64
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if i % 76 == 0 && i > 0 {
+                    format!("\n{c}")
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect();
+        let mut spaced = spec.clone();
+        spaced.data_base64 = wrapped;
+        assert_eq!(spaced.decode().unwrap(), spec.decode().unwrap());
+        // Garbage, mid-stream padding, excess padding and truncated quanta
+        // are all loud failures.
+        for bad in ["!!!", "AAAA=BB", "A", "=====", "AA==B"] {
+            let mut s = spec.clone();
+            s.data_base64 = bad.to_string();
+            assert!(s.decode().is_err(), "{bad:?} should not decode");
+        }
+        // Short-but-legal payloads decode: "AAA" is one i16 frame, "=" none.
+        let mut s = spec.clone();
+        s.data_base64 = "AAA".to_string();
+        assert_eq!(s.decode().unwrap().len(), 1);
+        s.data_base64 = "=".to_string();
+        assert!(s.decode().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sample_preset_validates_and_serde_roundtrips() {
+        let p = sample_preset();
+        assert!(p.sample.is_some());
+        assert!(validate_preset(&p).is_ok());
+        // A sample waives the oscillator requirement entirely.
+        let mut bare = p.clone();
+        bare.oscillators.clear();
+        assert!(validate_preset(&bare).is_ok());
+        // With neither oscillators, kit nor sample the preset is still rejected.
+        let mut nothing = bare.clone();
+        nothing.sample = None;
+        nothing.kit = None;
+        assert!(validate_preset(&nothing)
+            .unwrap_err()
+            .contains("oscillators"));
+        // JSON shape: `"sample"` block, `"loop"` key, skipped when absent.
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(json.contains("\"sample\""), "{json}");
+        assert!(json.contains("\"loop\":false"), "{json}");
+        assert!(json.contains("\"root_pitch\":60"), "{json}");
+        let back: InstrumentPreset = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, bare);
+        let plain = serde_json::to_string(&valid_preset()).unwrap();
+        assert!(!plain.contains("\"sample\""), "{plain}");
+        // Inside a pack the whole thing round-trips through pack_to_json.
+        let mut pack = valid_pack();
+        pack.instruments[0] = p;
+        assert_eq!(parse_pack(&pack_to_json(&pack).unwrap()).unwrap(), pack);
+    }
+
+    #[test]
+    fn sample_json_minimal_and_full_shape() {
+        // Only data_base64 + sample_rate are needed; the rest defaults.
+        let json = format!(
+            r#"{{"id":"s.t","name":"S","sample":{{"data_base64":"{}","sample_rate":22050}}}}"#,
+            sample_spec().data_base64
+        );
+        let p: InstrumentPreset = serde_json::from_str(&json).unwrap();
+        let s = p.sample.as_ref().unwrap();
+        assert_eq!(s.root_pitch, 60);
+        assert!(!s.looped);
+        assert!(validate_preset(&p).is_ok());
+        // A looped clip parses too.
+        let json = r#"{"id":"s.t","name":"S","sample":{"data_base64":"AAAA","sample_rate":8000,"root_pitch":24,"loop":true}}"#
+            .to_string();
+        let p: InstrumentPreset = serde_json::from_str(&json).unwrap();
+        let s = p.sample.as_ref().unwrap();
+        assert!(s.looped && s.root_pitch == 24 && s.sample_rate == 8000);
+    }
+
+    #[test]
+    fn sample_validation_rules_report_paths() {
+        // Missing data.
+        let mut p = sample_preset();
+        p.sample.as_mut().unwrap().data_base64 = String::new();
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("sample.data_base64"));
+        // Undecodable data.
+        let mut p = sample_preset();
+        p.sample.as_mut().unwrap().data_base64 = "%%%".to_string();
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("sample.data_base64"));
+        // Odd byte count → not whole i16 frames ("AAA=" decodes to 2 bytes,
+        // but 3 bytes would be odd; craft an odd payload directly).
+        let mut p = sample_preset();
+        p.sample.as_mut().unwrap().data_base64 = base64_encode(&[1, 2, 3]);
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("sample.data_base64"), "{err}");
+        // Decoded size cap: one frame past the limit is rejected.
+        let mut p = sample_preset();
+        p.sample.as_mut().unwrap().data_base64 = base64_encode(&vec![0u8; MAX_SAMPLE_BYTES + 2]);
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("sample.data_base64"), "{err}");
+        assert!(err.contains("too large"), "{err}");
+        // Rate range.
+        for rate in [0, MIN_SAMPLE_RATE - 1, MAX_SAMPLE_RATE + 1] {
+            let mut p = sample_preset();
+            p.sample.as_mut().unwrap().sample_rate = rate;
+            let err = validate_preset(&p).unwrap_err();
+            assert!(err.contains("sample.sample_rate"), "{rate}: {err}");
+        }
+        // Root pitch is MIDI-bounded.
+        let mut p = sample_preset();
+        p.sample.as_mut().unwrap().root_pitch = 200;
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("sample.root_pitch"));
+    }
+
+    #[test]
+    fn sample_and_kit_piece_samples_validate_together() {
+        // Both kit and sample present: kit wins at preset level, the sample
+        // is still validated (rate out of range must surface).
+        let mut p = kit_preset();
+        p.sample = Some(SampleSpec {
+            sample_rate: 4, // out of range
+            ..sample_spec()
+        });
+        assert!(validate_preset(&p)
+            .unwrap_err()
+            .contains("sample.sample_rate"));
+        // A kit piece voice may be a bare sample — no oscillators at all.
+        let mut kit = kit_preset();
+        let voice = &mut kit.kit.as_mut().unwrap().pieces[0].voice;
+        voice.oscillators.clear();
+        voice.sample = Some(sample_spec());
+        assert!(validate_preset(&kit).is_ok());
+        // …and the error path names the piece.
+        let voice = &mut kit.kit.as_mut().unwrap().pieces[0].voice;
+        voice.sample.as_mut().unwrap().root_pitch = 200;
+        let err = validate_preset(&kit).unwrap_err();
+        assert!(
+            err.contains("kit.pieces[0].voice.sample.root_pitch"),
+            "{err}"
+        );
+        // Kit piece unknown fields inside `sample` are still strict.
+        let err = parse_pack(
+            r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","kit":{"pieces":[{"name":"K","pitch":36,"voice":{"sample":{"data_base64":"AAAA","sample_rate":44100,"bogus":1}}}]}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown field `bogus`"), "{err}");
+    }
+
+    #[test]
+    fn sample_unknown_field_and_empty_stub_rejected() {
+        let err = parse_pack(
+            r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","oscillators":[{}],"sample":{"data_base64":"AAAA","sample_rate":44100,"bogus":1}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown field `bogus`"), "{err}");
+        // An empty `sample` object is a loud validation error, not silence.
+        let err = parse_pack(
+            r#"{"id":"a","name":"P","instruments":[{"id":"a.b","name":"B","oscillators":[{}],"sample":{}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("sample"), "{err}");
+    }
+
+    #[test]
+    fn sample_from_wav_decodes_mixes_and_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        // 16-bit stereo: right = -left, mid = 0 → mono mix is silent DC-free.
+        let path = dir.path().join("stereo.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..512i32 {
+                w.write_sample((i % 200 - 100) as i16 * 200).unwrap();
+                w.write_sample(-((i % 200 - 100) as i16) * 200).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let (spec, truncated) = SampleSpec::from_wav(&path, 60).unwrap();
+        assert!(!truncated);
+        assert_eq!(spec.sample_rate, 44_100);
+        let frames = spec.decode().unwrap();
+        assert_eq!(frames.len(), 512);
+        assert!(
+            frames.iter().all(|s| s.abs() < 1e-4),
+            "L+R should mix to ~0"
+        );
+
+        // 32-bit float mono passes through clamped.
+        let path = dir.path().join("mono.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..256 {
+                w.write_sample(((i % 32) as f32 / 16.0) - 1.0).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let (spec, _) = SampleSpec::from_wav(&path, 48).unwrap();
+        assert_eq!(spec.root_pitch, 48);
+        let frames = spec.decode().unwrap();
+        assert_eq!(frames.len(), 256);
+        assert!((frames[31] - 0.9375).abs() < 0.01, "{}", frames[31]);
+
+        // A clip longer than the cap is truncated, flagged, and still valid.
+        let path = dir.path().join("long.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            let over_cap_frames = MAX_SAMPLE_BYTES / 2 + 512;
+            for i in 0..over_cap_frames {
+                w.write_sample((i % 128) as i16 * 100).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let (spec, truncated) = SampleSpec::from_wav(&path, 60).unwrap();
+        assert!(truncated);
+        assert_eq!(spec.decode().unwrap().len(), MAX_SAMPLE_BYTES / 2);
+
+        // Not a wav, and a rate outside the allowed band.
+        let bogus = dir.path().join("bogus.wav");
+        fs::write(&bogus, b"not a wav").unwrap();
+        assert!(SampleSpec::from_wav(&bogus, 60).is_err());
+        let weird = dir.path().join("weird.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 400_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::create(&weird, spec).unwrap();
+            w.write_sample(0i16).unwrap();
+            w.finalize().unwrap();
+        }
+        let err = SampleSpec::from_wav(&weird, 60).unwrap_err();
+        assert!(err.contains("400000"), "{err}");
     }
 }

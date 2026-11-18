@@ -1,7 +1,9 @@
 # Instrument packs
 
-Data-driven synthesis presets in pure JSON. No code, no samples, no rebuild:
-install a pack and the app picks it up on **Reload Packs**.
+Data-driven synthesis presets in pure JSON. No code, no rebuild — and sounds
+travel with the song: oscillators, drum kits and (optionally) small embedded
+PCM clips are all JSON fields. Install a pack and the app picks it up on
+**Reload Packs**.
 
 ## Make a pack
 
@@ -67,6 +69,39 @@ usual defaults, but `oscillators` needs 1-4 entries).
   does not apply to kits — pieces are one-shot polyphonic voices.
 - Pair kit presets with the drum editor in the app so notes land on the
   step grid like the built-in kit.
+
+## Samples
+
+A preset can also carry an embedded audio clip — a `sample` block with
+base64-encoded PCM instead of (or beside) oscillators:
+
+```json
+{ "id": "my-pack.piano-note", "name": "Piano Note",
+  "sample": { "data_base64": "AAAA...", "sample_rate": 44100,
+              "root_pitch": 60, "loop": false } }
+```
+
+- `data_base64` is mono PCM: little-endian signed 16-bit frames at
+  `sample_rate`. Embedded, not referenced — a song or pack stays fully
+  self-contained, so it plays on any machine without the source file.
+- Decoded size is capped at 2 MiB (about 24 s of mono 44.1 kHz audio) and
+  must hold a whole number of 16-bit frames; `sample_rate` 8000–192000;
+  `root_pitch` 0–127 (default 60 = the note that plays at unity speed).
+  `loop` (default false) loops the clip while the note is held; a one-shot
+  ends when the clip does.
+- Playback transposes by `2^((note - root_pitch)/12)` with linear
+  interpolation, then runs the usual preset envelope/filter/bitcrush/gain
+  tail, so those fields still shape the clip.
+- A `sample` preset may omit `oscillators` entirely; any listed oscillators
+  are still range-validated but inert. A kit piece `voice` can carry a clip
+  the same way (sampled drum hits). When a preset has both `kit` and
+  `sample`, the kit wins at preset level.
+- The GUI's **File → Import Sample…** does this for you: pick a `.wav`,
+  and it mono-mixes, caps at 2 MiB, stores the source rate and embeds the
+  clip as a `sample.<name>` preset on the selected track (or a new one).
+- Embedded clips count toward the 2 MB pack-file limit, so a pack with
+  several clips can hit the cap quickly — prefer song-embedded presets
+  (via the import) for large audio.
 
 ## Rules that bite
 

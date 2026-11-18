@@ -2,16 +2,23 @@
 //! instrument or a data-driven pack preset; starting, releasing and rendering a voice never
 //! allocates.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use super::dsp::{
     advance, flush, poly_blep, saw, sine, soft_clip, square, t60_coef, time_coef, OnePole, Rng,
     Svf, SvfCoefs,
 };
 use crate::model::{map_drum_pitch, pitch_hz, Instrument};
-use crate::packs::{InstrumentPreset, LfoWaveform, Waveform, MAX_KIT_PIECES};
+use crate::packs::{InstrumentPreset, LfoWaveform, SampleSpec, Waveform, MAX_KIT_PIECES};
 
 pub const MAX_PRESET_OSCILLATORS: usize = 4;
 /// Lowest pitch the plucked-string model tunes to; lower notes are folded up an octave.
 const PLUCK_MIN_HZ: f32 = 30.0;
+/// The mono lead's fixed legato slide: the `glide` time constant armed at
+/// note start so [`Voice::legato`] bends to the new pitch instead of
+/// snapping. Per-track glides pass their own time to `legato` directly.
+pub const LEAD_GLIDE_SECONDS: f32 = 0.045;
 /// Filter coefficients for modulated filters are refreshed at this sample interval.
 const CONTROL_INTERVAL: u32 = 16;
 
@@ -52,6 +59,17 @@ pub struct PresetParams {
     pub hold: u32,
     pub gain: f32,
     pub mono: bool,
+    /// Content key into [`SAMPLE_BANK`] for the preset's embedded clip
+    /// (`sample` block); [`NO_SAMPLE_KEY`] = no clip, so the voice runs the
+    /// ordinary oscillator path. Only the key travels on a note-on — the
+    /// frames stay shared in the bank.
+    pub sample_key: u64,
+    /// The clip's declared sample rate in Hz (0 when there is no clip).
+    pub sample_rate: f32,
+    /// MIDI note that plays the clip at unity speed (0..=127).
+    pub sample_root: u8,
+    /// Loop the clip while the note is held; false = one-shot.
+    pub sample_loop: bool,
 }
 
 fn finite(v: f32, fallback: f32) -> f32 {
@@ -92,6 +110,10 @@ impl PresetParams {
         hold: 1,
         gain: 0.9,
         mono: false,
+        sample_key: NO_SAMPLE_KEY,
+        sample_rate: 0.0,
+        sample_root: 60,
+        sample_loop: false,
     };
 
     /// Converts a preset, clamping every value into its documented range so that even an
@@ -165,6 +187,20 @@ impl PresetParams {
             hold: p.sample_hold.clamp(1, 64),
             gain: finite(p.gain, 0.9).clamp(0.0, 1.0),
             mono: p.monophonic,
+            // Register the clip off the audio thread (decoding allocates);
+            // a missing or undecodable clip quietly keeps the key at
+            // NO_SAMPLE_KEY so the voice plays its oscillator fallback.
+            sample_key: p.sample.as_ref().map_or(NO_SAMPLE_KEY, |spec| {
+                let key = spec.key();
+                if key != NO_SAMPLE_KEY && ensure_sample(key, spec) {
+                    key
+                } else {
+                    NO_SAMPLE_KEY
+                }
+            }),
+            sample_rate: p.sample.as_ref().map_or(0.0, |s| s.sample_rate as f32),
+            sample_root: p.sample.as_ref().map_or(60, |s| s.root_pitch.min(127)),
+            sample_loop: p.sample.as_ref().is_some_and(|s| s.looped),
         }
     }
 
@@ -256,8 +292,76 @@ pub struct FontKey {
     pub program: u8,
 }
 
+/// `PresetParams::sample_key` value meaning "no clip": the preset runs its
+/// ordinary oscillator path. Also the result when a clip fails to register —
+/// a hand-built key that misses the bank can never panic.
+pub const NO_SAMPLE_KEY: u64 = 0;
+
+/// Decoded clips shared by every audio voice. `Sound`/`PresetParams` stay
+/// `Copy` for the audio thread, so only a content-addressed key travels on a
+/// note-on; the frames live here, one `Arc<Vec<f32>>` per unique clip. This
+/// plays the same registry role the font bank does for `Sound::Font`, and is
+/// global for the same reason: the renderer owns no per-song sample state.
+///
+/// Append-only for the process lifetime: entries are never evicted, so a
+/// `PresetParams` that found its clip keeps working across song loads, and
+/// dropping a voice's `Arc` never frees the buffer on the audio thread.
+/// Bounded by [`MAX_SAMPLE_BANK_ENTRIES`].
+static SAMPLE_BANK: OnceLock<Mutex<HashMap<u64, Arc<Vec<f32>>>>> = OnceLock::new();
+
+/// Distinct clips the bank holds at most; past this, new registrations are
+/// dropped and those presets fall back to their oscillator path. Each clip is
+/// bounded by `packs::MAX_SAMPLE_BYTES` decoded.
+const MAX_SAMPLE_BANK_ENTRIES: usize = 512;
+
+fn bank() -> std::sync::MutexGuard<'static, HashMap<u64, Arc<Vec<f32>>>> {
+    SAMPLE_BANK
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The clip for `key`, or `None` when it isn't registered. This is the note-on
+/// lookup: a brief lock, a hash hit and an `Arc` refcount bump — no allocation.
+fn sample_clip(key: u64) -> Option<Arc<Vec<f32>>> {
+    if key == NO_SAMPLE_KEY {
+        return None;
+    }
+    bank().get(&key).cloned()
+}
+
+/// Registers `spec`'s decoded clip under `key` when absent — decodes only on a
+/// miss, so rebuilding a `Sound` graph for the same song is a `contains_key`.
+/// Called while `PresetParams` is built (GUI/export thread; allocation is
+/// allowed there). Returns whether the clip is usable; `false` means "run the
+/// oscillator path instead".
+fn ensure_sample(key: u64, spec: &SampleSpec) -> bool {
+    {
+        let bank = bank();
+        if bank.contains_key(&key) {
+            return true;
+        }
+        if bank.len() >= MAX_SAMPLE_BANK_ENTRIES {
+            return false;
+        }
+    }
+    let Ok(frames) = spec.decode() else {
+        return false;
+    };
+    if frames.is_empty() {
+        return false;
+    }
+    let mut bank = bank();
+    if bank.len() >= MAX_SAMPLE_BANK_ENTRIES && !bank.contains_key(&key) {
+        return false;
+    }
+    bank.insert(key, Arc::new(frames));
+    true
+}
+
 /// What a track sounds like: one of the six built-in algorithms, a pack
-/// preset, a pack drum kit, or a sampled SoundFont program.
+/// preset (oscillator or embedded-sample), a pack drum kit, or a sampled
+/// SoundFont program.
 // `Kit` is large (~5 KB of piece params) but must stay `Copy`: sounds are
 // duplicated into per-note `NoteStart`s and per-track `TrackParams` on the
 // audio thread, where allocation is forbidden. The copy is a flat memcpy.
@@ -265,6 +369,8 @@ pub struct FontKey {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sound {
     Builtin(Instrument),
+    /// A data-driven preset — oscillator synthesis, or PCM playback via
+    /// `PresetParams::sample_key` when the preset carries a `sample` clip.
     Preset(PresetParams),
     /// A data-driven drum kit ([`crate::packs::KitSpec`]): one-shot voices
     /// picked by pitch at note-on.
@@ -334,6 +440,9 @@ enum Kind {
     Pad,
     Lead,
     Preset,
+    /// Embedded-clip playback (a preset or kit piece `sample` block): reads
+    /// `sample_buf` with linear interpolation, then shares the preset DSP tail.
+    Sample,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,8 +586,8 @@ pub struct Voice {
     inv_sr: f32,
     gain: f32,
     vel: f32,
-    freq: f32,
-    target_freq: f32,
+    pub(crate) freq: f32,
+    pub(crate) target_freq: f32,
     glide: f32,
     gate: u64,
     t: u32,
@@ -503,6 +612,13 @@ pub struct Voice {
     hold_left: u32,
     hold_value: f32,
     noise_value: [f32; MAX_PRESET_OSCILLATORS],
+    /// Decoded clip for `Kind::Sample`, looked up from [`SAMPLE_BANK`] at
+    /// note-on (`None` → the voice plays nothing and ends).
+    sample_buf: Option<Arc<Vec<f32>>>,
+    /// Read position in clip frames (fractional; linear interp uses the rest).
+    sample_pos: f64,
+    /// Clip frames advanced per output Hz: `clip_rate / pitch_hz(root)`.
+    sample_ratio: f32,
     done: bool,
     ks: Vec<f32>,
     ks_len: usize,
@@ -581,6 +697,9 @@ impl Voice {
             hold_left: 0,
             hold_value: 0.0,
             noise_value: [0.0; MAX_PRESET_OSCILLATORS],
+            sample_buf: None,
+            sample_pos: 0.0,
+            sample_ratio: 0.0,
             done: false,
             ks: Vec::new(),
             ks_len: 2,
@@ -613,6 +732,7 @@ impl Voice {
         for (i, &(freq, q, _)) in GUITAR_BODY.iter().enumerate() {
             self.gtc[i] = SvfCoefs::new(freq, q, sample_rate);
         }
+        self.sample_buf = None;
         self.active = false;
     }
 
@@ -652,6 +772,9 @@ impl Voice {
         self.target_freq = self.freq;
         self.glide = 0.0;
         self.level = self.gain;
+        self.sample_buf = None;
+        self.sample_pos = 0.0;
+        self.sample_ratio = 0.0;
         match n.sound {
             Sound::Builtin(Instrument::Drums) => self.start_drum(),
             Sound::Builtin(Instrument::Piano) => {
@@ -681,7 +804,7 @@ impl Voice {
                 self.kind = Kind::Lead;
                 self.amp = Adsr::new(sr, 0.006, 0.15, 0.8, 0.045);
                 self.menv = Adsr::new(sr, 0.004, 0.18, 0.3, 0.1);
-                self.glide = time_coef(0.045, sr);
+                self.glide = time_coef(LEAD_GLIDE_SECONDS, sr);
             }
             Sound::Preset(p) => self.start_preset(p),
             // A kit piece is picked by pitch at note-on, then runs the exact
@@ -696,16 +819,39 @@ impl Voice {
     }
 
     /// Mono legato: change pitch without restarting the envelopes.
-    pub fn legato(&mut self, pitch: u8, velocity: f32, gate: u64, glide: bool) {
+    /// `glide_seconds` is the portamento time constant — the note bends
+    /// exponentially toward the new pitch (see [`Voice::set_glide`]);
+    /// 0 snaps to it immediately while staying legato (no re-attack).
+    pub fn legato(&mut self, pitch: u8, velocity: f32, gate: u64, glide_seconds: f32) {
         self.pitch = pitch;
         self.target_freq = pitch_hz(pitch as f32);
-        if !glide || self.glide == 0.0 {
+        self.set_glide(glide_seconds);
+        if self.glide == 0.0 {
             self.freq = self.target_freq;
         }
         self.vel = velocity.clamp(0.0, 1.0);
         self.gain = velocity_gain(self.vel);
         self.gate = gate;
         self.held = true;
+    }
+
+    /// Arms the per-sample pitch slew [`Voice::legato`] uses: `seconds` is the
+    /// exponential time constant in which a retargeted note closes ~63% of the
+    /// distance to its target — the same `time_coef` curve the mono lead uses
+    /// at [`LEAD_GLIDE_SECONDS`]. `0` (or a non-finite value) snaps the pitch
+    /// instead. Only the oscillator-driven melodic kinds can arm it: drums and
+    /// Karplus-Strong strings don't read `self.freq` for pitch (the string's
+    /// delay line holds its own tuning), so they retrigger rather than bend.
+    fn set_glide(&mut self, seconds: f32) {
+        let bends = matches!(
+            self.kind,
+            Kind::Piano | Kind::Bass | Kind::Pad | Kind::Lead | Kind::Preset | Kind::Sample
+        );
+        self.glide = if bends && seconds.is_finite() && seconds > 0.0 {
+            time_coef(seconds, self.sr)
+        } else {
+            0.0
+        };
     }
 
     /// Mono retrigger of a voice still ringing out: restart envelopes from the current level.
@@ -988,6 +1134,20 @@ impl Voice {
         }
         let rng = &mut self.rng;
         self.noise_value.iter_mut().for_each(|x| *x = rng.noise());
+        // An embedded clip (preset `sample` block, or a kit piece sample)
+        // upgrades the voice to the sampler kind; the clip's own rate and
+        // root pitch set the resample step so `self.freq` — the played note —
+        // yields `2^((pitch - root)/12)` times the declared rate. The
+        // oscillator path stays armed as the fallback for a bank miss.
+        if p.sample_key != NO_SAMPLE_KEY {
+            if let Some(clip) = sample_clip(p.sample_key) {
+                self.kind = Kind::Sample;
+                self.sample_buf = Some(clip);
+                self.sample_pos = 0.0;
+                let rate = finite(p.sample_rate, 44_100.0).clamp(4_000.0, 384_000.0);
+                self.sample_ratio = rate / pitch_hz(f32::from(p.sample_root.min(127))).max(1.0);
+            }
+        }
     }
 
     /// Adds this voice's output to `l`/`r`.
@@ -1000,6 +1160,14 @@ impl Voice {
                     self.gate -= 1;
                 }
             }
+            // Portamento slew: exponential approach to `target_freq`, shared
+            // by every kind that can arm `glide` (the mono lead's fixed
+            // constant, or a per-track glide time via `set_glide`). Pluck,
+            // guitar, drums and kits keep `glide == 0`, so this stays a
+            // no-op for them and `target_freq` never diverges from `freq`.
+            if self.glide != 0.0 {
+                self.freq = self.target_freq + (self.freq - self.target_freq) * self.glide;
+            }
             let (a, b) = match self.kind {
                 Kind::Drum => self.drum_sample(),
                 Kind::Piano => self.piano_sample(),
@@ -1009,6 +1177,7 @@ impl Voice {
                 Kind::Pad => self.pad_sample(),
                 Kind::Lead => self.lead_sample(),
                 Kind::Preset => self.preset_sample(),
+                Kind::Sample => self.sampler_sample(),
             };
             let mut g = 1.0;
             if self.fade_step > 0.0 {
@@ -1322,7 +1491,6 @@ impl Voice {
             self.done = true;
         }
         let m = self.menv.next();
-        self.freq = self.target_freq + (self.freq - self.target_freq) * self.glide;
         let ramp = (self.t as f32 / (0.35 * self.sr)).min(1.0);
         advance(&mut self.lfo, 5.4 * self.inv_sr);
         let f = self.freq * (1.0 + ramp * ramp * 0.0105 * sine(self.lfo));
@@ -1436,6 +1604,79 @@ impl Voice {
         }
         let y = self.f1.low(&self.fc, x) * p.gain * self.gain * 0.55;
         (y, y)
+    }
+
+    /// PCM clip playback for `sample` presets and kit pieces: the registered
+    /// buffer is read with linear interpolation at `2^((pitch - root)/12)`
+    /// times its declared rate — `self.freq` (the played note, with portamento
+    /// plus the preset's pitch envelope and LFO) times `sample_ratio` sets the
+    /// step — one-shot or looping while held, then shaped by the shared
+    /// amp/tremolo/bitcrush/hold/filter/gain tail. Bounded like every voice:
+    /// a one-shot ends when the clip does, a loop when the amp envelope ends.
+    fn sampler_sample(&mut self) -> (f32, f32) {
+        let a = self.amp.next();
+        if self.amp.is_off() {
+            self.done = true;
+        }
+        let p = self.preset;
+        let lfo = if p.uses_legacy_preset_path() {
+            // No modulation armed: keep the clip path as cheap as the legacy
+            // oscillator path (no LFO, no filter retuning, no envelope decay).
+            0.0
+        } else {
+            let lfo = self.next_preset_lfo(p);
+            if self.ctl == 0 {
+                let octaves = (self.filter_env + lfo * finite(p.lfo_filter, 0.0)).clamp(-8.0, 8.0);
+                let cutoff =
+                    (finite(p.cutoff, 20_000.0) * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
+                self.fc = SvfCoefs::new(cutoff, p.resonance_q(), self.sr);
+            }
+            self.ctl = (self.ctl + 1) % CONTROL_INTERVAL;
+            self.filter_env *= self.filter_env_coef;
+            lfo
+        };
+        self.pitch_env *= self.pitch_env_coef;
+        let pitch = (self.pitch_env + lfo * finite(p.lfo_pitch, 0.0)).clamp(-60.0, 60.0);
+        let freq = (self.freq * 2f32.powf(pitch / 12.0)).clamp(1.0, self.sr * 0.45);
+        // Frames of clip per output sample: played rate = freq * ratio Hz.
+        // +512× per output sample is far past any usable transposition.
+        let inc = (freq * self.sample_ratio * self.inv_sr).clamp(0.0, 512.0) as f64;
+
+        let raw = match self.sample_buf.as_ref() {
+            Some(buf) if !buf.is_empty() => {
+                let len = buf.len();
+                let pos = self.sample_pos;
+                let i = pos as usize;
+                let s0 = buf.get(i).copied().unwrap_or(0.0);
+                // At the loop seam the interp target wraps to the first
+                // frame so a seamless loop stays seamless.
+                let j = if p.sample_loop && i + 1 >= len {
+                    0
+                } else {
+                    i.saturating_add(1).min(len - 1)
+                };
+                let s1 = buf.get(j).copied().unwrap_or(0.0);
+                let v = s0 + (s1 - s0) * (pos - i as f64) as f32;
+                let next = pos + inc;
+                if p.sample_loop {
+                    self.sample_pos = next.rem_euclid(len as f64);
+                } else {
+                    self.sample_pos = next;
+                    if next >= len as f64 {
+                        // The one-shot has played through: let the tail apply
+                        // to this last frame, then free the voice.
+                        self.done = true;
+                    }
+                }
+                v
+            }
+            _ => {
+                self.done = true;
+                0.0
+            }
+        };
+        let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        self.finish_preset_sample(raw * a * trem.clamp(0.0, 1.0), p)
     }
 
     fn preset_osc_sample(&mut self, k: usize, o: OscParams, inc: f32, freq: f32) -> f32 {
@@ -1621,6 +1862,7 @@ mod tests {
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
+            sample: None,
         }
     }
 
@@ -1628,6 +1870,7 @@ mod tests {
     fn every_sound_is_finite_audible_and_ends() {
         let mut sounds: Vec<Sound> = Instrument::ALL.iter().map(|i| Sound::Builtin(*i)).collect();
         sounds.push(Sound::Preset(PresetParams::from_preset(&chip_preset())));
+        sounds.push(sample_sound(false));
         sounds.push(kit_sound());
         for sound in sounds {
             let pitches: Vec<u8> = if sound.is_drums() {
@@ -2344,5 +2587,146 @@ mod tests {
             v.render(&mut l, &mut r);
         }
         assert!(!v.active);
+    }
+
+    // ------------------------------------------------------------------
+    // Embedded sample clips
+    // ------------------------------------------------------------------
+
+    /// A clip-only preset: 0.25 s of 220 Hz sine at 22.05 kHz, root 60. The
+    /// sustain-forever envelope mirrors the GUI import so the clip itself is
+    /// the note's shape.
+    fn sample_preset(looped: bool) -> InstrumentPreset {
+        let rate = 22_050u32;
+        let frames: Vec<f32> = (0..rate as usize / 4)
+            .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / rate as f32).sin() * 0.8)
+            .collect();
+        InstrumentPreset {
+            id: "test.sample".into(),
+            name: "Sample".into(),
+            oscillators: Vec::new(),
+            envelope: Envelope {
+                attack: 0.002,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.05,
+            },
+            bit_depth: 24,
+            sample_hold: 1,
+            filter_cutoff: 20_000.0,
+            sample: Some(crate::packs::SampleSpec::from_frames(
+                &frames, rate, 60, looped,
+            )),
+            ..chip_preset()
+        }
+    }
+
+    fn sample_sound(looped: bool) -> Sound {
+        preset_sound(sample_preset(looped))
+    }
+
+    #[test]
+    fn sample_preset_params_and_bank_registration() {
+        let p = PresetParams::from_preset(&sample_preset(false));
+        assert_ne!(p.sample_key, NO_SAMPLE_KEY);
+        assert_eq!(p.sample_rate, 22_050.0);
+        assert_eq!(p.sample_root, 60);
+        assert!(!p.sample_loop);
+        // Rebuilding the params for the same clip is a bank hit, not a re-decode.
+        let before = bank().len();
+        let p2 = PresetParams::from_preset(&sample_preset(false));
+        assert_eq!(p2.sample_key, p.sample_key);
+        assert_eq!(bank().len(), before, "same clip registered twice");
+        // The clip itself is shared, decoded, bounded.
+        let clip = sample_clip(p.sample_key).unwrap();
+        assert_eq!(clip.len(), 22_050 / 4);
+        assert!(clip.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        // A preset without a clip stays key-less.
+        assert_eq!(
+            PresetParams::from_preset(&chip_preset()).sample_key,
+            NO_SAMPLE_KEY
+        );
+        // A hand-built key that misses the bank resolves to None, not a panic.
+        assert!(sample_clip(0xDEAD_BEEF).is_none());
+    }
+
+    #[test]
+    fn sample_voice_is_finite_audible_and_ends() {
+        let x = render(sample_sound(false), 60, 2.0, 1.5);
+        assert!(x.iter().all(|s| s.is_finite()), "sample not finite");
+        let peak = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.01, "sample silent (peak {peak})");
+        assert!(peak < 1.5, "sample too hot (peak {peak})");
+        // One-shot: the 0.25 s clip plus the short release leave silence well
+        // before the (still-held) note gate would have ended.
+        assert!(x[(1.0 * SR) as usize..].iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn sample_voice_transposes_by_semitone() {
+        // Root 60 at 0.5x clip rate ≈ 110 Hz out; an octave up doubles it.
+        let lo = zc_rate(
+            &render(sample_sound(false), 60, 0.2, 0.18)[(0.01 * SR) as usize..(0.1 * SR) as usize],
+        );
+        let hi = zc_rate(
+            &render(sample_sound(false), 72, 0.2, 0.18)[(0.01 * SR) as usize..(0.1 * SR) as usize],
+        );
+        assert!(
+            (hi / lo - 2.0).abs() < 0.12,
+            "octave up should double the rate ({lo} vs {hi})"
+        );
+        // A tritone (ratio sqrt(2) ≈ 1.414) sits in between.
+        let mid = zc_rate(
+            &render(sample_sound(false), 66, 0.2, 0.18)[(0.01 * SR) as usize..(0.1 * SR) as usize],
+        );
+        assert!(
+            mid > lo * 1.3 && mid < hi * 0.9,
+            "tritone rate {mid} vs {lo}..{hi}"
+        );
+    }
+
+    #[test]
+    fn sample_voice_loops_while_held_and_releases() {
+        let x = render(sample_sound(true), 60, 2.0, 1.2);
+        assert!(x.iter().all(|s| s.is_finite()));
+        // Looping keeps the voice sounding well past the 0.25 s clip length.
+        assert!(rms(&x[(0.5 * SR) as usize..(0.9 * SR) as usize]) > 0.01);
+        // After the gate ends the amp release fades it out.
+        assert!(x[(1.8 * SR) as usize..].iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn sample_voice_missing_clip_falls_back_to_oscillators() {
+        // A preset whose clip never registered (undecodable payload, or a
+        // hand-built key that misses the bank) keeps the armed oscillator
+        // path — bounded, finite audio, never a panic.
+        let mut params = PresetParams::from_preset(&sample_preset(false));
+        params.sample_key = 0xDEAD_BEEF;
+        let x = render(Sound::Preset(params), 60, 0.4, 0.3);
+        assert!(x.iter().all(|s| s.is_finite() && s.abs() < 1.5));
+        // And a clip-free preset ignores the sample fields entirely.
+        let x = render(preset_sound(chip_preset()), 60, 0.4, 0.3);
+        assert!(x.iter().all(|s| s.is_finite() && s.abs() < 1.5));
+    }
+
+    #[test]
+    fn sample_kit_piece_plays_the_clip() {
+        // A kit piece whose voice is a bare clip: note-on picks the piece,
+        // start_preset upgrades it to Kind::Sample.
+        let mut kit = kit_preset();
+        let voice = &mut kit.kit.as_mut().unwrap().pieces[0].voice;
+        voice.oscillators.clear();
+        voice.sample = Some(crate::packs::SampleSpec::from_frames(
+            &(0..4_410)
+                .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / 44_100.0).sin() * 0.8)
+                .collect::<Vec<_>>(),
+            44_100,
+            60,
+            false,
+        ));
+        crate::packs::validate_preset(&kit).unwrap();
+        let x = render(Sound::Kit(KitParams::from_kit(&kit)), 36, 0.5, 0.4);
+        assert!(x.iter().all(|s| s.is_finite()));
+        assert!(rms(&x[(0.02 * SR) as usize..(0.08 * SR) as usize]) > 0.01);
     }
 }

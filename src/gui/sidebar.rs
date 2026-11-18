@@ -8,7 +8,10 @@ use egui::{
 use super::theme::{self, Icon, Palette};
 use super::{ops, CadenceApp, Focus, StatusKind, Tab};
 use crate::font::GM_PROGRAM_NAMES;
-use crate::model::{create_track, note_name, FontRef, Instrument, Track};
+use crate::model::{
+    create_track, note_name, ArpDirection, ArpRate, FontRef, Instrument, Track, MAX_ARP_OCTAVES,
+    MAX_GLIDE_SECONDS, MIN_ARP_GATE,
+};
 use crate::packs::{InstrumentPreset, PackCatalog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -251,18 +254,21 @@ enum FontPick {
     Clear,
 }
 
-/// A sound the quick-add row can offer: a built-in instrument or a pack
-/// preset (owned — adding a preset track embeds the whole preset anyway, so
-/// the clone is cheap and keeps `&mut self` calls borrow-free). The preset
-/// is boxed to keep the enum small next to the 1-byte `Instrument`.
+/// A sound the quick-add row can offer and a library row can drag onto the
+/// arranger: a built-in instrument or a pack preset (owned — adding a
+/// preset track embeds the whole preset anyway, so the clone is cheap and
+/// keeps `&mut self` calls borrow-free). The preset is boxed to keep the
+/// enum small next to the 1-byte `Instrument`. `QuickSound` is also the
+/// egui drag-and-drop payload between the library and the arranger, so it
+/// must stay `Send + Sync + 'static`.
 #[derive(Clone)]
-enum QuickSound {
+pub(super) enum QuickSound {
     BuiltIn(Instrument),
     Preset(Box<InstrumentPreset>),
 }
 
 impl QuickSound {
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         match self {
             Self::BuiltIn(i) => i.name(),
             Self::Preset(p) => p.name.as_str(),
@@ -278,7 +284,7 @@ impl QuickSound {
         }
     }
 
-    fn color(&self) -> [u8; 3] {
+    pub(super) fn color(&self) -> [u8; 3] {
         match self {
             Self::BuiltIn(i) => instrument_color(*i),
             Self::Preset(p) => ops::preset_color(&p.id),
@@ -562,6 +568,8 @@ impl CadenceApp {
                             theme::rgb(instrument_color(*inst)),
                             inst.is_drums(),
                             !full,
+                            ui.id().with(("library-row", inst.name())),
+                            QuickSound::BuiltIn(*inst),
                         ) {
                             action = Some(if a {
                                 LibraryAction::Add(*inst)
@@ -605,6 +613,8 @@ impl CadenceApp {
                         theme::rgb(ops::preset_color(&preset.id)),
                         preset.kit.is_some(),
                         !full,
+                        ui.id().with(("library-row", &preset.id)),
+                        QuickSound::Preset(Box::new(preset.clone())),
                     ) {
                         action = Some(if a {
                             LibraryAction::AddPreset(preset.clone())
@@ -685,18 +695,62 @@ impl CadenceApp {
         self.edit(&format!("Add {} track", preset.name), None, |p| {
             id = ops::add_preset_track(p, preset)
         });
+        let editor = if preset.kit.is_some() {
+            "the drum grid"
+        } else {
+            "the piano roll"
+        };
+        self.finish_track_add(
+            id,
+            format!("Added {}. Draw notes in {editor}; its clip is already in the arrangement at bar 1.", preset.name),
+        );
+    }
+
+    /// Adds a track for a library `sound` dropped on the arranger, inserting
+    /// it at `index` (clamped into `0..=len`, so one past the last lane is a
+    /// plain append). The add and the reposition ride the same [`Self::edit`]
+    /// as the library's add buttons use, so the whole drop is a single undo
+    /// step.
+    pub(super) fn add_sound_track_at(&mut self, sound: &QuickSound, index: usize) {
+        let name = sound.name().to_owned();
+        let mut id = None;
+        self.edit(&format!("Add {name} track"), None, |p| {
+            id = match sound {
+                QuickSound::BuiltIn(inst) => ops::add_track(p, *inst),
+                QuickSound::Preset(preset) => ops::add_preset_track(p, preset),
+            };
+            if let Some(track) = id {
+                let last = p.tracks.len().saturating_sub(1);
+                if index < last {
+                    ops::move_track(p, track, index as i32 - last as i32);
+                }
+            }
+        });
+        let success = match sound {
+            QuickSound::BuiltIn(_) => format!("Added a {name} track"),
+            QuickSound::Preset(preset) => {
+                let editor = if preset.kit.is_some() {
+                    "the drum grid"
+                } else {
+                    "the piano roll"
+                };
+                format!("Added {name}. Draw notes in {editor}; its clip is already in the arrangement at bar 1.")
+            }
+        };
+        self.finish_track_add(id, success);
+    }
+
+    /// Selects, reveals and announces a just-added track — the shared tail of
+    /// every add path (library rows, quick add, menus, arranger drops).
+    /// `None` means the track limit refused the add.
+    pub(super) fn finish_track_add(&mut self, id: Option<u64>, success: String) {
         match id {
             Some(id) => {
                 self.select_track(id);
                 self.tab = Tab::Editor;
                 self.focus = Focus::Editor;
                 self.arranger.reveal_track = Some(id);
-                let editor = if preset.kit.is_some() {
-                    "the drum grid"
-                } else {
-                    "the piano roll"
-                };
-                self.set_status(StatusKind::Success, format!("Added {}. Draw notes in {editor}; its clip is already in the arrangement at bar 1.", preset.name));
+                self.set_status(StatusKind::Success, success);
             }
             None => self.set_status(
                 StatusKind::Warning,
@@ -1027,6 +1081,213 @@ impl CadenceApp {
             ui.spacing_mut().item_spacing.x = 6.0;
             self.fx_knobs(ui, id, 40.0, color);
         });
+
+        ui.add_space(10.0);
+        ui.label(theme::kicker_text(pal, "PLAY"));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Per-track portamento, seconds 0..=MAX_GLIDE_SECONDS (0 = off):
+            // while on, melodic sounds retarget the held voice legato-style
+            // instead of stacking — one note at a time (Track::glide).
+            let mut norm = (track.glide / MAX_GLIDE_SECONDS).clamp(0.0, 1.0);
+            if theme::knob(
+                ui,
+                pal,
+                &mut norm,
+                0.0,
+                false,
+                "Glide",
+                &glide_text(track.glide),
+                color,
+                40.0,
+            )
+            .on_hover_text(
+                "Glide (portamento): how long a held note takes to slide to the next pitch. \
+                 One note at a time while above 0 s. Drag · Shift for fine · Double-click resets to off.",
+            )
+            .changed()
+            {
+                let seconds = (norm * MAX_GLIDE_SECONDS).clamp(0.0, MAX_GLIDE_SECONDS);
+                self.edit("Track glide", Some(&format!("glide-{id}")), |p| {
+                    if let Some(t) = ops::track_mut(p, id) {
+                        t.glide = seconds;
+                    }
+                });
+                self.set_status(StatusKind::Info, format!("Glide: {}", glide_text(seconds)));
+            }
+            // While the arpeggiator runs, its gate knob sits next to Glide:
+            // hit length as a fraction of the hit rate (90% default).
+            if track.arp.enabled {
+                let mut gate_norm =
+                    ((track.arp.gate - MIN_ARP_GATE) / (1.0 - MIN_ARP_GATE)).clamp(0.0, 1.0);
+                let gate_default = (0.9 - MIN_ARP_GATE) / (1.0 - MIN_ARP_GATE);
+                if theme::knob(
+                    ui,
+                    pal,
+                    &mut gate_norm,
+                    gate_default,
+                    false,
+                    "Gate",
+                    &format!("{:.0}%", track.arp.gate * 100.0),
+                    color,
+                    40.0,
+                )
+                .on_hover_text(
+                    "Arp gate: how long each arpeggio hit sounds, as a fraction of its rate. \
+                     Drag · Shift for fine · Double-click resets to 90%.",
+                )
+                .changed()
+                {
+                    let gate = (MIN_ARP_GATE + gate_norm * (1.0 - MIN_ARP_GATE))
+                        .clamp(MIN_ARP_GATE, 1.0);
+                    self.edit("Track arpeggiator", Some(&format!("arp-gate-{id}")), |p| {
+                        if let Some(t) = ops::track_mut(p, id) {
+                            t.arp.gate = gate;
+                        }
+                    });
+                    self.set_status(
+                        StatusKind::Info,
+                        format!("Arp gate: {:.0}%", gate * 100.0),
+                    );
+                }
+            }
+        });
+        if track.font.is_some() {
+            theme::hint(
+                ui,
+                pal,
+                "Glide doesn't bend SoundFonts — it applies to the missing-font fallback sound.",
+            );
+        } else {
+            theme::hint(
+                ui,
+                pal,
+                "One note at a time while above 0 s — held notes slide to the next pitch.",
+            );
+        }
+
+        ui.add_space(6.0);
+        // Per-track live arpeggiator (Track::arp): while on, every chord on
+        // the timeline (2+ notes starting together) subdivides into a
+        // cycling run of hits; single notes play unchanged. Controls collect
+        // a pick each so the undoable edit lands after the widgets.
+        let arp = track.arp;
+        let mut toggle_arp = false;
+        let mut rate_pick = None;
+        let mut octave_pick = None;
+        let mut direction_pick = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            if theme::chip(
+                ui,
+                pal,
+                "Arp",
+                arp.enabled,
+                color,
+                vec2(44.0, 26.0),
+                "Arpeggiator: split held chords into a cycling note run",
+            )
+            .clicked()
+            {
+                toggle_arp = true;
+            }
+            if arp.enabled {
+                egui::ComboBox::from_id_salt(("arp-rate", id))
+                    .width(56.0)
+                    .selected_text(arp.rate.label())
+                    .show_ui(ui, |ui| {
+                        for rate in ArpRate::ALL {
+                            if ui
+                                .selectable_label(rate == arp.rate, rate.label())
+                                .on_hover_text(format!("{} notes", rate.note_name()))
+                                .clicked()
+                            {
+                                rate_pick = Some(rate);
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt(("arp-octaves", id))
+                    .width(64.0)
+                    .selected_text(format!("{} oct", arp.octaves))
+                    .show_ui(ui, |ui| {
+                        for octaves in 1..=MAX_ARP_OCTAVES {
+                            if ui
+                                .selectable_label(octaves == arp.octaves, format!("{octaves} oct"))
+                                .on_hover_text("Octaves the chord tones span upward")
+                                .clicked()
+                            {
+                                octave_pick = Some(octaves);
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt(("arp-direction", id))
+                    .width(90.0)
+                    .selected_text(arp.direction.label())
+                    .show_ui(ui, |ui| {
+                        for direction in ArpDirection::ALL {
+                            if ui
+                                .selectable_label(direction == arp.direction, direction.label())
+                                .clicked()
+                            {
+                                direction_pick = Some(direction);
+                            }
+                        }
+                    });
+            }
+        });
+        if toggle_arp {
+            let on = !arp.enabled;
+            self.edit("Track arpeggiator", None, |p| {
+                if let Some(t) = ops::track_mut(p, id) {
+                    t.arp.enabled = on;
+                }
+            });
+            self.set_status(
+                StatusKind::Info,
+                format!("Arpeggiator: {}", if on { "on" } else { "off" }),
+            );
+        }
+        if let Some(rate) = rate_pick {
+            self.edit("Track arpeggiator", None, |p| {
+                if let Some(t) = ops::track_mut(p, id) {
+                    t.arp.rate = rate;
+                }
+            });
+            self.set_status(
+                StatusKind::Info,
+                format!("Arp rate: {} notes.", rate.note_name()),
+            );
+        }
+        if let Some(octaves) = octave_pick {
+            self.edit("Track arpeggiator", None, |p| {
+                if let Some(t) = ops::track_mut(p, id) {
+                    t.arp.octaves = octaves;
+                }
+            });
+            self.set_status(StatusKind::Info, format!("Arp octaves: {octaves}."));
+        }
+        if let Some(direction) = direction_pick {
+            self.edit("Track arpeggiator", None, |p| {
+                if let Some(t) = ops::track_mut(p, id) {
+                    t.arp.direction = direction;
+                }
+            });
+            self.set_status(
+                StatusKind::Info,
+                format!("Arp direction: {}.", direction.label()),
+            );
+        }
+        if arp.enabled {
+            theme::hint(
+                ui,
+                pal,
+                if ops::arp_audible(&track) {
+                    "Held chords split into a cycling run; single notes play unchanged."
+                } else {
+                    "Arp is idle here — drum and kit sounds have no chords to split."
+                },
+            );
+        }
 
         ui.add_space(10.0);
         ui.label(theme::kicker_text(pal, "TRACK"));
@@ -1409,8 +1670,37 @@ impl CadenceApp {
     }
 }
 
-/// One library entry. Returns `Some(true)` for add, `Some(false)` for audition.
+/// One library entry. `drag_id` names the row's drag-and-drop source and
+/// must be unique — the caller salts it with the preset id or the built-in
+/// name. `payload` is what an arranger drop turns into a track. Click vs
+/// drag is egui's usual disambiguation: the drag only wins once the pointer
+/// is "decidedly dragging" (a few px of movement), so plain clicks still
+/// reach the ▶ and + buttons and double-click still adds. While the row is
+/// dragged `dnd_drag_source` repaints it on the tooltip layer at the
+/// pointer, which is the drag ghost.
+/// Returns `Some(true)` for add, `Some(false)` for audition.
+#[allow(clippy::too_many_arguments)]
 fn library_row(
+    ui: &mut Ui,
+    pal: Palette,
+    name: &str,
+    description: &str,
+    color: Color32,
+    kit: bool,
+    can_add: bool,
+    drag_id: egui::Id,
+    payload: QuickSound,
+) -> Option<bool> {
+    ui.dnd_drag_source(drag_id, payload, |ui| {
+        library_row_body(ui, pal, name, description, color, kit, can_add)
+    })
+    .inner
+}
+
+/// The painted, interactive body of [`library_row`] (split out so the row
+/// can run inside [`Ui::dnd_drag_source`]).
+#[allow(clippy::too_many_arguments)]
+fn library_row_body(
     ui: &mut Ui,
     pal: Palette,
     name: &str,
@@ -1525,7 +1815,7 @@ fn library_row(
         "Track limit reached".to_owned()
     });
     let resp = resp.on_hover_text(format!(
-        "{description}\n\nClick + to add a track, ▶ to hear it. Double-click the row to add."
+        "{description}\n\nClick + to add a track, ▶ to hear it. Double-click the row to add, or drag it onto the arrangement."
     ));
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, can_add, format!("Add {name}"))
@@ -1640,7 +1930,7 @@ fn quick_section(
     }
     ui.add_space(2.0);
     ui.label(theme::kicker_text(pal, label));
-    for sound in sounds {
+    for (i, sound) in sounds.iter().enumerate() {
         if picked.is_some() {
             break;
         }
@@ -1649,7 +1939,14 @@ fn quick_section(
         } else {
             sound.tip()
         };
-        if quick_add_row(ui, pal, sound, &tip, !full) {
+        // Draggable like the library rows: the row paints the ghost while
+        // dragged, and dropping it on the arranger adds the track there.
+        if ui
+            .dnd_drag_source(ui.id().with(("quick-add", label, i)), sound.clone(), |ui| {
+                quick_add_row(ui, pal, sound, &tip, !full)
+            })
+            .inner
+        {
             *picked = Some(sound.clone());
         }
     }
@@ -1731,6 +2028,15 @@ fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, tip: &str, can_a
         .on_hover_text(tip)
         .clicked()
         && can_add
+}
+
+/// Display text for the per-track glide knob: "Off" at zero, else seconds.
+pub(super) fn glide_text(seconds: f32) -> String {
+    if seconds <= 0.0 {
+        "Off".to_owned()
+    } else {
+        format!("{seconds:.2} s")
+    }
 }
 
 pub(super) fn pan_text(v: f32) -> String {

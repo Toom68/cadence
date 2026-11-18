@@ -1,5 +1,6 @@
 //! Document and file workflows: open/save/save-as, the unsaved-changes guard,
-//! MIDI import/export, the WAV export worker and instrument-pack install.
+//! MIDI import/export, WAV sample import, the WAV export worker and
+//! instrument-pack install.
 //!
 //! Everything here is reachable from the menu/shortcuts in `mod.rs` and the
 //! library footer in `sidebar.rs`. Native dialogs (rfd) and recovery I/O only
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 use egui::Context;
 
 use super::dialogs::{Dialog, NewSongDraft};
+use super::ops;
 use super::{CadenceApp, StatusKind};
 use crate::model::{Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
@@ -49,22 +51,52 @@ pub(super) enum PendingAction {
     Quit,
 }
 
-/// A WAV export running on a worker thread.
+/// What a running export produces; drives the status-bar and error wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExportKind {
+    Wav,
+    Stems,
+}
+
+impl ExportKind {
+    /// "Exporting WAV" / "Exporting stems" for the status bar and File menu.
+    fn verb(self) -> &'static str {
+        match self {
+            ExportKind::Wav => "Exporting WAV",
+            ExportKind::Stems => "Exporting stems",
+        }
+    }
+
+    /// "WAV export" / "Stem export" — fits "{noun} failed: …".
+    fn noun(self) -> &'static str {
+        match self {
+            ExportKind::Wav => "WAV export",
+            ExportKind::Stems => "Stem export",
+        }
+    }
+}
+
+/// A WAV or stem export running on a worker thread.
 ///
 /// The [`Project`] was cloned when the export started, so edits made while it
 /// renders do not change the output. Progress arrives through a shared atomic
-/// and the final `Result` through a channel; [`CadenceApp::poll_export`] picks
-/// it up once per frame.
+/// and the finished status line through a channel; [`CadenceApp::poll_export`]
+/// picks it up once per frame.
 pub(super) struct ExportJob {
-    rx: crossbeam_channel::Receiver<Result<(), String>>,
+    rx: crossbeam_channel::Receiver<Result<String, String>>,
     progress: Arc<AtomicU32>,
-    path: PathBuf,
+    kind: ExportKind,
 }
 
 impl ExportJob {
     /// Render progress reported by the worker, 0.0..=1.0.
     pub(super) fn progress(&self) -> f32 {
         f32::from_bits(self.progress.load(Ordering::Relaxed))
+    }
+
+    /// "Exporting WAV" / "Exporting stems" for the status bar and File menu.
+    pub(super) fn verb(&self) -> &'static str {
+        self.kind.verb()
     }
 }
 
@@ -215,7 +247,7 @@ impl CadenceApp {
         match persistence::load_recovery() {
             Ok(Some(project)) => {
                 self.recovery_offered = true;
-                self.dialog = Dialog::Recovery(project);
+                self.dialog = Dialog::Recovery(Box::new(project));
             }
             Ok(None) => {}
             Err(err) => self.set_status(StatusKind::Warning, err),
@@ -230,7 +262,7 @@ impl CadenceApp {
         if self.export.is_some() {
             self.set_status(
                 StatusKind::Info,
-                "A WAV export is already running — watch the progress in the status bar.",
+                "An export is already running — watch the progress in the status bar.",
             );
             return;
         }
@@ -255,7 +287,7 @@ impl CadenceApp {
     /// channel polled by [`CadenceApp::poll_export`].
     pub(super) fn start_wav_export(&mut self, path: PathBuf) {
         if self.export.is_some() {
-            self.set_status(StatusKind::Info, "A WAV export is already running.");
+            self.set_status(StatusKind::Info, "An export is already running.");
             return;
         }
         let path = path.with_extension("wav");
@@ -267,15 +299,100 @@ impl CadenceApp {
         std::thread::spawn(move || {
             let result = crate::audio::export_wav(&project, &render_path, move |p| {
                 report.store(p.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-            });
+            })
+            .map(|()| format!("Exported WAV: {}", render_path.display()));
             let _ = tx.send(result);
         });
         let shown = path.display().to_string();
-        self.export = Some(ExportJob { rx, progress, path });
+        self.export = Some(ExportJob {
+            rx,
+            progress,
+            kind: ExportKind::Wav,
+        });
         self.set_status(StatusKind::Info, format!("Exporting WAV to {shown}…"));
     }
 
-    /// Picks up a finished WAV export (called once per frame). Keeps the GUI
+    /// Export Stems…: pick a folder, then render every audible track to its
+    /// own WAV on a worker thread — same progress plumbing as the WAV export.
+    pub(super) fn export_stems_dialog(&mut self) {
+        if self.export.is_some() {
+            self.set_status(
+                StatusKind::Info,
+                "An export is already running — watch the progress in the status bar.",
+            );
+            return;
+        }
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title(format!(
+                "Export stems of \"{}\" — choose a folder",
+                self.project.name
+            ))
+            .pick_folder()
+        else {
+            return;
+        };
+        self.start_stem_export(dir);
+    }
+
+    /// Spawns the per-track renders on a worker thread. Stems land in `dir` as
+    /// `<track name>-NN.wav`; tracks that are muted or silenced by solo are
+    /// skipped and named in the finished status line.
+    pub(super) fn start_stem_export(&mut self, dir: PathBuf) {
+        if self.export.is_some() {
+            self.set_status(StatusKind::Info, "An export is already running.");
+            return;
+        }
+        let project = self.project.clone();
+        let fonts = self.fonts.clone();
+        let out_dir = dir.clone();
+        let progress = Arc::new(AtomicU32::new(0));
+        let report = progress.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = crate::audio::export_stems(
+                &project,
+                &fonts,
+                &out_dir,
+                crate::audio::EXPORT_SAMPLE_RATE,
+                move |p| {
+                    report.store(p.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                },
+            )
+            .map(|written| {
+                let skipped: Vec<String> = (0..project.tracks.len())
+                    .filter_map(|i| {
+                        crate::audio::stem_skip_reason(&project, i)
+                            .map(|reason| format!("\"{}\" {reason}", project.tracks[i].name))
+                    })
+                    .collect();
+                let mut message = format!(
+                    "Exported {} stem{} to {}.",
+                    written.len(),
+                    if written.len() == 1 { "" } else { "s" },
+                    out_dir.display()
+                );
+                if !skipped.is_empty() {
+                    message.push_str(&format!(" Skipped {}.", skipped.join(", ")));
+                }
+                message
+            });
+            let _ = tx.send(result);
+        });
+        self.export = Some(ExportJob {
+            rx,
+            progress,
+            kind: ExportKind::Stems,
+        });
+        self.set_status(
+            StatusKind::Info,
+            format!("Exporting stems to {}…", dir.display()),
+        );
+    }
+
+    /// Picks up a finished export (called once per frame). Keeps the GUI
     /// responsive while the worker renders; the status bar shows live progress.
     pub(super) fn poll_export(&mut self) {
         let finished = match &self.export {
@@ -289,13 +406,16 @@ impl CadenceApp {
             None => return,
         };
         let Some(result) = finished else { return };
-        let path = self.export.take().map(|job| job.path).unwrap_or_default();
+        let kind = self
+            .export
+            .take()
+            .map(|job| job.kind)
+            .unwrap_or(ExportKind::Wav);
         match result {
-            Ok(()) => self.set_status(
-                StatusKind::Success,
-                format!("Exported WAV: {}", path.display()),
-            ),
-            Err(err) => self.set_status(StatusKind::Error, format!("WAV export failed: {err}")),
+            Ok(message) => self.set_status(StatusKind::Success, message),
+            Err(err) => {
+                self.set_status(StatusKind::Error, format!("{} failed: {err}", kind.noun()))
+            }
         }
     }
 
@@ -371,6 +491,213 @@ impl CadenceApp {
             }
             Err(err) => self.set_status(StatusKind::Error, format!("Could not import MIDI: {err}")),
         }
+    }
+
+    // ----- samples ---------------------------------------------------------
+
+    /// Import Sample…: pick a `.wav` file and turn it into a custom sample
+    /// instrument. The clip is embedded in the track's preset JSON, so the
+    /// song stays portable without the source file.
+    pub(super) fn import_sample_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_sample_file(path);
+    }
+
+    /// Decodes `path` into an embedded-sample preset and puts it on the
+    /// selected track (or a new track when nothing is selected / the song is
+    /// empty). Helper path usable without dialogs. Anything unreadable,
+    /// oversize or invalid is a status-bar error, not a partial edit; the
+    /// placement itself is one undoable `self.edit`.
+    pub(super) fn import_sample_file(&mut self, path: PathBuf) {
+        let (spec, truncated) = match crate::packs::SampleSpec::from_wav(&path, 60) {
+            Ok(result) => result,
+            Err(err) => {
+                self.set_status(StatusKind::Error, format!("Could not import sample: {err}"));
+                return;
+            }
+        };
+        let preset = sample_instrument(&sample_name(&path), spec);
+        if let Err(err) = crate::packs::validate_preset(&preset) {
+            self.set_status(StatusKind::Error, format!("Could not import sample: {err}"));
+            return;
+        }
+        let label = preset.name.clone();
+        let rate = preset.sample.as_ref().map_or(0, |s| s.sample_rate);
+        let audition = preset.audition_note.min(127);
+        // Prefer the selected track; fall back to the first track, then to a
+        // fresh track when the song is empty.
+        let target = self
+            .sel
+            .track
+            .or_else(|| self.project.tracks.first().map(|t| t.id));
+        let mut placed = None;
+        self.edit("Import sample", None, |p| {
+            placed = if let Some(track) = target.and_then(|id| ops::track_mut(p, id)) {
+                track.preset = Some(preset.clone());
+                // A SoundFont would still shadow the preset — clear it.
+                track.font = None;
+                Some(track.id)
+            } else {
+                ops::add_preset_track(p, &preset)
+            };
+        });
+        let Some(id) = placed else {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not import the sample: the song is at the track limit.",
+            );
+            return;
+        };
+        self.preview(id, audition, 0.9);
+        let clipped = if truncated {
+            " — truncated to fit the 2 MB clip cap"
+        } else {
+            ""
+        };
+        self.set_status(
+            StatusKind::Success,
+            format!("Imported “{label}” ({rate} Hz){clipped}. The clip is embedded in the song."),
+        );
+    }
+
+    // ----- audio clips (imported WAVs on the timeline) ---------------------
+
+    /// Import Audio File…: pick a `.wav` and place it as an arranger clip.
+    /// The file is copied into the app's audio store under a content-hash
+    /// name; the song records only that name plus the clip's timeline
+    /// placement, so projects stay compact — but a song only plays its
+    /// audio on machines that have the same store contents (the store is
+    /// per-install, not embedded in `.cadence`).
+    pub(super) fn import_audio_clip_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav"])
+            .pick_file()
+        else {
+            return;
+        };
+        // File-menu import lands at the playhead on the selected audio lane
+        // (or a fresh one — see `import_audio_clip_file`).
+        self.import_audio_clip_file(path, None, None);
+    }
+
+    /// Lane context-menu entry: same pick, but the clip lands at the lane's
+    /// right-clicked step on that track.
+    pub(super) fn import_audio_clip_dialog_at(&mut self, track_id: u64, step: f64) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.import_audio_clip_file(path, Some(track_id), Some(step));
+    }
+
+    /// Stages `path` into the audio store and places a clip for it — helper
+    /// path usable without dialogs (tests call this directly). `track_id`
+    /// picks the lane: the given one when it is an audio lane, else the
+    /// first audio lane, else a new "Audio" track. `start` defaults to the
+    /// transport position. A bogus or oversize file is a status-bar error;
+    /// the track/clip placement is one undoable `self.edit`.
+    pub(super) fn import_audio_clip_file(
+        &mut self,
+        path: PathBuf,
+        track_id: Option<u64>,
+        start: Option<f64>,
+    ) {
+        let staged = match persistence::stage_audio_file(&path) {
+            Ok(staged) => staged,
+            Err(err) => {
+                self.set_status(StatusKind::Error, format!("Could not import audio: {err}"));
+                return;
+            }
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| staged.file.clone());
+        // The clip spans as many 16th-note steps as the source runs
+        // seconds at the current tempo — no time-stretching, so a later
+        // tempo change shifts the clip's grid footprint, not its playback
+        // speed.
+        let length = (staged.seconds / self.project.seconds_per_step())
+            .max(crate::model::MIN_AUDIO_CLIP_STEPS);
+        let at = start.unwrap_or_else(|| {
+            if self.transport.position.is_finite() {
+                self.transport.position.max(0.0)
+            } else {
+                0.0
+            }
+        });
+        // Lane pick: an explicit target wins when it is an audio lane; then
+        // the selection, then any audio lane, then a fresh one.
+        let lane = track_id
+            .or(self.sel.track)
+            .filter(|id| ops::track(&self.project, *id).is_some_and(|t| t.audio))
+            .or_else(|| self.project.tracks.iter().find(|t| t.audio).map(|t| t.id));
+        let mut placed = None;
+        let mut made_track = false;
+        let file = staged.file.clone();
+        self.edit("Import audio file", None, |p| {
+            let tid = match lane {
+                Some(id) => Some(id),
+                None => {
+                    made_track = true;
+                    ops::add_audio_track(p)
+                }
+            };
+            placed = tid.and_then(|id| ops::add_audio_clip(p, id, &file, &name, at, length));
+        });
+        let Some(clip_id) = placed else {
+            self.set_status(
+                StatusKind::Warning,
+                if self.project.tracks.len() >= ops::MAX_TRACKS {
+                    format!("Could not import “{name}”: the song is at the track limit.")
+                } else {
+                    format!(
+                        "Could not import “{name}”: tracks hold up to {} audio clips.",
+                        ops::MAX_AUDIO_CLIPS_PER_TRACK
+                    )
+                },
+            );
+            return;
+        };
+        let tid = self.clip_track_id(clip_id);
+        self.set_single_clip_selection(clip_id);
+        if let Some(id) = tid {
+            self.arranger.reveal_track = Some(id);
+        }
+        let grown = if self
+            .project
+            .tracks
+            .last()
+            .is_some_and(|t| Some(t.id) == tid)
+            && made_track
+        {
+            " on a new audio track"
+        } else {
+            ""
+        };
+        self.set_status(
+            StatusKind::Success,
+            format!(
+                "Imported “{name}”{grown} ({:.1}s). The file lives in the app's audio store.",
+                staged.seconds
+            ),
+        );
     }
 
     // ----- instrument packs -------------------------------------------------
@@ -483,6 +810,55 @@ fn file_stem(name: &str) -> String {
         "untitled".to_owned()
     } else {
         cleaned.to_owned()
+    }
+}
+
+/// Display name for an imported clip: the file stem, trimmed and length-capped.
+fn sample_name(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .map(|s| s.trim().chars().take(MAX_NAME_CHARS).collect::<String>())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Sample".to_string())
+}
+
+/// A melodic preset whose only source is the imported clip: a sustain-forever
+/// envelope (the clip itself is the note's shape), full-quality playback, and
+/// a namespaced `sample.<name>` id. `audition_note` follows the clip's root so
+/// previews play at unity speed.
+fn sample_instrument(name: &str, spec: crate::packs::SampleSpec) -> crate::packs::InstrumentPreset {
+    let slug = crate::packs::slugify(name);
+    crate::packs::InstrumentPreset {
+        id: format!(
+            "sample.{}",
+            if slug.is_empty() {
+                "clip".to_string()
+            } else {
+                slug
+            }
+        ),
+        name: name.to_string(),
+        description: "Imported WAV sample.".to_string(),
+        oscillators: Vec::new(),
+        envelope: crate::packs::Envelope {
+            attack: 0.002,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.08,
+        },
+        pitch_envelope: None,
+        filter_envelope: None,
+        filter_cutoff: 20_000.0,
+        filter_resonance: 0.0,
+        lfo: None,
+        bit_depth: 24,
+        sample_hold: 1,
+        gain: 0.9,
+        monophonic: false,
+        audition_note: spec.root_pitch.min(127),
+        audition_duration: 0.8,
+        kit: None,
+        sample: Some(spec),
     }
 }
 

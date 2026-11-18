@@ -4,7 +4,8 @@
 use super::renderer::{Renderer, MAX_BLOCK};
 use super::song::SongData;
 use crate::audio::dsp::Rng;
-use crate::model::Project;
+use crate::font::FontLibrary;
+use crate::model::{Project, MAX_TRACKS};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -44,22 +45,45 @@ impl OfflineRender {
         project
             .validate()
             .map_err(|e| format!("Cannot render this song: {e}"))?;
-        let sr = sample_rate as f64;
-        let song = SongData::from_project(project);
-        let song_frames = (project.duration_seconds() * sr).ceil() as u64;
-        let tail = (MAX_TAIL_SECONDS * sr) as u64;
-        let max_frames = (song_frames + tail).min((max_seconds.max(0.0) * sr) as u64);
-        let mut renderer = Renderer::new(sample_rate as f32);
         // Font tracks need the catalog; parsing .sf2 files is too slow to do
         // unconditionally, so load only when the song actually references one.
         // Missing fonts fall back to each track's preset/built-in sound.
-        if project.tracks.iter().any(|t| t.font.is_some()) {
-            renderer.set_fonts(Arc::new(crate::font::load_library()));
+        let fonts = project
+            .tracks
+            .iter()
+            .any(|t| t.font.is_some())
+            .then(|| Arc::new(crate::font::load_library()));
+        Ok(Self::from_song(
+            SongData::from_project(project),
+            project.duration_seconds(),
+            fonts,
+            sample_rate,
+            max_seconds,
+        ))
+    }
+
+    /// A render of an already-built `song` snapshot lasting `song_seconds`
+    /// before the effect tail. `fonts` is the SoundFont catalog for
+    /// `Sound::Font` tracks, or `None` when the song references no fonts.
+    fn from_song(
+        song: SongData,
+        song_seconds: f64,
+        fonts: Option<Arc<FontLibrary>>,
+        sample_rate: u32,
+        max_seconds: f64,
+    ) -> Self {
+        let sr = sample_rate as f64;
+        let song_frames = (song_seconds * sr).ceil() as u64;
+        let tail = (MAX_TAIL_SECONDS * sr) as u64;
+        let max_frames = (song_frames + tail).min((max_seconds.max(0.0) * sr) as u64);
+        let mut renderer = Renderer::new(sample_rate as f32);
+        if let Some(fonts) = fonts {
+            renderer.set_fonts(fonts);
         }
         renderer.load(Box::new(song));
         renderer.play(0.0, false);
         let skip = renderer.latency();
-        Ok(OfflineRender {
+        OfflineRender {
             renderer,
             sample_rate: sr,
             song_frames,
@@ -69,7 +93,7 @@ impl OfflineRender {
             quiet_run: 0,
             finished: false,
             fade_from: None,
-        })
+        }
     }
 
     fn progress(&self) -> f32 {
@@ -182,21 +206,19 @@ fn to_i16(x: f32, rng: &mut Rng) -> i16 {
     v.round().clamp(-32768.0, 32767.0) as i16
 }
 
-/// Renders `project` offline through the playback DSP and writes a 44.1 kHz 16-bit stereo
-/// WAV including reverb/delay tails. Mute, solo and master volume are honoured. The file is
-/// streamed to a temporary sibling and renamed into place only on success. `progress`
-/// receives monotonically increasing values in 0..=1, ending with 1.0.
-pub fn export_wav(
-    project: &Project,
+/// Streams an in-progress render to `path` as a 16-bit stereo WAV at `sample_rate` via a
+/// temporary sibling renamed into place only on success. Shared by [`export_wav`] and
+/// [`export_stems`]; `progress` receives monotonically increasing values in 0..=1.
+fn write_rendered_wav(
+    job: &mut OfflineRender,
     path: &Path,
+    sample_rate: u32,
     mut progress: impl FnMut(f32),
 ) -> Result<(), String> {
-    let max_seconds = project.duration_seconds() + MAX_TAIL_SECONDS;
-    let mut job = OfflineRender::new(project, EXPORT_SAMPLE_RATE, max_seconds)?;
     let tmp = partial_path(path);
     let spec = hound::WavSpec {
         channels: 2,
-        sample_rate: EXPORT_SAMPLE_RATE,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -242,6 +264,126 @@ pub fn export_wav(
             Err(e)
         }
     }
+}
+
+/// Renders `project` offline through the playback DSP and writes a 44.1 kHz 16-bit stereo
+/// WAV including reverb/delay tails. Mute, solo and master volume are honoured. The file is
+/// streamed to a temporary sibling and renamed into place only on success. `progress`
+/// receives monotonically increasing values in 0..=1, ending with 1.0.
+pub fn export_wav(project: &Project, path: &Path, progress: impl FnMut(f32)) -> Result<(), String> {
+    let max_seconds = project.duration_seconds() + MAX_TAIL_SECONDS;
+    let mut job = OfflineRender::new(project, EXPORT_SAMPLE_RATE, max_seconds)?;
+    write_rendered_wav(&mut job, path, EXPORT_SAMPLE_RATE, progress)
+}
+
+/// Why track `index` gets no stem: mute/solo is honoured exactly like the mixdown — a muted
+/// track is skipped and, while any track is soloed, every non-solo track is skipped too.
+/// `None` means the track is audible in the mix and produces a stem. Callers use the reason
+/// to annotate reports ("skipped …").
+pub fn stem_skip_reason(project: &Project, index: usize) -> Option<&'static str> {
+    let track = project.tracks.get(index)?;
+    if index >= MAX_TRACKS {
+        Some("over the track limit")
+    } else if track.mute {
+        Some("muted")
+    } else if project.has_solo() && !track.solo {
+        Some("not soloed")
+    } else {
+        None
+    }
+}
+
+/// Track name made safe for a file name (same rules as song file names), with a `track`
+/// fallback for names that sanitize to nothing.
+fn stem_name(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.');
+    if cleaned.is_empty() {
+        "track".to_owned()
+    } else {
+        cleaned.to_owned()
+    }
+}
+
+/// Stem file name for track `index`: `<name>-NN.wav` where NN is the two-digit track
+/// number. The index suffix keeps duplicate or sanitized-equal names unique in one export.
+fn stem_file_name(project: &Project, index: usize) -> String {
+    let name = project
+        .tracks
+        .get(index)
+        .map_or("", |track| track.name.as_str());
+    format!("{}-{:02}.wav", stem_name(name), index + 1)
+}
+
+/// Renders every audible track of `project` to its own 16-bit stereo WAV in `out_dir`
+/// (created when missing) and returns the written paths in track order. Each stem is a
+/// full render through the playback DSP with only that one track audible — the same signal
+/// it contributes to the mixdown, including its strip (drive/filter/fader/pan), its share
+/// of the reverb/delay sends and the master chain. Mute/solo is honoured like the mix:
+/// tracks that are not audible are skipped and [`stem_skip_reason`] says why.
+///
+/// `fonts` is the already-loaded SoundFont catalog, shared by every stem so `.sf2` files
+/// are parsed once by the caller. `progress` receives 0..=1 across the whole batch, ending
+/// with 1.0.
+pub fn export_stems(
+    project: &Project,
+    fonts: &FontLibrary,
+    out_dir: &Path,
+    sample_rate: u32,
+    mut progress: impl FnMut(f32),
+) -> Result<Vec<PathBuf>, String> {
+    project
+        .validate()
+        .map_err(|e| format!("Cannot render this song: {e}"))?;
+    let sample_rate = sample_rate.clamp(8_000, 192_000);
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| format!("Could not create {}: {e}", out_dir.display()))?;
+    let song = SongData::from_project(project);
+    let seconds = project.duration_seconds();
+    let max_seconds = seconds + MAX_TAIL_SECONDS;
+    // One shared catalog for every stem; referenced only when the song uses fonts.
+    let fonts = project
+        .tracks
+        .iter()
+        .any(|t| t.font.is_some())
+        .then(|| Arc::new(fonts.clone()));
+    let targets: Vec<(usize, PathBuf)> = (0..song.tracks.len())
+        .filter(|&i| stem_skip_reason(project, i).is_none())
+        .map(|i| (i, out_dir.join(stem_file_name(project, i))))
+        .collect();
+    if targets.is_empty() {
+        return Err("Nothing to export: every track is muted or silenced by solo.".to_owned());
+    }
+    let count = targets.len() as f32;
+    let mut written = Vec::with_capacity(targets.len());
+    for (k, (index, path)) in targets.iter().enumerate() {
+        // Solo this one track: audibility is applied at event-trigger time and
+        // at the strip gain, so the other tracks contribute nothing — no
+        // voices, no send signal — to the render.
+        let mut stem = song.clone();
+        for (j, track) in stem.tracks.iter_mut().enumerate() {
+            track.audible = j == *index;
+        }
+        let mut job =
+            OfflineRender::from_song(stem, seconds, fonts.clone(), sample_rate, max_seconds);
+        let base = k as f32 / count;
+        write_rendered_wav(&mut job, path, sample_rate, |p| {
+            progress((base + p / count).clamp(0.0, 1.0));
+        })?;
+        written.push(path.clone());
+    }
+    progress(1.0);
+    Ok(written)
 }
 
 #[cfg(test)]
@@ -470,5 +612,119 @@ mod tests {
         invalid.bpm = f64::NAN;
         assert!(export_wav(&invalid, &path, |_| {}).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One bar: a piano track ("Keys/Lead") plus a bass track, one note each.
+    fn two_track_song() -> Project {
+        let mut p = Project::empty();
+        p.bars = 1;
+        let mut keys = create_track(Instrument::Piano);
+        keys.name = "Keys/Lead".to_owned();
+        keys.patterns[0].notes = vec![Note::new(60, 0.0, 4.0, 0.9)];
+        let mut bass = create_track(Instrument::Bass);
+        bass.name = "Bass".to_owned();
+        bass.patterns[0].notes = vec![Note::new(36, 0.0, 4.0, 0.9)];
+        p.tracks = vec![keys, bass];
+        p
+    }
+
+    #[test]
+    fn stem_export_writes_one_wav_per_audible_track() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-stem-per-track-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = two_track_song();
+        let fonts = FontLibrary::empty();
+        let out = dir.join("stems");
+
+        let mut seen = Vec::new();
+        let written = export_stems(&p, &fonts, &out, EXPORT_SAMPLE_RATE, |x| seen.push(x))
+            .expect("stem export");
+        assert_eq!(written.len(), 2);
+        // Sanitized track name plus the zero-padded track number.
+        assert!(written[0].ends_with("Keys_Lead-01.wav"), "{:?}", written[0]);
+        assert!(written[1].ends_with("Bass-02.wav"), "{:?}", written[1]);
+        assert!(seen.windows(2).all(|w| w[1] >= w[0]) && *seen.last().unwrap() == 1.0);
+        let a = std::fs::read(&written[0]).unwrap();
+        let b = std::fs::read(&written[1]).unwrap();
+        assert_ne!(a, b, "stems of different tracks must differ");
+        for path in &written {
+            let mut reader = hound::WavReader::open(path).unwrap();
+            assert_eq!(
+                (reader.spec().channels, reader.spec().sample_rate),
+                (2, EXPORT_SAMPLE_RATE)
+            );
+            assert!(reader
+                .samples::<i16>()
+                .any(|s| s.unwrap().unsigned_abs() > 100));
+        }
+
+        // A stem is exactly the mix render with that track soloed (same DSP,
+        // same deterministic dither): full wet stem including its send share.
+        let mut soloed = p.clone();
+        soloed.tracks[1].solo = true;
+        let solo_path = dir.join("solo-mix.wav");
+        export_wav(&soloed, &solo_path, |_| {}).unwrap();
+        assert_eq!(std::fs::read(&solo_path).unwrap(), b);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stem_export_honours_mute_and_solo() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-stem-mute-solo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fonts = FontLibrary::empty();
+        let mut p = two_track_song();
+
+        // Muted track is skipped; the remaining track still renders alone.
+        p.tracks[1].mute = true;
+        assert_eq!(stem_skip_reason(&p, 1), Some("muted"));
+        let written = export_stems(&p, &fonts, &dir.join("muted"), EXPORT_SAMPLE_RATE, |_| {})
+            .expect("stem export");
+        assert_eq!(written.len(), 1);
+        assert!(written[0].ends_with("Keys_Lead-01.wav"));
+
+        // While a track is soloed only soloed, unmuted tracks get stems.
+        let mut p = two_track_song();
+        p.tracks[0].solo = true;
+        assert_eq!(stem_skip_reason(&p, 1), Some("not soloed"));
+        let written = export_stems(&p, &fonts, &dir.join("solo"), EXPORT_SAMPLE_RATE, |_| {})
+            .expect("stem export");
+        assert_eq!(written.len(), 1);
+        assert!(written[0].ends_with("Keys_Lead-01.wav"));
+
+        // Everything muted is an error, not an empty success.
+        let mut p = two_track_song();
+        for track in &mut p.tracks {
+            track.mute = true;
+        }
+        assert!(export_stems(&p, &fonts, &dir.join("none"), EXPORT_SAMPLE_RATE, |_| {}).is_err());
+
+        // An invalid song is rejected before any file appears.
+        let mut invalid = two_track_song();
+        invalid.bpm = f64::NAN;
+        assert!(export_stems(
+            &invalid,
+            &fonts,
+            &dir.join("bad"),
+            EXPORT_SAMPLE_RATE,
+            |_| {}
+        )
+        .is_err());
+        assert!(!dir.join("bad").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stem_file_names_are_safe_and_unique() {
+        let mut p = two_track_song();
+        p.tracks[0].name = "  a/b\\c:d  ".to_owned();
+        p.tracks[1].name = "a/b\\c:d".to_owned();
+        assert_eq!(stem_file_name(&p, 0), "a_b_c_d-01.wav");
+        // Equal sanitized names are still unique via the track number.
+        assert_eq!(stem_file_name(&p, 1), "a_b_c_d-02.wav");
+        p.tracks[0].name = "   ".to_owned();
+        assert_eq!(stem_file_name(&p, 0), "track-01.wav");
     }
 }

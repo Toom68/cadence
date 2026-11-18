@@ -16,6 +16,8 @@ USAGE:
     cadence [SONG.cadence]                 Open the app (optionally with a song)
     cadence --render-demo OUTPUT.wav       Render the built-in demo song to WAV
     cadence --render SONG.cadence OUT.wav  Render a song file to WAV
+    cadence --render-stems SONG.cadence OUT_DIR
+                                           Render each audible track to its own WAV
     cadence --check SONG.cadence           Validate a song file and print a summary
 
 INSTRUMENT PACKS (JSON synth presets, no rebuild needed):
@@ -41,6 +43,7 @@ enum Command {
     Gui(Option<PathBuf>),
     RenderDemo(PathBuf),
     Render(PathBuf, PathBuf),
+    RenderStems(PathBuf, PathBuf),
     Check(PathBuf),
     NewPack(String, PathBuf),
     ValidatePack(PathBuf),
@@ -71,6 +74,10 @@ fn parse_args(args: Vec<OsString>) -> Result<Command, String> {
         "--render" => {
             let song = take("a song file")?;
             Command::Render(song, take("an output .wav path")?)
+        }
+        "--render-stems" => {
+            let song = take("a song file")?;
+            Command::RenderStems(song, take("an output directory")?)
         }
         "--check" => Command::Check(take("a song file")?),
         "--new-pack" => {
@@ -124,6 +131,9 @@ fn main() -> ExitCode {
                 render(&project, &out)
             }
         }),
+        Command::RenderStems(song, dir) => {
+            persistence::load_project(&song).and_then(|project| render_stems(&project, &dir))
+        }
         Command::Check(song) => check(&song),
         Command::NewPack(id, out) => new_pack(&id, &out),
         Command::ValidatePack(path) => validate_pack(&path),
@@ -199,6 +209,59 @@ fn render(project: &Project, out: &Path) -> Result<(), String> {
         "\r  100%\nWrote {} ({:.1} MB) in {:.2} s",
         out.display(),
         bytes as f64 / (1024.0 * 1024.0),
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn render_stems(project: &Project, dir: &Path) -> Result<(), String> {
+    project
+        .validate()
+        .map_err(|err| format!("Cannot render an invalid project: {err}"))?;
+    eprintln!(
+        "Rendering stems of \"{}\" ({} tracks) to {}",
+        project.name,
+        project.tracks.len(),
+        dir.display()
+    );
+    // The font catalog is shared across stems so .sf2 files are parsed once;
+    // it is only loaded when the song actually references one.
+    let fonts = if project.tracks.iter().any(|t| t.font.is_some()) {
+        font::load_library()
+    } else {
+        font::FontLibrary::empty()
+    };
+    let started = std::time::Instant::now();
+    let mut last_shown = -1i32;
+    let mut stderr = std::io::stderr();
+    let written = audio::export_stems(
+        project,
+        &fonts,
+        dir,
+        audio::EXPORT_SAMPLE_RATE,
+        |progress| {
+            let percent = (progress.clamp(0.0, 1.0) * 100.0).floor() as i32;
+            if percent / 10 != last_shown / 10 {
+                last_shown = percent;
+                let _ = write!(stderr, "\r  {percent:3}%");
+                let _ = stderr.flush();
+            }
+        },
+    )?;
+    eprintln!("\r  100%");
+    for path in &written {
+        println!("  {}", path.display());
+    }
+    for (index, track) in project.tracks.iter().enumerate() {
+        if let Some(reason) = audio::stem_skip_reason(project, index) {
+            println!("  skipped \"{}\" ({reason})", track.name);
+        }
+    }
+    eprintln!(
+        "Wrote {} stem{} to {} in {:.2} s",
+        written.len(),
+        if written.len() == 1 { "" } else { "s" },
+        dir.display(),
         started.elapsed().as_secs_f64()
     );
     Ok(())
@@ -395,6 +458,10 @@ mod tests {
             Ok(Command::Render("a.cadence".into(), "b.wav".into()))
         );
         assert_eq!(
+            parse(&["--render-stems", "a.cadence", "stems"]),
+            Ok(Command::RenderStems("a.cadence".into(), "stems".into()))
+        );
+        assert_eq!(
             parse(&["--check", "a.cadence"]),
             Ok(Command::Check("a.cadence".into()))
         );
@@ -419,6 +486,9 @@ mod tests {
     fn rejects_bad_arguments() {
         assert!(parse(&["--render"]).is_err());
         assert!(parse(&["--render", "a.cadence"]).is_err());
+        assert!(parse(&["--render-stems"]).is_err());
+        assert!(parse(&["--render-stems", "a.cadence"]).is_err());
+        assert!(parse(&["--render-stems", "a.cadence", "d", "x"]).is_err());
         assert!(parse(&["--render-demo"]).is_err());
         assert!(parse(&["--bogus"]).is_err());
         assert!(parse(&["--check", "a", "b"]).is_err());

@@ -16,8 +16,8 @@
 //! bars are kept, and SMPTE-timed or format-2 files are rejected.
 
 use crate::model::{
-    create_track, map_drum_pitch, next_id, Clip, Instrument, Note, Pattern, Project, Track,
-    MAX_BARS, MAX_BPM, MAX_NOTES_PER_PATTERN, MAX_SONG_EVENTS, MAX_TRACKS, MIN_BPM,
+    create_track, default_buses, map_drum_pitch, next_id, Clip, Instrument, Note, Pattern, Project,
+    Track, MAX_BARS, MAX_BPM, MAX_NOTES_PER_PATTERN, MAX_SONG_EVENTS, MAX_TRACKS, MIN_BPM,
     MIN_NOTE_DURATION, PROJECT_VERSION, STEPS_PER_BAR, STEPS_PER_BEAT,
 };
 use midly::num::{u15, u24, u28, u4, u7};
@@ -496,6 +496,9 @@ pub fn import_midi(bytes: &[u8]) -> Result<Project, String> {
         master_volume: 0.8,
         tracks,
         key: Default::default(),
+        markers: Vec::new(),
+        chord_events: Vec::new(),
+        buses: default_buses(),
     };
     project
         .validate()

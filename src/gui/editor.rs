@@ -12,7 +12,7 @@ use egui::{
 use super::arranger::snap_floor;
 use super::theme;
 use super::{ops, sidebar, CadenceApp, StatusKind};
-use crate::model::{note_name, ChordQuality, Note, Pattern, SongKey, Track, NOTE_NAMES};
+use crate::model::{next_id, note_name, ChordQuality, Note, Pattern, SongKey, Track, NOTE_NAMES};
 
 const KEYS_W: f32 = 66.0;
 const DRUM_LABEL_W: f32 = 132.0;
@@ -30,6 +30,14 @@ const PITCHES: usize = (LAST_PITCH - FIRST_PITCH + 1) as usize;
 /// 0..=127 while still reaching C0 for bass.
 const KB_OCTAVE_MIN: i32 = 0;
 const KB_OCTAVE_MAX: i32 = 8;
+
+/// Jitter the Humanize button applies: ±10% velocity and ±0.25 steps (a
+/// 1/64 note) of timing — enough to loosen a rigid line without scattering
+/// it off the grid.
+const HUMANIZE_VELOCITY: f32 = 0.10;
+const HUMANIZE_TIMING: f64 = 0.25;
+/// Velocity-scale chips next to Humanize in both editor toolbars.
+const VEL_CHIPS: [(&str, f32); 2] = [("-10%", 0.9), ("+10%", 1.1)];
 
 /// The 12 mapped computer keys by chromatic index (0 = C … 11 = B) — the
 /// FL-Studio two-row layout: white keys `Z X C V B N M` on the bottom row and
@@ -103,11 +111,7 @@ pub(super) fn held_keyboard_keys(ctx: &Context) -> BTreeSet<usize> {
 /// Pitch classes (0 = C … 11 = B) belonging to `key`'s scale — its seven
 /// diatonic degrees — for the scale-highlight row tint.
 pub(super) fn scale_pitch_classes(key: SongKey) -> [bool; 12] {
-    let mut pcs = [false; 12];
-    for degree in 0..7 {
-        pcs[key.degree_root(degree) as usize] = true;
-    }
-    pcs
+    key.pitch_classes()
 }
 
 /// Octave the computer keyboard and chord strip centre on for `track`: the
@@ -125,6 +129,20 @@ fn chord_spacing_label(spacing: f64) -> &'static str {
         s if (s - 0.25).abs() < 1e-6 => "1/64",
         s if (s - 0.5).abs() < 1e-6 => "1/32",
         _ => "1/16",
+    }
+}
+
+/// Labels for the chord-strip inversion selector — rotations of the lowest
+/// chord tone up an octave, so three covers any chord the strip can build.
+const CHORD_INVERSION_LABELS: [&str; 4] = ["Root", "1st", "2nd", "3rd"];
+
+/// Label for the slash-bass combo: "Off", the chord "Root" or the chosen
+/// scale degree's numeral (the degree's pitch class comes from `key`).
+fn chord_bass_label(bass: ops::ChordBass, key: SongKey) -> String {
+    match bass {
+        ops::ChordBass::Off => "Off".to_string(),
+        ops::ChordBass::Root => "Root".to_string(),
+        ops::ChordBass::Degree(degree) => key.degree_numeral(degree),
     }
 }
 
@@ -236,8 +254,19 @@ pub(super) struct EditorView {
     pub chord_direction: ops::StrumDirection,
     /// Strum spacing in steps; `0.0` stamps a block chord.
     pub chord_spacing: f64,
+    /// Chord-strip inversion: how many times the lowest tone rotates up an
+    /// octave (0 = root position). Applied to hover auditions and stamps.
+    pub chord_inversion: u8,
+    /// Slash-bass option: an extra tone voiced below the chord
+    /// ([`ops::ChordBass`]), `Off` by default.
+    pub chord_bass: ops::ChordBass,
     /// Tints piano-roll rows whose pitch class is in the song key's scale.
     pub scale_highlight: bool,
+    /// Snaps drawn notes and vertical note drags onto the song key's scale
+    /// tones. Session view state like `scale_highlight` — never serialized.
+    /// Inert on the C-major default (treated as "no key chosen") and on drum
+    /// grids; see [`CadenceApp::scale_snap_key`].
+    pub scale_snap: bool,
     /// Keys-tab mouse state: pitch under the pointer, whether the mouse
     /// button is held on the keys (glow + glissando), and the last pitch
     /// the mouse previewed so a drag retriggers only on change.
@@ -273,7 +302,10 @@ impl Default for EditorView {
             chord_quality: None,
             chord_direction: ops::StrumDirection::default(),
             chord_spacing: 0.0,
+            chord_inversion: 0,
+            chord_bass: ops::ChordBass::default(),
             scale_highlight: false,
+            scale_snap: false,
             kb_pointer: None,
             kb_down: false,
             kb_last_preview: None,
@@ -469,6 +501,34 @@ impl CadenceApp {
         self.editor.roll_scroll_y = y.max(0.0);
     }
 
+    /// Ids the pattern note-ops act on: the selection when there is one,
+    /// else `None` — which every note op reads as "the whole pattern".
+    fn note_op_ids(&self) -> Option<BTreeSet<u64>> {
+        (!self.sel.notes.is_empty()).then(|| self.sel.notes.clone())
+    }
+
+    /// The `(track, pattern)` the pattern editor is editing — the selected
+    /// track's current pattern. `None` when no track is selected or it has
+    /// no patterns; the Edit-menu note ops disable then.
+    pub(super) fn editor_target(&self) -> Option<(u64, u64)> {
+        let track = self.selected_track()?;
+        Some((track.id, self.current_pattern_id(track)?))
+    }
+
+    /// Whether the note ops (quantize, humanize, velocity scale) have
+    /// anything to act on right now: a note selection, or a current
+    /// pattern with notes to fall back on.
+    pub(super) fn has_note_targets(&self) -> bool {
+        if !self.sel.notes.is_empty() {
+            return true;
+        }
+        self.editor_target().is_some_and(|(tid, pid)| {
+            ops::track(&self.project, tid)
+                .and_then(|t| ops::pattern(t, pid))
+                .is_some_and(|p| !p.notes.is_empty())
+        })
+    }
+
     /// Quantize button handler: snap note starts to the grid — the editor's
     /// snap value on the roll, whole steps on the drum grid. Selected notes
     /// when any are selected, else the whole pattern.
@@ -477,7 +537,7 @@ impl CadenceApp {
             .selected_track()
             .is_some_and(|t| t.id == track_id && t.shows_drum_grid());
         let grid = if drum { 1.0 } else { self.editor.snap };
-        let ids = (!self.sel.notes.is_empty()).then(|| self.sel.notes.clone());
+        let ids = self.note_op_ids();
         let mut moved = 0;
         self.edit("Quantize notes", None, |p| {
             if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
@@ -490,6 +550,60 @@ impl CadenceApp {
                 format!("Quantized {moved} note{}.", sidebar::plural(moved))
             } else {
                 "Already on the grid.".to_string()
+            },
+        );
+    }
+
+    /// Humanize button handler: seeded velocity and timing jitter on the
+    /// selected notes, or the whole pattern when nothing is selected.
+    /// `next_id` gives every click a fresh seed, so pressing again is a
+    /// genuinely new take; undo restores the previous pass.
+    pub(super) fn humanize_notes(&mut self, track_id: u64, pid: u64) {
+        let ids = self.note_op_ids();
+        let seed = next_id();
+        let mut touched = 0usize;
+        self.edit("Humanize notes", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                touched = ops::humanize_notes(
+                    pat,
+                    ids.as_ref(),
+                    HUMANIZE_VELOCITY,
+                    HUMANIZE_TIMING,
+                    seed,
+                );
+            }
+        });
+        self.set_status(
+            StatusKind::Info,
+            if touched > 0 {
+                format!("Humanized {touched} note{}.", sidebar::plural(touched))
+            } else {
+                "No notes to humanize.".to_string()
+            },
+        );
+    }
+
+    /// Velocity-chip handler: multiplies note velocities by `gain` (the
+    /// `VEL_CHIPS` ±10% buttons) — the selection, or the whole pattern
+    /// when nothing is selected.
+    pub(super) fn scale_velocities(&mut self, track_id: u64, pid: u64, gain: f32) {
+        let ids = self.note_op_ids();
+        let mut touched = 0usize;
+        self.edit("Scale velocities", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
+                touched = ops::scale_velocities(pat, ids.as_ref(), gain);
+            }
+        });
+        let pct = ((f64::from(gain) - 1.0) * 100.0).round() as i32;
+        self.set_status(
+            StatusKind::Info,
+            if touched > 0 {
+                format!(
+                    "Velocity {pct:+}% on {touched} note{}.",
+                    sidebar::plural(touched)
+                )
+            } else {
+                "No notes to scale.".to_string()
             },
         );
     }
@@ -978,6 +1092,32 @@ impl CadenceApp {
         self.editor.roll_scroll_y = sy;
     }
 
+    /// Humanize button + velocity-scale chips shared by the piano-roll and
+    /// drum toolbars. Call only when a note op has targets (a selection, or
+    /// a pattern that has notes).
+    fn note_op_buttons(&mut self, ui: &mut Ui, track_id: u64, pid: u64) {
+        let pal = self.palette();
+        if ui
+            .add(egui::Button::new("Humanize").small())
+            .on_hover_text("Random velocity and timing jitter — selected notes, or every note when nothing is selected. Each click is a new take; undo to revert")
+            .clicked()
+        {
+            self.humanize_notes(track_id, pid);
+        }
+        ui.label(RichText::new("Vel").small().color(pal.text_faint));
+        for (label, gain) in VEL_CHIPS {
+            if ui
+                .add(egui::Button::new(label).small())
+                .on_hover_text(format!(
+                    "Velocity {label} — selected notes, or every note when nothing is selected"
+                ))
+                .clicked()
+            {
+                self.scale_velocities(track_id, pid, gain);
+            }
+        }
+    }
+
     fn roll_toolbar(&mut self, ui: &mut Ui, track: &Track, pid: u64) {
         let pal = self.palette();
         egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 4 }).show(ui, |ui| {
@@ -997,6 +1137,26 @@ impl CadenceApp {
                         ui.selectable_value(&mut self.editor.snap, v, l);
                     }
                 });
+                let scale_snap_on = self.editor.scale_snap;
+                if theme::chip(
+                    ui,
+                    pal,
+                    "Scale snap",
+                    scale_snap_on,
+                    pal.accent,
+                    vec2(70.0, 22.0),
+                    "Snap-to-scale: drawn notes and vertical note drags land on the song key's scale tones",
+                )
+                .clicked()
+                {
+                    self.editor.scale_snap = !scale_snap_on;
+                    if self.editor.scale_snap && self.project.key == SongKey::default() {
+                        self.set_status(
+                            StatusKind::Info,
+                            "Scale snap needs a song key other than C major — set one in the arpeggiator dialog.",
+                        );
+                    }
+                }
                 ui.label(RichText::new("Velocity").small().color(pal.text_faint));
                 let mut v = self.editor.velocity;
                 ui.spacing_mut().slider_width = 110.0;
@@ -1010,8 +1170,8 @@ impl CadenceApp {
                         self.delete_selection();
                     }
                 }
-                let outside = ops::pattern(track, pid).map_or(0, |p| {
-                    p.notes.iter().filter(|n| n.start.fract() != 0.0).count()
+                let (note_count, outside) = ops::pattern(track, pid).map_or((0, 0), |p| {
+                    (p.notes.len(), p.notes.iter().filter(|n| n.start.fract() != 0.0).count())
                 });
                 if outside > 0 {
                     ui.label(RichText::new(format!("{outside} off-grid")).small().color(pal.text_faint)).on_hover_text("These notes sit between grid steps (e.g. imported from MIDI). Moving them keeps their offset.");
@@ -1020,6 +1180,9 @@ impl CadenceApp {
                     && ui.add(egui::Button::new("Quantize").small()).on_hover_text("Snap note starts to the Snap grid — selected notes, or every note when nothing is selected").clicked()
                 {
                     self.quantize_notes(track.id, pid);
+                }
+                if n > 0 || note_count > 0 {
+                    self.note_op_buttons(ui, track.id, pid);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     theme::hint(ui, pal, "Click to draw · drag empty grid to box-select · drag selected notes as a group · right edge resizes · right-click erases");
@@ -1059,6 +1222,44 @@ impl CadenceApp {
         self.sel.notes = ids;
     }
 
+    /// The key snap-to-scale resolves against, when it applies: the toolbar
+    /// toggle is on, the song has a non-default key (songs always carry a
+    /// `SongKey`; the C-major `Default` means "no key chosen") and the track
+    /// shows the melodic roll rather than the drum grid. `None` leaves
+    /// pitches exactly where the pointer puts them.
+    fn scale_snap_key(&self, track: &Track) -> Option<SongKey> {
+        (self.editor.scale_snap
+            && !track.shows_drum_grid()
+            && self.project.key != SongKey::default())
+        .then_some(self.project.key)
+    }
+
+    /// `pitch` moved onto the nearest scale tone when snap-to-scale applies
+    /// ([`Self::scale_snap_key`]), unchanged otherwise.
+    fn snap_to_scale_pitch(&self, track: &Track, pitch: u8) -> u8 {
+        match self.scale_snap_key(track) {
+            Some(key) => ops::snap_pitch_to_scale(key, pitch),
+            None => pitch,
+        }
+    }
+
+    /// Pitch delta for a move drag: `raw_dp` as-is when snap-to-scale is
+    /// off; when on, the delta that lands the drag's anchor note on the
+    /// nearest scale tone — the dragged note stair-steps between scale rows
+    /// and every other dragged note keeps its interval to the anchor.
+    /// `raw_dp == 0` returns 0 so grabbing a chromatic note for a purely
+    /// horizontal move never nudges its pitch.
+    fn snapped_drag_dp(&self, track: &Track, anchor_pitch: u8, raw_dp: i32) -> i32 {
+        match self.scale_snap_key(track) {
+            Some(key) if raw_dp != 0 => {
+                let target =
+                    (i32::from(anchor_pitch) + raw_dp).clamp(0, i32::from(ops::MAX_PITCH)) as u8;
+                i32::from(ops::snap_pitch_to_scale(key, target)) - i32::from(anchor_pitch)
+            }
+            _ => raw_dp,
+        }
+    }
+
     fn finish_pending_note(
         &mut self,
         track: &Track,
@@ -1069,9 +1270,14 @@ impl CadenceApp {
         if !pending.draw_on_click {
             return;
         }
-        let existing = pat.notes.iter().find(|n| {
-            n.pitch == pending.pitch && pending.start >= n.start && pending.start < n.end()
-        });
+        // Snap-to-scale resolves against the pitch the note will land on, so
+        // clicking a chromatic row under an existing scale-tone note selects
+        // it instead of overdubbing a duplicate.
+        let pitch = self.snap_to_scale_pitch(track, pending.pitch);
+        let existing = pat
+            .notes
+            .iter()
+            .find(|n| n.pitch == pitch && pending.start >= n.start && pending.start < n.end());
         match existing {
             Some(n) => {
                 self.sel.notes.clear();
@@ -1083,13 +1289,13 @@ impl CadenceApp {
                 let mut new = None;
                 self.edit("Draw note", Some("draw-note"), |p| {
                     if let Some(pat) = ops::pattern_mut(p, track.id, pid) {
-                        new = ops::add_note(pat, pending.pitch, pending.start, len, vel);
+                        new = ops::add_note(pat, pitch, pending.start, len, vel);
                     }
                 });
                 if let Some(new) = new {
                     self.sel.notes.clear();
                     self.sel.notes.insert(new);
-                    self.preview(track.id, pending.pitch, vel);
+                    self.preview(track.id, pitch, vel);
                 }
             }
         }
@@ -1208,13 +1414,16 @@ impl CadenceApp {
                 if let Some(d) = self.editor.drag.clone() {
                     let snap = self.editor.snap;
                     let (ds, dp) = match d.mode {
-                        DragMode::Move => (
-                            snap_floor(roll.step(pos.x) - d.grab_step_offset, snap)
-                                - snap_floor(d.anchor.start, snap),
-                            (roll.pitch_at(pos.y).unwrap_or(d.grab_pitch) as i32
-                                - d.grab_pitch as i32)
-                                .clamp(-120, 120),
-                        ),
+                        DragMode::Move => {
+                            let raw_dp = (i32::from(roll.pitch_at(pos.y).unwrap_or(d.grab_pitch))
+                                - i32::from(d.grab_pitch))
+                            .clamp(-120, 120);
+                            (
+                                snap_floor(roll.step(pos.x) - d.grab_step_offset, snap)
+                                    - snap_floor(d.anchor.start, snap),
+                                self.snapped_drag_dp(track, d.anchor.pitch, raw_dp),
+                            )
+                        }
                         DragMode::Resize => (
                             (((roll.step(pos.x) - d.anchor.start) / snap).round() * snap)
                                 - d.anchor.duration,
@@ -1497,6 +1706,10 @@ impl CadenceApp {
                 .filter(|h| roll.grid.contains(*h) && self.roll_note_at(pat, roll, *h).is_none())
             {
                 if let Some(pitch) = roll.pitch_at(pos.y) {
+                    // The ghost previews the pitch a drawn note would land
+                    // on — under snap-to-scale that is the scale row, not
+                    // the chromatic row under the pointer.
+                    let pitch = self.snap_to_scale_pitch(track, pitch);
                     let step = snap_floor(roll.step(pos.x), self.editor.snap);
                     let gh = Rect::from_min_size(
                         pos2(roll.x(step), roll.y(pitch) + 1.0),
@@ -2107,8 +2320,9 @@ impl CadenceApp {
     }
 
     /// MIDI pitches + symbol for diatonic `degree` of the song key under the
-    /// chord strip's quality override, voiced around the track's home pitch.
-    /// `None` when the chord voices to nothing in MIDI range.
+    /// chord strip's quality override, inversion and slash-bass options,
+    /// voiced around the track's home pitch. `None` when the chord voices
+    /// to nothing in MIDI range.
     fn chord_pitches(&self, track: &Track, degree: usize) -> Option<(Vec<u8>, String)> {
         let key = self.project.key;
         let quality = self
@@ -2117,9 +2331,24 @@ impl CadenceApp {
             .unwrap_or_else(|| key.degree_chord_quality(degree));
         let spec = ops::ChordSpec::new(key.degree_root(degree), quality);
         let home = sidebar::audition_params(track, track.instrument.default_pitch()).0;
-        let tones = ops::chord_notes(&spec, kb_home_octave(track), self.editor.velocity);
+        let mut tones = ops::chord_notes(&spec, kb_home_octave(track), self.editor.velocity);
+        if self.editor.chord_inversion > 0 {
+            tones = ops::invert_chord(&tones, usize::from(self.editor.chord_inversion));
+        }
+        if let Some(pc) = self.editor.chord_bass.pitch_class(key, spec.root) {
+            tones = ops::with_bass(&tones, pc);
+        }
         let pitches = ops::chord_midi_pitches(&tones, home);
-        (!pitches.is_empty()).then(|| (pitches, spec.symbol()))
+        // Slash notation: whatever pitch class ended up lowest — an
+        // inversion's new bass or the slash-bass tone — when it isn't the
+        // chord root (so a root-position C stays "C", C/G shows "C/G").
+        let mut symbol = spec.symbol();
+        if let Some(&low) = pitches.first() {
+            if low % 12 != spec.root {
+                symbol = format!("{symbol}/{}", NOTE_NAMES[low as usize % 12]);
+            }
+        }
+        (!pitches.is_empty()).then_some((pitches, symbol))
     }
 
     /// Stamps diatonic chord `degree` into the selected melodic track's
@@ -2209,9 +2438,10 @@ impl CadenceApp {
     }
 
     /// Collapsible chord strip above the pattern editor: the seven diatonic
-    /// chords of the song key as one-click stamps, a quality override, strum
-    /// direction/spacing and the scale-highlight toggle. View state lives on
-    /// [`EditorView`]; stamping goes through [`Self::stamp_diatonic_chord`].
+    /// chords of the song key as one-click stamps, a quality override,
+    /// inversion and slash-bass voicing, strum direction/spacing and the
+    /// scale-highlight toggle. View state lives on [`EditorView`]; stamping
+    /// goes through [`Self::stamp_diatonic_chord`].
     fn chord_strip(&mut self, ui: &mut Ui, track: &Track) {
         let pal = self.palette();
         let open = self.editor.chord_open;
@@ -2322,6 +2552,49 @@ impl CadenceApp {
                                 );
                             }
                         });
+                    ui.label(RichText::new("Inv").small().color(pal.text_faint));
+                    egui::ComboBox::from_id_salt(("chord-inversion", track.id))
+                        .width(52.0)
+                        .selected_text(
+                            CHORD_INVERSION_LABELS[usize::from(self.editor.chord_inversion.min(3))],
+                        )
+                        .show_ui(ui, |ui| {
+                            for (v, l) in CHORD_INVERSION_LABELS.iter().enumerate() {
+                                ui.selectable_value(&mut self.editor.chord_inversion, v as u8, *l)
+                                    .on_hover_text(
+                                        "Chord inversion — rotate the lowest tone up an octave",
+                                    );
+                            }
+                        });
+                    ui.label(RichText::new("Bass").small().color(pal.text_faint));
+                    egui::ComboBox::from_id_salt(("chord-bass", track.id))
+                        .width(52.0)
+                        .selected_text(chord_bass_label(self.editor.chord_bass, key))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.editor.chord_bass,
+                                ops::ChordBass::Off,
+                                "Off",
+                            );
+                            ui.selectable_value(
+                                &mut self.editor.chord_bass,
+                                ops::ChordBass::Root,
+                                "Root",
+                            )
+                            .on_hover_text("Double the chord root an octave below the voicing");
+                            for degree in 0..7 {
+                                ui.selectable_value(
+                                    &mut self.editor.chord_bass,
+                                    ops::ChordBass::Degree(degree),
+                                    key.degree_numeral(degree),
+                                )
+                                .on_hover_text(format!(
+                                    "Slash bass on {} ({})",
+                                    key.degree_numeral(degree),
+                                    NOTE_NAMES[key.degree_root(degree) as usize % 12],
+                                ));
+                            }
+                        });
                     ui.label(RichText::new("Roll").small().color(pal.text_faint));
                     egui::ComboBox::from_id_salt(("chord-spacing", track.id))
                         .width(76.0)
@@ -2402,7 +2675,9 @@ impl CadenceApp {
                         }
                     });
                 }
-                let stray = ops::pattern(track, pid).map_or(0, |p| p.notes.iter().filter(|n| !rows.iter().any(|(d, _)| *d == n.pitch)).count());
+                let (note_count, stray) = ops::pattern(track, pid).map_or((0, 0), |p| {
+                    (p.notes.len(), p.notes.iter().filter(|n| !rows.iter().any(|(d, _)| *d == n.pitch)).count())
+                });
                 if stray > 0 {
                     ui.label(RichText::new(format!("{stray} off-kit note{}", sidebar::plural(stray))).small().color(pal.warn))
                         .on_hover_text(format!("Notes on pitches outside the {} kit row{} (e.g. imported). They still play; the grid only edits row pitches — re-map them via MIDI or the piano roll.", rows.len(), sidebar::plural(rows.len())));
@@ -2415,6 +2690,9 @@ impl CadenceApp {
                     && ui.add(egui::Button::new("Quantize").small()).on_hover_text("Snap note starts to the 1/16 grid — selected notes, or every note when nothing is selected").clicked()
                 {
                     self.quantize_notes(track.id, pid);
+                }
+                if n > 0 || note_count > 0 {
+                    self.note_op_buttons(ui, track.id, pid);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     theme::hint(ui, pal, "Click or drag to paint steps · Shift+click cycles accents · right-click erases");
@@ -2864,5 +3142,364 @@ fn note_len_label(steps: f64) -> String {
         8.0 => "1/2".into(),
         16.0 => "1 bar".into(),
         other => format!("{other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Instrument, KeyMode, Project};
+
+    /// `(pitch, start, duration, velocity)` fixture notes — one per beat.
+    const THREE: [(u8, f64, f64, f32); 3] = [
+        (60, 0.0, 2.0, 0.8),
+        (64, 4.0, 2.0, 0.5),
+        (67, 8.0, 2.0, 0.3),
+    ];
+
+    /// A headless app holding one `inst` track whose pattern carries
+    /// `notes`; the track is selected. Returns `(app, track_id, pattern_id)`.
+    fn app_with(inst: Instrument, notes: &[(u8, f64, f64, f32)]) -> (CadenceApp, u64, u64) {
+        let mut project = Project::empty();
+        project.tracks.clear();
+        let tid = ops::add_track(&mut project, inst).unwrap();
+        let pid = project.tracks[0].patterns[0].id;
+        let pat = ops::pattern_mut(&mut project, tid, pid).unwrap();
+        for &(pitch, start, dur, vel) in notes {
+            ops::add_note(pat, pitch, start, dur, vel);
+        }
+        let mut app = CadenceApp::headless(project);
+        app.select_track(tid);
+        (app, tid, pid)
+    }
+
+    fn pattern_of(app: &CadenceApp, tid: u64, pid: u64) -> &Pattern {
+        ops::pattern(ops::track(&app.project, tid).unwrap(), pid).unwrap()
+    }
+
+    fn status_text(app: &CadenceApp) -> &str {
+        app.status.as_ref().map_or("", |s| s.text.as_str())
+    }
+
+    #[test]
+    fn humanize_whole_pattern_reports_and_undoes() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &THREE);
+        let before = pattern_of(&app, tid, pid).clone();
+        app.humanize_notes(tid, pid);
+        // Whole pattern is in scope when nothing is selected.
+        assert_eq!(status_text(&app), "Humanized 3 notes.");
+        let after = pattern_of(&app, tid, pid);
+        assert_eq!(after.notes.len(), 3);
+        for n in &after.notes {
+            assert!((0.0..=1.0).contains(&n.velocity), "velocity {}", n.velocity);
+            assert!(
+                n.start >= 0.0 && n.start <= 16.0 - ops::MIN_NOTE_DURATION,
+                "start {}",
+                n.start
+            );
+        }
+        // edit() records undo exactly when the jitter changed the pattern.
+        assert_eq!(app.history.can_undo(), after.notes != before.notes);
+        if app.history.can_undo() {
+            assert_eq!(app.history.undo_label(), Some("Humanize notes"));
+        }
+        app.undo();
+        assert_eq!(pattern_of(&app, tid, pid).notes, before.notes);
+    }
+
+    #[test]
+    fn humanize_selection_only_touches_selected_notes() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &THREE);
+        let target = pattern_of(&app, tid, pid).notes[1].id;
+        app.sel.notes.insert(target);
+        let before = pattern_of(&app, tid, pid).clone();
+        app.humanize_notes(tid, pid);
+        assert_eq!(status_text(&app), "Humanized 1 note.");
+        let after = pattern_of(&app, tid, pid);
+        assert_eq!(after.notes[0], before.notes[0], "unselected untouched");
+        assert_eq!(after.notes[2], before.notes[2], "unselected untouched");
+        assert_eq!(
+            after.notes[1].id, before.notes[1].id,
+            "jitter moves the note in place"
+        );
+        assert!(app.sel.notes.contains(&target), "selection survives");
+    }
+
+    #[test]
+    fn scale_velocities_scales_all_notes_and_undoes() {
+        let (mut app, tid, pid) = app_with(
+            Instrument::Piano,
+            &[(60, 0.0, 2.0, 0.8), (64, 4.0, 2.0, 0.95)],
+        );
+        app.scale_velocities(tid, pid, 0.9);
+        let after = pattern_of(&app, tid, pid);
+        assert!(
+            (after.notes[0].velocity - 0.72).abs() < 1e-6,
+            "{}",
+            after.notes[0].velocity
+        );
+        assert!(
+            (after.notes[1].velocity - 0.855).abs() < 1e-6,
+            "{}",
+            after.notes[1].velocity
+        );
+        assert_eq!(status_text(&app), "Velocity -10% on 2 notes.");
+        assert_eq!(app.history.undo_label(), Some("Scale velocities"));
+        app.undo();
+        assert!((pattern_of(&app, tid, pid).notes[0].velocity - 0.8).abs() < 1e-6);
+
+        // The +10% chip clamps at full velocity.
+        app.scale_velocities(tid, pid, 1.1);
+        let after = pattern_of(&app, tid, pid);
+        assert!(
+            (after.notes[0].velocity - 0.88).abs() < 1e-6,
+            "{}",
+            after.notes[0].velocity
+        );
+        assert_eq!(after.notes[1].velocity, 1.0, "clamped at max");
+        assert_eq!(status_text(&app), "Velocity +10% on 2 notes.");
+    }
+
+    #[test]
+    fn scale_velocities_uses_selection() {
+        let (mut app, tid, pid) = app_with(
+            Instrument::Piano,
+            &[(60, 0.0, 2.0, 0.8), (64, 4.0, 2.0, 0.4)],
+        );
+        let target = pattern_of(&app, tid, pid).notes[0].id;
+        app.sel.notes.insert(target);
+        app.scale_velocities(tid, pid, 0.5);
+        let after = pattern_of(&app, tid, pid);
+        assert!(
+            (after.notes[0].velocity - 0.4).abs() < 1e-6,
+            "{}",
+            after.notes[0].velocity
+        );
+        assert!(
+            (after.notes[1].velocity - 0.4).abs() < 1e-6,
+            "unselected untouched"
+        );
+        assert_eq!(status_text(&app), "Velocity -50% on 1 note.");
+    }
+
+    #[test]
+    fn no_matching_notes_reports_and_records_nothing() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &THREE);
+        app.sel.notes.insert(u64::MAX); // stale id — matches nothing
+        app.humanize_notes(tid, pid);
+        assert_eq!(status_text(&app), "No notes to humanize.");
+        assert!(
+            !app.history.can_undo(),
+            "an untouching edit records no undo"
+        );
+        app.scale_velocities(tid, pid, 0.9);
+        assert_eq!(status_text(&app), "No notes to scale.");
+        assert!(!app.history.can_undo());
+    }
+
+    #[test]
+    fn note_target_predicates_follow_selection_and_content() {
+        // Empty project: the drum track is selected with an empty pattern —
+        // the target pair resolves but nothing is worth acting on.
+        let mut app = CadenceApp::headless(Project::empty());
+        let drums = app.project.tracks[0].id;
+        let beat = app.project.tracks[0].patterns[0].id;
+        assert_eq!(app.editor_target(), Some((drums, beat)));
+        assert!(!app.has_note_targets());
+        // A note selection alone is a target.
+        app.sel.notes.insert(12345);
+        assert!(app.has_note_targets());
+
+        // A pattern with notes is a target without a selection.
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &THREE);
+        assert_eq!(app.editor_target(), Some((tid, pid)));
+        assert!(app.has_note_targets());
+        // No selected track → no target pair, no targets.
+        app.sel.track = None;
+        assert_eq!(app.editor_target(), None);
+        assert!(!app.has_note_targets());
+    }
+
+    /// Pending-note fixture: a click-draw of `pitch` at step `start`.
+    fn pending(pitch: u8, start: f64) -> PendingNote {
+        PendingNote {
+            pos: pos2(0.0, 0.0),
+            pitch,
+            start,
+            draw_on_click: true,
+        }
+    }
+
+    #[test]
+    fn scale_snap_draw_lands_on_scale_tone() {
+        // A major = pcs {9,11,1,2,4,6,8}: C4 (pc 0) is out of scale.
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &[]);
+        app.project.key = SongKey::new(9, KeyMode::Major);
+        app.editor.scale_snap = true;
+        let track = ops::track(&app.project, tid).unwrap().clone();
+        // The real roll re-clones the pattern every frame; mirror that here.
+        let pat = |app: &CadenceApp| {
+            ops::pattern(ops::track(&app.project, tid).unwrap(), pid)
+                .unwrap()
+                .clone()
+        };
+        // A click on the C4 row draws on its lower scale neighbour B3.
+        app.finish_pending_note(&track, pid, &pat(&app), pending(60, 0.0));
+        let drawn = pattern_of(&app, tid, pid).notes.clone();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].pitch, 59);
+        // An in-scale row keeps its pitch.
+        app.finish_pending_note(&track, pid, &pat(&app), pending(61, 4.0));
+        assert_eq!(pattern_of(&app, tid, pid).notes[1].pitch, 61);
+        // Clicking a chromatic row whose snap target already holds a note at
+        // that step selects it instead of overdubbing a duplicate.
+        app.finish_pending_note(&track, pid, &pat(&app), pending(60, 0.5));
+        assert_eq!(pattern_of(&app, tid, pid).notes.len(), 2);
+        assert!(app.sel.notes.contains(&drawn[0].id));
+    }
+
+    #[test]
+    fn scale_snap_inert_without_toggle_or_key() {
+        // Toggle off: the pitch passes through even with a non-default key.
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &[]);
+        app.project.key = SongKey::new(9, KeyMode::Major);
+        let track = ops::track(&app.project, tid).unwrap().clone();
+        let pat = ops::pattern(&track, pid).unwrap().clone();
+        app.finish_pending_note(&track, pid, &pat, pending(60, 0.0));
+        assert_eq!(pattern_of(&app, tid, pid).notes[0].pitch, 60);
+        // Toggle on with the C-major default — treated as "no key": inert.
+        // (61 would snap to 60 in C major, so 61 surviving proves inertness.)
+        app.project.key = SongKey::default();
+        app.editor.scale_snap = true;
+        app.finish_pending_note(&track, pid, &pat, pending(61, 4.0));
+        assert_eq!(pattern_of(&app, tid, pid).notes[1].pitch, 61);
+        // A drum track never snaps, even with the toggle on and a real key.
+        app.project.key = SongKey::new(9, KeyMode::Major);
+        let (drum_app, dtid, _) = app_with(Instrument::Drums, &[]);
+        let drums = ops::track(&drum_app.project, dtid).unwrap().clone();
+        assert!(drums.shows_drum_grid());
+        assert_eq!(app.snap_to_scale_pitch(&drums, 60), 60);
+    }
+
+    #[test]
+    fn scale_snap_drag_stair_steps_and_never_nudges_still_notes() {
+        // A major = pcs {9,11,1,2,4,6,8}.
+        let (mut app, tid, _) = app_with(Instrument::Piano, &[]);
+        app.project.key = SongKey::new(9, KeyMode::Major);
+        app.editor.scale_snap = true;
+        let track = ops::track(&app.project, tid).unwrap().clone();
+        // In-scale anchor A3 (57): one row up lands on chromatic A# so the
+        // note stays; two rows lands on B; one down lands on G#.
+        assert_eq!(app.snapped_drag_dp(&track, 57, 0), 0);
+        assert_eq!(app.snapped_drag_dp(&track, 57, 1), 0);
+        assert_eq!(app.snapped_drag_dp(&track, 57, 2), 2);
+        assert_eq!(app.snapped_drag_dp(&track, 57, -1), -1);
+        // Chromatic anchor A#3 (58): zero vertical movement never snaps it
+        // off its row — a pure horizontal drag keeps its pitch.
+        assert_eq!(app.snapped_drag_dp(&track, 58, 0), 0);
+        assert_eq!(app.snapped_drag_dp(&track, 58, 1), 1, "up lands on B");
+        assert_eq!(app.snapped_drag_dp(&track, 58, -1), -1, "down lands on A");
+        // Dragged past the MIDI top, the anchor clamps to the nearest
+        // reachable scale tone below (127 G -> 126 F#).
+        assert_eq!(app.snapped_drag_dp(&track, 127, 4), -1);
+        // Toggle off: deltas pass through untouched.
+        app.editor.scale_snap = false;
+        assert_eq!(app.snapped_drag_dp(&track, 57, 1), 1);
+        assert_eq!(app.snapped_drag_dp(&track, 58, 1), 1);
+    }
+
+    fn stamped_pitches(app: &CadenceApp, tid: u64, pid: u64) -> Vec<u8> {
+        let mut pitches: Vec<u8> = pattern_of(app, tid, pid)
+            .notes
+            .iter()
+            .map(|n| n.pitch)
+            .collect();
+        pitches.sort_unstable();
+        pitches
+    }
+
+    #[test]
+    fn stamp_diatonic_chord_applies_inversion() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &[]);
+        let ctx = Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        // Root position first: the I chord of the default C-major key.
+        app.stamp_diatonic_chord(0, &ctx);
+        assert_eq!(stamped_pitches(&app, tid, pid), vec![60, 64, 67]);
+
+        // First inversion rotates the bottom tone up: E–G–C′, re-centred.
+        app.undo();
+        app.editor.chord_inversion = 1;
+        app.stamp_diatonic_chord(0, &ctx);
+        assert_eq!(
+            stamped_pitches(&app, tid, pid),
+            vec![52, 55, 60],
+            "1st inversion of the I chord"
+        );
+        assert!(
+            status_text(&app).contains("C/E"),
+            "slash notation reports the inverted bass: {}",
+            status_text(&app)
+        );
+
+        // Second inversion: G–C′–E′.
+        app.undo();
+        app.editor.chord_inversion = 2;
+        app.stamp_diatonic_chord(0, &ctx);
+        assert_eq!(stamped_pitches(&app, tid, pid), vec![55, 60, 64]);
+        assert!(status_text(&app).contains("C/G"));
+    }
+
+    #[test]
+    fn stamp_diatonic_chord_applies_slash_bass() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &[]);
+        let ctx = Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        // The chord root doubled an octave under the voicing: no slash in
+        // the symbol but one extra note below.
+        app.editor.chord_bass = ops::ChordBass::Root;
+        app.stamp_diatonic_chord(0, &ctx);
+        assert_eq!(stamped_pitches(&app, tid, pid), vec![48, 60, 64, 67]);
+        assert!(
+            status_text(&app).contains("Stamped C"),
+            "status: {}",
+            status_text(&app)
+        );
+
+        // A scale degree bass stamps a real slash chord: C over G.
+        app.undo();
+        app.editor.chord_bass = ops::ChordBass::Degree(4); // dominant G in C major
+        app.stamp_diatonic_chord(0, &ctx);
+        assert_eq!(
+            stamped_pitches(&app, tid, pid),
+            vec![43, 60, 64, 67],
+            "G bass under the C voicing"
+        );
+        assert!(
+            status_text(&app).contains("C/G"),
+            "status: {}",
+            status_text(&app)
+        );
+    }
+
+    #[test]
+    fn stamp_diatonic_chord_combines_inversion_bass_and_override() {
+        let (mut app, tid, pid) = app_with(Instrument::Piano, &[]);
+        let ctx = Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        // Minor7 quality override + first inversion + dominant bass.
+        app.editor.chord_quality = Some(ChordQuality::Minor7);
+        app.editor.chord_inversion = 1;
+        app.editor.chord_bass = ops::ChordBass::Degree(4); // G
+        app.stamp_diatonic_chord(0, &ctx);
+        // Cm7 = C Eb G Bb → 1st inv Eb G Bb C′ with a G under it; the
+        // five-tone voicing re-centres an octave down on the piano's home:
+        // G2 Eb3 G3 Bb3 C4.
+        assert_eq!(
+            stamped_pitches(&app, tid, pid),
+            vec![43, 51, 55, 58, 60],
+            "Cm7/Eb over G"
+        );
+        assert!(status_text(&app).contains("Cm7/G"));
     }
 }

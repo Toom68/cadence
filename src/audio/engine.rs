@@ -323,12 +323,21 @@ impl AudioEngine {
     }
 
     /// Starts playback of `project` from `start_step` (steps), optionally looping the song.
-    pub fn play(&self, project: &Project, start_step: f64, looping: bool) -> Result<(), String> {
+    /// `loop_region` is the repeat span in steps while `looping` is on (`None`
+    /// wraps at the song end).
+    pub fn play(
+        &self,
+        project: &Project,
+        start_step: f64,
+        looping: bool,
+        loop_region: Option<(f64, f64)>,
+    ) -> Result<(), String> {
         let song = Box::new(SongData::from_project(project));
         self.send(Command::Play {
             song,
             start_step,
             looping,
+            loop_region,
         })?;
         // Reflect the request immediately; the callback confirms within one buffer.
         self.shared.playing.store(true, Ordering::Relaxed);
@@ -354,6 +363,13 @@ impl AudioEngine {
     /// Updates the song while keeping the transport running (edits, mixer moves, mute/solo).
     pub fn set_project(&self, project: &Project) {
         let _ = self.send(Command::Load(Box::new(SongData::from_project(project))));
+    }
+
+    /// Updates the loop region without restarting the transport — used while
+    /// the region is dragged on the ruler during playback (`None` wraps at
+    /// the song end again).
+    pub fn set_loop_region(&self, region: Option<(f64, f64)>) {
+        let _ = self.send(Command::SetLoopRegion(region));
     }
 
     /// Auditions one note with `track`'s sound and mixer settings, even when stopped or muted.
@@ -433,6 +449,7 @@ mod tests {
             song: Box::new(SongData::from_project(&demo)),
             start_step: 0.0,
             looping: true,
+            loop_region: None,
         })
         .unwrap();
         // Interleaved i16 stereo, odd buffer size.

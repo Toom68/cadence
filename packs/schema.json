@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cadence.local/schemas/instrument-pack.schema.json",
   "title": "Cadence Instrument Pack",
-  "description": "Data-driven synthesis preset pack for Cadence (schema_version 1). Pure JSON, no code, no samples. Rust validation in src/packs.rs is authoritative and rejects unknown fields; this schema mirrors it for editors and cheap AI generation.",
+  "description": "Data-driven synthesis preset pack for Cadence (schema_version 1). Pure JSON, no code; presets may also embed a small PCM clip (the `sample` block). Rust validation in src/packs.rs is authoritative and rejects unknown fields; this schema mirrors it for editors and cheap AI generation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "name", "instruments"],
@@ -37,7 +37,8 @@
       "required": ["id", "name"],
       "anyOf": [
         { "required": ["oscillators"] },
-        { "required": ["kit"] }
+        { "required": ["kit"] },
+        { "required": ["sample"] }
       ],
       "properties": {
         "id": {
@@ -54,7 +55,7 @@
           "minItems": 1,
           "maxItems": 4,
           "items": { "$ref": "#/$defs/oscillator" },
-          "description": "1-4 oscillators. Required for melodic presets; may be omitted entirely when `kit` is present (any listed oscillators are still validated, but inert)."
+          "description": "1-4 oscillators. Required for melodic presets; may be omitted entirely when `kit` or `sample` is present (any listed oscillators are still validated, but inert for those sounds)."
         },
         "envelope": {
           "$ref": "#/$defs/envelope",
@@ -119,6 +120,10 @@
         "kit": {
           "$ref": "#/$defs/kit",
           "description": "Optional drum kit: an ordered list of named one-shot voices, each mapped to a MIDI pitch. When present the preset plays as a kit — note-on picks the piece with the nearest pitch (exact match wins, ties go to the lower pitch) — and the top-level synthesis fields become inert metadata that is still range-validated when present. Pair with the drum editor in the app."
+        },
+        "sample": {
+          "$ref": "#/$defs/sample",
+          "description": "Optional embedded PCM clip — this makes the preset a sampler: the clip plays transposed around `root_pitch` (2^((note - root)/12)), shaped by `envelope`, `filter_*`, `lfo`, `bit_depth`, `sample_hold` and `gain` like an oscillator preset. `oscillators` may be omitted; any listed oscillators are still validated but inert. When `kit` is also present the kit wins at preset level (a `sample` block still gets validated); kit pieces can carry their own clips instead."
         }
       }
     },
@@ -157,13 +162,17 @@
     "kitVoice": {
       "type": "object",
       "additionalProperties": false,
+      "anyOf": [
+        { "required": ["oscillators"] },
+        { "required": ["sample"] }
+      ],
       "properties": {
         "oscillators": {
           "type": "array",
           "minItems": 1,
           "maxItems": 4,
           "items": { "$ref": "#/$defs/oscillator" },
-          "description": "1-4 oscillators; required (a voice with none fails validation, like a melodic preset)."
+          "description": "1-4 oscillators; required unless `sample` is present (a voice with neither fails validation, like a melodic preset; when both are present the clip wins and the oscillators are inert)."
         },
         "envelope": {
           "$ref": "#/$defs/envelope",
@@ -200,9 +209,44 @@
           "default": 1,
           "description": "Sample-and-hold interval in samples. 1 = off; higher values add aliasing grit."
         },
-        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 }
+        "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
+        "sample": {
+          "$ref": "#/$defs/sample",
+          "description": "Optional embedded PCM clip for this piece: the piece plays the clip transposed around its `root_pitch` instead of synthesizing oscillators. May be the voice's only sound source."
+        }
       },
-      "description": "Synthesis fields of one kit piece — identical shapes, ranges and defaults to the melodic fields of a preset (no id/name/monophonic/audition). All fields optional with defaults; `oscillators` must contain 1-4 entries."
+      "description": "Synthesis fields of one kit piece — identical shapes, ranges and defaults to the melodic fields of a preset (no id/name/monophonic/audition). All fields optional with defaults; a voice needs `oscillators` or a `sample` clip (or both, in which case the clip plays)."
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_base64", "sample_rate"],
+      "properties": {
+        "data_base64": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Mono PCM audio as base64: little-endian signed 16-bit frames at `sample_rate`. Decoded size is capped at 2 MiB (~24 s at 44.1 kHz) and must hold a whole number of frames — Rust validation enforces both. Embedded (not referenced) so songs and packs stay self-contained and portable."
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 8000,
+          "maximum": 192000,
+          "description": "Declared rate of the clip in Hz; playback resamples with linear interpolation."
+        },
+        "root_pitch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127,
+          "default": 60,
+          "description": "MIDI note that plays the clip at unity speed; other notes transpose it by 2^((note - root_pitch)/12)."
+        },
+        "loop": {
+          "type": "boolean",
+          "default": false,
+          "description": "true = loop the clip while the note is held; false (default) = one-shot, the voice ends when the clip does."
+        }
+      },
+      "description": "An embedded audio clip inside a preset or kit piece. Only `data_base64` and `sample_rate` are required; `root_pitch` defaults to 60 (middle C) and `loop` to false."
     },
     "oscillator": {
       "type": "object",

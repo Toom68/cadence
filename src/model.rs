@@ -33,6 +33,16 @@ pub const MAX_PATTERNS_PER_TRACK: usize = 256;
 pub const MAX_CLIPS_PER_TRACK: usize = 1024;
 /// Maximum loop repetitions per clip.
 pub const MAX_CLIP_LOOPS: u32 = 32;
+/// Most imported-audio clips a single track can hold (the pattern-clip cap
+/// applies to `Track::clips` only).
+pub const MAX_AUDIO_CLIPS_PER_TRACK: usize = 256;
+/// Largest source offset (seconds) an audio clip may carry — the bound on
+/// `AudioClip::offset`, not on the file itself (the audio store caps file
+/// bytes in `crate::persistence`).
+pub const MAX_AUDIO_SECONDS: f64 = 600.0;
+/// Shortest timeline length (steps) an audio clip may carry; smaller clips
+/// are unreliably thin to grab and paint.
+pub const MIN_AUDIO_CLIP_STEPS: f64 = 0.01;
 pub const MAX_NOTES_PER_PATTERN: usize = 8192;
 /// Longest allowed pattern (and furthest allowed position) in steps.
 pub const MAX_PATTERN_STEPS: u32 = MAX_BARS * STEPS_PER_BAR;
@@ -41,8 +51,31 @@ pub const MIN_NOTE_DURATION: f64 = 0.0625;
 pub const MAX_NAME_CHARS: usize = 160;
 /// Upper bound on flattened note events per song, keeping playback and export bounded.
 pub const MAX_SONG_EVENTS: usize = 200_000;
+/// Most section markers a song can carry on the arranger ruler.
+pub const MAX_MARKERS: usize = 64;
+/// Most per-bar chord events a song can carry on the arranger's chord strip.
+pub const MAX_CHORD_EVENTS: usize = 64;
 pub const MIN_CUTOFF_HZ: f32 = 100.0;
 pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
+/// Longest per-track glide (portamento) slide time, in seconds.
+pub const MAX_GLIDE_SECONDS: f32 = 2.0;
+/// Most points a single track automation lane (volume or pan) can carry.
+pub const MAX_AUTOMATION_POINTS: usize = 256;
+/// Highest value a volume-automation point can hold. The lane multiplies the
+/// fader gain, so 1.5 allows boosting up to +50% over the mixed level.
+pub const MAX_AUTOMATION_GAIN: f32 = 1.5;
+/// Most octaves an arpeggio may span — shared by the pattern arpeggio
+/// generator and the per-track live arpeggiator.
+pub const MAX_ARP_OCTAVES: u32 = 3;
+/// Shortest gate (hit length as a fraction of the hit rate) the live
+/// arpeggiator accepts.
+pub const MIN_ARP_GATE: f32 = 0.1;
+/// Number of fixed subgroup buses every song has. `Track::bus` selects one
+/// (`1..=NUM_BUSES`) or routes straight to the master (`0`); there is no
+/// general routing matrix.
+pub const NUM_BUSES: usize = 4;
+/// Display letters of the subgroup buses, A through D.
+pub const BUS_LETTERS: [char; NUM_BUSES] = ['A', 'B', 'C', 'D'];
 
 /// The eight drum voices of the kit as `(MIDI pitch, display name)`, in editor row order.
 pub const DRUMS: [(u8, &str); 8] = [
@@ -267,6 +300,111 @@ impl Clip {
     }
 }
 
+/// An imported WAV placed on the arrangement timeline
+/// ([`Track::audio_clips`]).
+///
+/// Unlike [`Clip`] this references an audio file staged into the app's data
+/// store by `crate::persistence::stage_audio_file` — the project records
+/// only the store-relative file name, never the samples, so `.cadence`
+/// files stay small and readable. Existence is deliberately *not* part of
+/// the contract: a missing staged file leaves a perfectly valid project
+/// whose clip simply plays silence (validation checks the reference's
+/// *shape* via [`audio_ref_name_ok`], never the disk).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioClip {
+    /// Forgiving for hand-edited files: a missing id loads as 0 and is
+    /// re-issued by [`Project::normalize`] when it collides.
+    #[serde(default)]
+    pub id: u64,
+    /// Name of the staged file inside the audio store — a bare filename
+    /// such as `"a1b2c3d4e5f60718.wav"`, never a path. Must satisfy
+    /// [`audio_ref_name_ok`].
+    #[serde(default)]
+    pub file: String,
+    /// Display label, usually the original file's name.
+    #[serde(default)]
+    pub name: String,
+    /// Start in steps from the beginning of the song.
+    #[serde(default)]
+    pub start: f64,
+    /// Steps one repetition occupies on the timeline. Staged at import from
+    /// the source duration (`seconds / seconds_per_step`); the clip always
+    /// plays the file at its own rate — there is no time-stretch — so
+    /// changing BPM after import shifts the audio against the grid
+    /// (documented limitation of the MVP).
+    #[serde(default)]
+    pub length: f64,
+    /// Seconds into the source where playback starts,
+    /// `0..=MAX_AUDIO_SECONDS` after validation.
+    #[serde(default)]
+    pub offset: f64,
+    /// Repetitions on the timeline. 1 = plays once (default). Each
+    /// repetition restarts the source segment at `offset`.
+    #[serde(default = "default_clip_loops")]
+    pub loops: u32,
+    /// Fade-in length in steps at the clip start (gain ramp). 0 = off.
+    #[serde(default)]
+    pub fade_in: f64,
+    /// Fade-out length in steps at the clip end (gain ramp). 0 = off.
+    #[serde(default)]
+    pub fade_out: f64,
+}
+
+impl AudioClip {
+    /// A clip for staged file `file` starting at `start` steps, `length`
+    /// steps long per repetition, labelled `name`.
+    pub fn new(file: impl Into<String>, name: impl Into<String>, start: f64, length: f64) -> Self {
+        AudioClip {
+            id: next_id(),
+            file: file.into(),
+            name: name.into(),
+            start,
+            length,
+            offset: 0.0,
+            loops: 1,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+
+    /// Loop repetitions clamped into `1..=MAX_CLIP_LOOPS`, safe on unvalidated data.
+    pub fn loop_count(&self) -> u32 {
+        self.loops.clamp(1, MAX_CLIP_LOOPS)
+    }
+
+    /// Total steps the clip spans on the timeline: `length` times the loop
+    /// count. Non-finite or negative lengths read as a zero span.
+    pub fn span(&self) -> f64 {
+        if self.length.is_finite() {
+            self.length.max(0.0) * self.loop_count() as f64
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Whether `name` is a safe audio-store reference for [`AudioClip::file`]:
+/// a non-empty bare filename — ASCII alphanumerics plus `.`, `_`, `-`, no
+/// path separators and no `..` — so it can never address anything outside
+/// the audio store. Staged names are `<content-hash>.wav`; references that
+/// fail this check are dropped by [`Project::normalize`] and skipped by the
+/// player.
+pub fn audio_ref_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_CHARS
+        && name != "."
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// `skip_serializing_if` for plain `bool` fields that default to `false` —
+/// keeps the key out of saved songs unless the flag is actually set.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// Per-track insert and send effects.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Effects {
@@ -289,6 +427,79 @@ impl Default for Effects {
             drive: 0.0,
         }
     }
+}
+
+/// Serde default for [`Bus::name`] on hand-edited files missing the key;
+/// index-aware names ("Bus A"..) come from [`bus_name`].
+fn default_bus_name() -> String {
+    "Bus".to_string()
+}
+
+/// Serde default for [`Bus::volume`]: 0.8, the same fader position the
+/// master and fader double-click resets use.
+fn default_bus_volume() -> f32 {
+    0.8
+}
+
+/// One of the fixed subgroup buses tracks can be routed onto (see
+/// [`Track::bus`]). A bus is a second mix stage between its member
+/// tracks' channel strips and the master: its own smoothed fader/pan plus
+/// a group mute/solo that gates the whole group (see
+/// [`Project::is_bus_audible`]). Deliberately lean — no per-bus effects:
+/// the renderer still runs each bus through a full channel strip with the
+/// sends, drive and filter parked neutral, so an `effects` field added
+/// later would need no DSP changes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Bus {
+    #[serde(default = "default_bus_name")]
+    pub name: String,
+    /// Fader position 0..=1 (same perceptual curve as track faders).
+    #[serde(default = "default_bus_volume")]
+    pub volume: f32,
+    /// -1 (left) ..= 1 (right).
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub solo: bool,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Bus {
+            name: default_bus_name(),
+            volume: default_bus_volume(),
+            pan: 0.0,
+            mute: false,
+            solo: false,
+        }
+    }
+}
+
+/// Display/fallback name of the bus at `index` ("Bus A" .. "Bus D").
+pub fn bus_name(index: usize) -> String {
+    format!("Bus {}", BUS_LETTERS[index % NUM_BUSES])
+}
+
+/// The four default subgroup buses, "Bus A" through "Bus D".
+pub fn default_buses() -> [Bus; NUM_BUSES] {
+    std::array::from_fn(|i| Bus {
+        name: bus_name(i),
+        ..Bus::default()
+    })
+}
+
+/// `skip_serializing_if` for [`Project::buses`]: untouched buses keep the
+/// `buses` key out of saved files, like `markers`/`chord_events`.
+fn buses_are_default(buses: &[Bus; NUM_BUSES]) -> bool {
+    *buses == default_buses()
+}
+
+/// `skip_serializing_if` for [`Track::bus`]: master-routed tracks keep the
+/// `bus` key out of saved files.
+fn is_master_bus(bus: &u8) -> bool {
+    *bus == 0
 }
 
 /// Reference to a sampled General MIDI sound inside an installed SoundFont
@@ -329,6 +540,281 @@ impl FontRef {
     }
 }
 
+/// One breakpoint on a track's automation lane. `step` is a song position in
+/// sixteenth-note steps; `value` is lane-specific: a fader multiplier on the
+/// volume lane (0..=[`MAX_AUTOMATION_GAIN`], 1 = as mixed) or a signed offset
+/// on the pan lane (-1..=1, added to [`Track::pan`]).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AutomationPoint {
+    pub step: f64,
+    pub value: f32,
+}
+
+/// Selects one of a track's automation lanes.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomationLane {
+    /// The volume lane: multiplies `Track::volume` (and so the fader gain).
+    Volume,
+    /// The pan lane: offsets `Track::pan`.
+    Pan,
+}
+
+impl AutomationLane {
+    pub const ALL: [AutomationLane; 2] = [AutomationLane::Volume, AutomationLane::Pan];
+
+    /// Lowercase name used in validation messages ("volume"/"pan").
+    pub fn label(self) -> &'static str {
+        match self {
+            AutomationLane::Volume => "volume",
+            AutomationLane::Pan => "pan",
+        }
+    }
+}
+
+/// Mixer automation on a track: optional breakpoint lanes, each kept sorted
+/// by `step` (equal steps are allowed — they draw a jump). Automation
+/// modifies the static mix rather than replacing it — the volume lane
+/// multiplies the fader, the pan lane offsets the knob — so deleting every
+/// point returns the track to its mixed values, which is also why an empty
+/// [`Automation`] is equivalent to `None`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Automation {
+    /// Fader-multiplier lane (`AutomationLane::Volume`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume: Vec<AutomationPoint>,
+    /// Pan-offset lane (`AutomationLane::Pan`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pan: Vec<AutomationPoint>,
+}
+
+impl Automation {
+    /// The points of `lane`.
+    pub fn lane(&self, lane: AutomationLane) -> &Vec<AutomationPoint> {
+        match lane {
+            AutomationLane::Volume => &self.volume,
+            AutomationLane::Pan => &self.pan,
+        }
+    }
+
+    /// The points of `lane`, mutably.
+    pub fn lane_mut(&mut self, lane: AutomationLane) -> &mut Vec<AutomationPoint> {
+        match lane {
+            AutomationLane::Volume => &mut self.volume,
+            AutomationLane::Pan => &mut self.pan,
+        }
+    }
+
+    /// Valid `value` range of `lane`: volume multipliers run
+    /// 0..=[`MAX_AUTOMATION_GAIN`], pan offsets -1..=1.
+    pub fn value_range(lane: AutomationLane) -> (f32, f32) {
+        match lane {
+            AutomationLane::Volume => (0.0, MAX_AUTOMATION_GAIN),
+            AutomationLane::Pan => (-1.0, 1.0),
+        }
+    }
+
+    /// The no-op value of `lane`: unity fader multiplier, zero pan offset.
+    pub fn neutral(lane: AutomationLane) -> f32 {
+        match lane {
+            AutomationLane::Volume => 1.0,
+            AutomationLane::Pan => 0.0,
+        }
+    }
+
+    /// True when neither lane carries a point — equivalent to no automation.
+    pub fn is_empty(&self) -> bool {
+        self.volume.is_empty() && self.pan.is_empty()
+    }
+
+    /// The lane's interpolated value at `step`, or `None` when it is empty.
+    pub fn value_at(&self, lane: AutomationLane, step: f64) -> Option<f32> {
+        automation_value(self.lane(lane), step)
+    }
+
+    /// Effective fader multiplier at `step` (1 when the volume lane is empty).
+    pub fn volume_at(&self, step: f64) -> f32 {
+        self.value_at(AutomationLane::Volume, step).unwrap_or(1.0)
+    }
+
+    /// Effective pan offset at `step` (0 when the pan lane is empty).
+    pub fn pan_at(&self, step: f64) -> f32 {
+        self.value_at(AutomationLane::Pan, step).unwrap_or(0.0)
+    }
+}
+
+/// Piecewise-linear value of a sorted automation lane at `step`: flat at the
+/// first point's value before it and the last point's value after it. `None`
+/// for an empty lane — callers then keep the un-automated parameter. On
+/// duplicate steps the later point wins (a jump). Robust to unvalidated
+/// data: non-finite `step` reads as the first point's value.
+pub fn automation_value(points: &[AutomationPoint], step: f64) -> Option<f32> {
+    let first = points.first()?;
+    let last = points.last()?;
+    if !step.is_finite() || step < first.step {
+        return Some(first.value);
+    }
+    if step >= last.step {
+        return Some(last.value);
+    }
+    // `i` is the index of the first point right of `step`; `i - 1` is the
+    // last point at or before it (never 0 or past the end: `step` sits
+    // between `first.step` and `last.step`, so `partition_point` yields
+    // 1..=len-1). With duplicate steps at `step`, `i - 1` is the last of
+    // them — the later point wins.
+    let i = points.partition_point(|p| p.step <= step);
+    let (a, b) = (points[i - 1], points[i]);
+    let span = b.step - a.step;
+    if span <= 0.0 {
+        return Some(b.value);
+    }
+    let t = ((step - a.step) / span).clamp(0.0, 1.0) as f32;
+    Some(a.value + (b.value - a.value) * t)
+}
+
+/// Steps between hits for the per-track live arpeggiator (positions are
+/// sixteenth-note steps: 4 steps = a quarter note).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArpRate {
+    /// Quarter notes — a hit every 4 steps.
+    Quarter,
+    /// Eighth notes — every 2 steps.
+    Eighth,
+    /// Sixteenth notes — every step.
+    #[default]
+    Sixteenth,
+    /// Thirty-second notes — every half step.
+    ThirtySecond,
+}
+
+impl ArpRate {
+    pub const ALL: [ArpRate; 4] = [
+        ArpRate::Quarter,
+        ArpRate::Eighth,
+        ArpRate::Sixteenth,
+        ArpRate::ThirtySecond,
+    ];
+
+    /// Steps between hits: 4, 2, 1 or 0.5.
+    pub fn steps(self) -> f64 {
+        match self {
+            ArpRate::Quarter => 4.0,
+            ArpRate::Eighth => 2.0,
+            ArpRate::Sixteenth => 1.0,
+            ArpRate::ThirtySecond => 0.5,
+        }
+    }
+
+    /// Compact note-value label ("1/16").
+    pub fn label(self) -> &'static str {
+        match self {
+            ArpRate::Quarter => "1/4",
+            ArpRate::Eighth => "1/8",
+            ArpRate::Sixteenth => "1/16",
+            ArpRate::ThirtySecond => "1/32",
+        }
+    }
+
+    /// Spelled-out note name for hints and status messages.
+    pub fn note_name(self) -> &'static str {
+        match self {
+            ArpRate::Quarter => "quarter",
+            ArpRate::Eighth => "eighth",
+            ArpRate::Sixteenth => "sixteenth",
+            ArpRate::ThirtySecond => "thirty-second",
+        }
+    }
+}
+
+/// Order in which an arpeggiator cycles a chord's tones — the vocabulary
+/// shared by the pattern arpeggio generator and the per-track live
+/// arpeggiator ([`ArpSettings`]).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArpDirection {
+    /// Lowest to highest, looping.
+    #[default]
+    Up,
+    /// Highest to lowest, looping.
+    Down,
+    /// Up then back down without repeating the top or bottom note.
+    UpDown,
+    /// A deterministic pseudo-random tone each hit.
+    Random,
+    /// Every chord tone together on each hit.
+    Block,
+}
+
+impl ArpDirection {
+    pub const ALL: [ArpDirection; 5] = [
+        ArpDirection::Up,
+        ArpDirection::Down,
+        ArpDirection::UpDown,
+        ArpDirection::Random,
+        ArpDirection::Block,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArpDirection::Up => "Up",
+            ArpDirection::Down => "Down",
+            ArpDirection::UpDown => "Up-Down",
+            ArpDirection::Random => "Random",
+            ArpDirection::Block => "Block chords",
+        }
+    }
+}
+
+/// Serde default for [`ArpSettings::octaves`].
+fn default_arp_octaves() -> u32 {
+    1
+}
+
+/// Serde default for [`ArpSettings::gate`]: a 90% gate keeps a small gap
+/// between hits so the arpeggio articulates, matching the pattern
+/// arpeggiator's built-in spacing.
+fn default_arp_gate() -> f32 {
+    0.9
+}
+
+/// Per-track live arpeggiator settings ([`Track::arp`]). While `enabled`,
+/// every chord the track plays — two or more note events starting on the
+/// same step — is subdivided into a cycling run of hits at `rate` steps:
+/// the chord's pitches extended `octaves - 1` octaves upward, played in
+/// `direction` order, each hit sounding `rate * gate` steps. Single notes
+/// always pass through unchanged.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ArpSettings {
+    /// Master switch; while off the other fields are inert.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Steps between hits.
+    #[serde(default)]
+    pub rate: ArpRate,
+    /// Octaves the chord tones span upward, 1..=[`MAX_ARP_OCTAVES`].
+    #[serde(default = "default_arp_octaves")]
+    pub octaves: u32,
+    /// Order the tones cycle in.
+    #[serde(default)]
+    pub direction: ArpDirection,
+    /// Hit length as a fraction of `rate`, [`MIN_ARP_GATE`]..=1.0.
+    #[serde(default = "default_arp_gate")]
+    pub gate: f32,
+}
+
+impl Default for ArpSettings {
+    fn default() -> Self {
+        ArpSettings {
+            enabled: false,
+            rate: ArpRate::default(),
+            octaves: default_arp_octaves(),
+            direction: ArpDirection::default(),
+            gate: default_arp_gate(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     pub id: u64,
@@ -355,6 +841,51 @@ pub struct Track {
     /// Songs saved before fonts existed have no `font` field and load as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<FontRef>,
+    /// Portamento slide time in seconds, 0..=[`MAX_GLIDE_SECONDS`]; 0 = off.
+    /// While above zero a melodic track plays one note at a time like the
+    /// mono lead: a note starting while another is still held bends the
+    /// sounding voice to the new pitch instead of stacking a second voice
+    /// (legato — the envelope does not re-attack), and a released voice
+    /// that is still ringing is retriggered rather than replaced. Applies
+    /// to built-in and pack sounds; drums, kits and SoundFont programs
+    /// ignore it. Songs saved before glide existed load as 0 (off).
+    #[serde(default)]
+    pub glide: f32,
+    /// Mixer automation (volume/pan lanes) drawn under the track's clips in
+    /// the arranger. `None` — the usual case — means "no automation"; songs
+    /// saved before lanes existed load as `None`. An [`Automation`] holding
+    /// no points behaves identically, and [`Project::normalize`] collapses
+    /// it to `None` so saved files stay clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation: Option<Automation>,
+    /// Live arpeggiator played back as a track effect: while `enabled`,
+    /// chords on the timeline subdivide into a cycling run of hits (see
+    /// [`ArpSettings`]). Drum and kit sounds ignore it; single notes always
+    /// play unchanged. Songs saved before the arpeggiator existed load it
+    /// disabled.
+    #[serde(default)]
+    pub arp: ArpSettings,
+    /// Subgroup bus the track feeds: `0` routes straight to the master,
+    /// `1..=NUM_BUSES` selects `project.buses[bus - 1]` (see [`Bus`] and
+    /// [`Project::is_bus_audible`]). Songs saved before buses existed have
+    /// no `bus` key and load as 0 (master); a master-routed track
+    /// serializes without the key.
+    #[serde(default, skip_serializing_if = "is_master_bus")]
+    pub bus: u8,
+    /// Whether this is an audio lane: it plays imported WAV clips
+    /// (`audio_clips`) instead of synthesized patterns. Audio lanes normally
+    /// carry no patterns; any `clips`/`patterns` left in them are simply
+    /// ignored by playback (and kept for hand-edited or undone data).
+    /// Songs saved before audio lanes existed load `false` and serialize
+    /// without the key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub audio: bool,
+    /// Imported-WAV clips on the timeline (see [`AudioClip`]). Lives beside
+    /// — not inside — `clips`, so every pattern-clip code path stays
+    /// unchanged; the two lists share one clip-id space for selection and
+    /// undo. Songs saved before audio clips existed load an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_clips: Vec<AudioClip>,
 }
 
 impl Track {
@@ -436,6 +967,73 @@ impl Track {
     }
 }
 
+/// A named section marker ("Intro", "Verse", "Chorus", …) pinned to a song
+/// step and drawn as a flag on the arranger ruler. Markers are annotations:
+/// they never affect playback.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Marker {
+    /// Forgiving for hand-edited files: a missing id loads as 0 and is
+    /// re-issued by [`Project::normalize`] when it collides.
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    /// Position in sixteenth-note steps, `0..=MAX_PATTERN_STEPS` after
+    /// validation. A marker past the song end is harmless — it just sits in
+    /// the dark region beyond the END line.
+    #[serde(default)]
+    pub step: f64,
+}
+
+impl Marker {
+    /// A marker named `name` at `step`, with a fresh process-unique id.
+    pub fn new(name: impl Into<String>, step: f64) -> Self {
+        Marker {
+            id: next_id(),
+            name: name.into(),
+            step,
+        }
+    }
+}
+
+/// A per-bar chord label ("Am7", "F", …) pinned to a song step and drawn as
+/// a chip on the arranger's chord strip. Chord events are annotations — a
+/// harmonic guide only: they never affect playback.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ChordEvent {
+    /// Forgiving for hand-edited files: a missing id loads as 0 and is
+    /// re-issued by [`Project::normalize`] when it collides.
+    #[serde(default)]
+    pub id: u64,
+    /// Position in sixteenth-note steps, `0..=MAX_PATTERN_STEPS` after
+    /// validation. The arranger writes bar-aligned steps; any step is legal.
+    #[serde(default)]
+    pub step: f64,
+    /// Root pitch class, `0..=11` after validation (C = 0).
+    #[serde(default)]
+    pub root: u8,
+    /// Chord type; major when a hand-edited file omits it.
+    #[serde(default)]
+    pub quality: ChordQuality,
+}
+
+impl ChordEvent {
+    /// A `quality` chord on `root` at `step`, with a fresh process-unique id.
+    pub fn new(root: u8, quality: ChordQuality, step: f64) -> Self {
+        ChordEvent {
+            id: next_id(),
+            step,
+            root: root % 12,
+            quality,
+        }
+    }
+
+    /// Chord symbol, e.g. "C", "Am7" or "F#m7b5" — see [`ChordQuality::symbol`].
+    pub fn label(&self) -> String {
+        self.quality.symbol(self.root)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub version: u32,
@@ -454,6 +1052,25 @@ pub struct Project {
     /// load as C major.
     #[serde(default)]
     pub key: SongKey,
+    /// Named section markers shown on the arranger ruler, kept sorted by
+    /// `step` (then id). Songs saved before markers existed have no `markers`
+    /// field and load as empty; songs with none serialize without the key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+    /// Per-bar chord labels shown on the arranger's chord strip, kept sorted
+    /// by `step` (then id). Songs saved before chord events existed have no
+    /// `chord_events` field and load as empty; songs with none serialize
+    /// without the key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chord_events: Vec<ChordEvent>,
+    /// The fixed subgroup buses tracks can route onto (`Track::bus` = index
+    /// + 1; 0 is the master itself, which has no `Bus`). Songs saved before
+    ///   buses existed have no `buses` key and load the four defaults ("Bus
+    ///   A".."Bus D"); a song whose buses are all default serializes without
+    ///   the key. The array length is fixed, so a malformed `buses` array is
+    ///   rejected at parse time.
+    #[serde(default = "default_buses", skip_serializing_if = "buses_are_default")]
+    pub buses: [Bus; NUM_BUSES],
 }
 
 /// Pitch-class names with ASCII sharps, indexed by `pitch % 12` (C = 0).
@@ -549,6 +1166,17 @@ impl SongKey {
             ChordQuality::Diminished => format!("{}°", base.to_lowercase()),
             _ => base.to_string(),
         }
+    }
+
+    /// The twelve pitch classes (index = `pitch % 12`, C = 0), `true` where
+    /// the class belongs to the key's scale — its seven diatonic degrees.
+    /// Backs the editor's scale-highlight row tint and snap-to-scale.
+    pub fn pitch_classes(&self) -> [bool; 12] {
+        let mut pcs = [false; 12];
+        for degree in 0..7 {
+            pcs[self.degree_root(degree) as usize] = true;
+        }
+        pcs
     }
 }
 
@@ -828,6 +1456,49 @@ pub fn create_track(instrument: Instrument) -> Track {
         patterns: vec![pattern],
         preset: None,
         font: None,
+        glide: 0.0,
+        automation: None,
+        arp: ArpSettings::default(),
+        bus: 0,
+        audio: false,
+        audio_clips: Vec::new(),
+    }
+}
+
+/// Lane color for audio tracks — a desaturated slate that reads
+/// differently from every instrument color in [`TRACK_COLORS`].
+pub const AUDIO_TRACK_COLOR: [u8; 3] = [120, 132, 150];
+
+/// A new audio lane (`Track::audio`): no patterns or pattern clips, just an
+/// empty `audio_clips` list ready for imported WAVs. `name` falls back to
+/// "Audio" when blank. The `instrument` field is inert on audio lanes —
+/// [`Instrument::Pad`] is parked there only because the field is required.
+pub fn create_audio_track(name: &str) -> Track {
+    let name = name.trim();
+    Track {
+        id: next_id(),
+        name: if name.is_empty() {
+            "Audio".to_string()
+        } else {
+            name.chars().take(MAX_NAME_CHARS).collect()
+        },
+        color: AUDIO_TRACK_COLOR,
+        instrument: Instrument::Pad,
+        volume: 0.7,
+        pan: 0.0,
+        mute: false,
+        solo: false,
+        effects: Effects::default(),
+        patterns: Vec::new(),
+        clips: Vec::new(),
+        preset: None,
+        font: None,
+        glide: 0.0,
+        automation: None,
+        arp: ArpSettings::default(),
+        bus: 0,
+        audio: true,
+        audio_clips: Vec::new(),
     }
 }
 
@@ -856,7 +1527,11 @@ fn check_range<T: PartialOrd + Copy + std::fmt::Display>(
     Ok(())
 }
 
-fn clamp_name(name: &mut String, fallback: &str) {
+/// Trims a name the way [`Project::normalize`] repairs names on load: control
+/// characters are dropped, the length is capped at [`MAX_NAME_CHARS`] and an
+/// empty (or all-blank) result falls back to `fallback`. Shared by the marker
+/// ops so renames go through the same cleaning as every other song name.
+pub(crate) fn clamp_name(name: &mut String, fallback: &str) {
     let cleaned: String = name
         .chars()
         .filter(|c| !c.is_control())
@@ -898,6 +1573,9 @@ impl Project {
             master_volume: 0.8,
             tracks: vec![create_track(Instrument::Drums)],
             key: SongKey::default(),
+            markers: Vec::new(),
+            chord_events: Vec::new(),
+            buses: default_buses(),
         }
     }
 
@@ -923,13 +1601,43 @@ impl Project {
         self.tracks.iter().any(|t| t.solo)
     }
 
-    /// Mute/solo rule shared by playback, export and the mixer display: a muted track is
-    /// silent; if any track is soloed, only soloed, unmuted tracks are heard.
+    /// Whether any subgroup bus is soloed — the bus counterpart of
+    /// [`Project::has_solo`].
+    pub fn has_bus_solo(&self) -> bool {
+        self.buses.iter().any(|b| b.solo)
+    }
+
+    /// The bus mute/solo gate composed into [`Project::is_track_audible`].
+    /// A subgroup is heard only when it is not muted and — while any bus is
+    /// soloed — soloed itself. `bus` 0 stands for the master itself: it has
+    /// no controls of its own, so it passes unless a subgroup is soloed
+    /// (soloing a bus therefore isolates its group, silencing
+    /// master-routed tracks too). An out-of-range bus — only reachable on
+    /// unvalidated data — counts as inaudible rather than passed through.
+    pub fn is_bus_audible(&self, bus: u8) -> bool {
+        if bus == 0 {
+            return !self.has_bus_solo();
+        }
+        self.buses
+            .get(bus as usize - 1)
+            .is_some_and(|b| !b.mute && (!self.has_bus_solo() || b.solo))
+    }
+
+    /// Mute/solo rule shared by playback, export and the mixer display. Two
+    /// gates compose: a track is heard only if it passes its own gate —
+    /// not muted, and soloed whenever any track is soloed — AND its bus
+    /// passes [`Project::is_bus_audible`]. So a soloed track on a muted or
+    /// non-soloed bus stays silent, and muting a bus silences its whole
+    /// group including the post-fader sends of its member tracks.
     pub fn is_track_audible(&self, index: usize) -> bool {
+        let Some(track) = self.tracks.get(index) else {
+            return false;
+        };
+        if !self.is_bus_audible(track.bus) {
+            return false;
+        }
         let solo = self.has_solo();
-        self.tracks
-            .get(index)
-            .is_some_and(|t| !t.mute && (!solo || t.solo))
+        !track.mute && (!solo || track.solo)
     }
 
     pub fn track_index(&self, id: u64) -> Option<usize> {
@@ -967,6 +1675,9 @@ impl Project {
         }
         let mut max_id = self.id;
         let mut track_ids = HashSet::new();
+        // Clip ids are unique across the whole project — selection and the
+        // clipboard key on the id alone, with no track qualifier.
+        let mut clip_ids = HashSet::new();
         let mut event_count = 0usize;
         let max_pos = MAX_PATTERN_STEPS as f64;
         for (ti, track) in self.tracks.iter().enumerate() {
@@ -990,6 +1701,28 @@ impl Project {
                 1.0,
                 track.pan.is_finite(),
             )?;
+            check_range(
+                &format!("{tl} glide"),
+                track.glide,
+                0.0,
+                MAX_GLIDE_SECONDS,
+                track.glide.is_finite(),
+            )?;
+            check_range(
+                &format!("{tl} arp octaves"),
+                track.arp.octaves,
+                1,
+                MAX_ARP_OCTAVES,
+                true,
+            )?;
+            check_range(
+                &format!("{tl} arp gate"),
+                track.arp.gate,
+                MIN_ARP_GATE,
+                1.0,
+                track.arp.gate.is_finite(),
+            )?;
+            check_range(&format!("{tl} bus"), track.bus, 0, NUM_BUSES as u8, true)?;
             let fx = &track.effects;
             check_range(
                 &format!("{tl} filter cutoff"),
@@ -1016,6 +1749,39 @@ impl Project {
                 check_name(&format!("{fl} name"), &font.name)?;
                 if font.program > 127 {
                     return Err(format!("{fl} program must be between 0 and 127."));
+                }
+            }
+            if let Some(auto) = &track.automation {
+                for kind in AutomationLane::ALL {
+                    let lane = auto.lane(kind);
+                    let (lo, hi) = Automation::value_range(kind);
+                    let al = format!("{tl} {} automation", kind.label());
+                    if lane.len() > MAX_AUTOMATION_POINTS {
+                        return Err(format!(
+                            "{al} has more than {MAX_AUTOMATION_POINTS} points."
+                        ));
+                    }
+                    let mut prev = f64::NEG_INFINITY;
+                    for pt in lane {
+                        check_range(
+                            &format!("{al} point position"),
+                            pt.step,
+                            0.0,
+                            max_pos,
+                            pt.step.is_finite(),
+                        )?;
+                        if pt.step < prev {
+                            return Err(format!("{al} points are not sorted by step."));
+                        }
+                        prev = pt.step;
+                        check_range(
+                            &format!("{al} point value"),
+                            pt.value,
+                            lo,
+                            hi,
+                            pt.value.is_finite(),
+                        )?;
+                    }
                 }
             }
             if track.patterns.len() > MAX_PATTERNS_PER_TRACK {
@@ -1067,7 +1833,6 @@ impl Project {
                     }
                 }
             }
-            let mut clip_ids = HashSet::new();
             for clip in &track.clips {
                 if !clip_ids.insert(clip.id) {
                     return Err(format!("{tl} has clips with duplicate IDs."));
@@ -1101,11 +1866,131 @@ impl Project {
                 )?;
                 event_count += pattern.notes.len().saturating_mul(clip.loops as usize);
             }
+            // Audio clips share the pattern clips' id space so selection and
+            // undo never have to disambiguate. The referenced file's presence
+            // is intentionally not checked — a missing staged file is a
+            // silent clip, not an invalid project.
+            if track.audio_clips.len() > MAX_AUDIO_CLIPS_PER_TRACK {
+                return Err(format!(
+                    "{tl} has more than {MAX_AUDIO_CLIPS_PER_TRACK} audio clips."
+                ));
+            }
+            for clip in &track.audio_clips {
+                if !clip_ids.insert(clip.id) {
+                    return Err(format!("{tl} has clips with duplicate IDs."));
+                }
+                max_id = max_id.max(clip.id);
+                check_name(&format!("{tl} audio clip name"), &clip.name)?;
+                if !audio_ref_name_ok(&clip.file) {
+                    return Err(format!(
+                        "{tl} has an audio clip with an invalid file reference."
+                    ));
+                }
+                if !clip.start.is_finite() || clip.start < 0.0 || clip.start >= max_pos {
+                    return Err(format!("{tl} has an audio clip with an invalid position."));
+                }
+                if !clip.length.is_finite()
+                    || clip.length < MIN_AUDIO_CLIP_STEPS
+                    || clip.length > max_pos
+                {
+                    return Err(format!("{tl} has an audio clip with an invalid length."));
+                }
+                check_range(
+                    &format!("{tl} audio clip offset"),
+                    clip.offset,
+                    0.0,
+                    MAX_AUDIO_SECONDS,
+                    clip.offset.is_finite(),
+                )?;
+                if clip.loops == 0 || clip.loops > MAX_CLIP_LOOPS {
+                    return Err(format!(
+                        "{tl} has an audio clip with an invalid loop count."
+                    ));
+                }
+                let span = clip.length * clip.loops as f64;
+                check_range(
+                    &format!("{tl} audio clip fade-in"),
+                    clip.fade_in,
+                    0.0,
+                    span,
+                    clip.fade_in.is_finite(),
+                )?;
+                check_range(
+                    &format!("{tl} audio clip fade-out"),
+                    clip.fade_out,
+                    0.0,
+                    span,
+                    clip.fade_out.is_finite(),
+                )?;
+            }
         }
         if event_count > MAX_SONG_EVENTS {
             return Err(format!(
                 "The arrangement contains {event_count} note events; the limit is {MAX_SONG_EVENTS}."
             ));
+        }
+        // The fixed array already guarantees the bus count at type and
+        // serde level; this loop only vets the fields a hand-edited file
+        // can fill in.
+        for (bi, bus) in self.buses.iter().enumerate() {
+            let bl = format!("Bus {}", BUS_LETTERS[bi]);
+            check_name(&format!("{bl} name"), &bus.name)?;
+            check_range(
+                &format!("{bl} volume"),
+                bus.volume,
+                0.0,
+                1.0,
+                bus.volume.is_finite(),
+            )?;
+            check_range(
+                &format!("{bl} pan"),
+                bus.pan,
+                -1.0,
+                1.0,
+                bus.pan.is_finite(),
+            )?;
+        }
+        if self.markers.len() > MAX_MARKERS {
+            return Err(format!(
+                "A song can have at most {MAX_MARKERS} section markers."
+            ));
+        }
+        let mut marker_ids = HashSet::new();
+        for (mi, marker) in self.markers.iter().enumerate() {
+            let ml = format!("Section marker {} ({})", mi + 1, marker.name);
+            check_name(&format!("Section marker {} name", mi + 1), &marker.name)?;
+            if !marker_ids.insert(marker.id) {
+                return Err(format!("{ml} has a duplicate ID."));
+            }
+            max_id = max_id.max(marker.id);
+            check_range(
+                &format!("{ml} position"),
+                marker.step,
+                0.0,
+                max_pos,
+                marker.step.is_finite(),
+            )?;
+        }
+        if self.chord_events.len() > MAX_CHORD_EVENTS {
+            return Err(format!(
+                "A song can have at most {MAX_CHORD_EVENTS} chord events."
+            ));
+        }
+        let mut chord_ids = HashSet::new();
+        for (ci, ev) in self.chord_events.iter().enumerate() {
+            let cl = format!("Chord event {} ({})", ci + 1, ev.label());
+            if !chord_ids.insert(ev.id) {
+                return Err(format!("{cl} has a duplicate ID."));
+            }
+            max_id = max_id.max(ev.id);
+            check_range(
+                &format!("{cl} position"),
+                ev.step,
+                0.0,
+                max_pos,
+                ev.step.is_finite(),
+            )?;
+            check_range(&format!("{cl} root"), ev.root, 0, 11, true)?;
         }
         reserve_id(max_id);
         Ok(())
@@ -1125,6 +2010,7 @@ impl Project {
         self.tracks.truncate(MAX_TRACKS);
         let max_pos = MAX_PATTERN_STEPS as f64;
         let mut track_ids = HashSet::new();
+        let mut clip_ids = HashSet::new();
         let mut budget = MAX_SONG_EVENTS;
         for track in &mut self.tracks {
             if !track_ids.insert(track.id) {
@@ -1134,12 +2020,35 @@ impl Project {
             clamp_name(&mut track.name, track.instrument.name());
             track.volume = finite_or_f32(track.volume, 0.7).clamp(0.0, 1.0);
             track.pan = finite_or_f32(track.pan, 0.0).clamp(-1.0, 1.0);
+            track.glide = finite_or_f32(track.glide, 0.0).clamp(0.0, MAX_GLIDE_SECONDS);
+            track.bus = track.bus.min(NUM_BUSES as u8);
+            track.arp.octaves = track.arp.octaves.clamp(1, MAX_ARP_OCTAVES);
+            track.arp.gate =
+                finite_or_f32(track.arp.gate, default_arp_gate()).clamp(MIN_ARP_GATE, 1.0);
             let fx = &mut track.effects;
             fx.cutoff_hz =
                 finite_or_f32(fx.cutoff_hz, MAX_CUTOFF_HZ).clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
             fx.reverb = finite_or_f32(fx.reverb, 0.0).clamp(0.0, 1.0);
             fx.delay = finite_or_f32(fx.delay, 0.0).clamp(0.0, 1.0);
             fx.drive = finite_or_f32(fx.drive, 0.0).clamp(0.0, 1.0);
+            if let Some(auto) = &mut track.automation {
+                for kind in AutomationLane::ALL {
+                    let (lo, hi) = Automation::value_range(kind);
+                    let lane = auto.lane_mut(kind);
+                    lane.retain(|pt| pt.step.is_finite() && pt.value.is_finite());
+                    lane.truncate(MAX_AUTOMATION_POINTS);
+                    for pt in lane.iter_mut() {
+                        pt.step = pt.step.clamp(0.0, max_pos);
+                        pt.value = pt.value.clamp(lo, hi);
+                    }
+                    lane.sort_by(|a, b| a.step.total_cmp(&b.step));
+                }
+                // An automation block holding no points is indistinguishable
+                // from `None`; collapse it so saved files stay clean.
+                if auto.is_empty() {
+                    track.automation = None;
+                }
+            }
             if track
                 .preset
                 .as_ref()
@@ -1206,7 +2115,6 @@ impl Project {
             // remaining clip's pattern exists; `map_or` stays defensive.
             let pattern_lengths: HashMap<u64, u32> =
                 track.patterns.iter().map(|p| (p.id, p.length)).collect();
-            let mut clip_ids = HashSet::new();
             let mut kept = Vec::with_capacity(track.clips.len());
             for mut clip in std::mem::take(&mut track.clips) {
                 clip.loops = clip.loops.clamp(1, MAX_CLIP_LOOPS);
@@ -1228,7 +2136,61 @@ impl Project {
                 kept.push(clip);
             }
             track.clips = kept;
+            // Audio clips: drop anything that can never be resolved or
+            // placed, repair the rest — the id space is shared with the
+            // pattern clips above so `clip_ids` keeps deduplicating.
+            track.audio_clips.retain(|c| {
+                c.start.is_finite()
+                    && c.start >= 0.0
+                    && c.start < max_pos
+                    && audio_ref_name_ok(&c.file)
+            });
+            track.audio_clips.truncate(MAX_AUDIO_CLIPS_PER_TRACK);
+            for clip in &mut track.audio_clips {
+                clamp_name(&mut clip.name, "Audio");
+                clip.length = finite_or(clip.length, STEPS_PER_BAR as f64)
+                    .clamp(MIN_AUDIO_CLIP_STEPS, max_pos);
+                clip.offset = finite_or(clip.offset, 0.0).clamp(0.0, MAX_AUDIO_SECONDS);
+                clip.loops = clip.loops.clamp(1, MAX_CLIP_LOOPS);
+                let span = clip.span();
+                clip.fade_in = finite_or(clip.fade_in, 0.0).clamp(0.0, span);
+                clip.fade_out = finite_or(clip.fade_out, 0.0).clamp(0.0, span);
+                if !clip_ids.insert(clip.id) {
+                    clip.id = next_id();
+                    clip_ids.insert(clip.id);
+                }
+            }
         }
+        // The array length needs no repair — only the field values.
+        for (bi, bus) in self.buses.iter_mut().enumerate() {
+            clamp_name(&mut bus.name, &bus_name(bi));
+            bus.volume = finite_or_f32(bus.volume, default_bus_volume()).clamp(0.0, 1.0);
+            bus.pan = finite_or_f32(bus.pan, 0.0).clamp(-1.0, 1.0);
+        }
+        self.markers.truncate(MAX_MARKERS);
+        let mut marker_ids = HashSet::new();
+        for marker in &mut self.markers {
+            if !marker_ids.insert(marker.id) {
+                marker.id = next_id();
+                marker_ids.insert(marker.id);
+            }
+            clamp_name(&mut marker.name, "Section");
+            marker.step = finite_or(marker.step, 0.0).clamp(0.0, max_pos);
+        }
+        self.markers
+            .sort_by(|a, b| a.step.total_cmp(&b.step).then(a.id.cmp(&b.id)));
+        self.chord_events.truncate(MAX_CHORD_EVENTS);
+        let mut chord_ids = HashSet::new();
+        for ev in &mut self.chord_events {
+            if !chord_ids.insert(ev.id) {
+                ev.id = next_id();
+                chord_ids.insert(ev.id);
+            }
+            ev.step = finite_or(ev.step, 0.0).clamp(0.0, max_pos);
+            ev.root %= 12;
+        }
+        self.chord_events
+            .sort_by(|a, b| a.step.total_cmp(&b.step).then(a.id.cmp(&b.id)));
     }
 
     /// Flattens clips into note events sorted by step (then track, then pitch), clipped to
@@ -1239,6 +2201,11 @@ impl Project {
         let mut events = Vec::new();
         'tracks: for (track_index, track) in self.tracks.iter().enumerate() {
             if audible_only && !self.is_track_audible(track_index) {
+                continue;
+            }
+            // Audio lanes play imported clips, not patterns — the snapshot
+            // schedules them from `Track::audio_clips` instead.
+            if track.audio {
                 continue;
             }
             for clip in &track.clips {
@@ -1634,6 +2601,22 @@ fn demo_project() -> Project {
         tracks: vec![drums, bass, keys, pluck, pad],
         // Cm9 - Abmaj7 - Ebmaj7 - Bb9 is i - VI - III - VII in C natural minor.
         key: SongKey::new(0, KeyMode::Minor),
+        // One section per two-bar chord change.
+        markers: vec![
+            Marker::new("Verse", 0.0),
+            Marker::new("Lift", 32.0),
+            Marker::new("Chorus", 64.0),
+            Marker::new("Turnaround", 96.0),
+        ],
+        // The strip mirrors the chords the arrangement actually plays:
+        // Cm9, Abmaj7, Ebmaj7, Bb9, two bars each.
+        chord_events: vec![
+            ChordEvent::new(0, ChordQuality::Minor9, 0.0),
+            ChordEvent::new(8, ChordQuality::Major7, 32.0),
+            ChordEvent::new(3, ChordQuality::Major7, 64.0),
+            ChordEvent::new(10, ChordQuality::Dominant9, 96.0),
+        ],
+        buses: default_buses(),
     }
 }
 
@@ -1875,6 +2858,11 @@ mod tests {
             ),
             ("dup track", Box::new(|p| p.tracks[1].id = p.tracks[0].id)),
             ("pan", Box::new(|p| p.tracks[0].pan = -2.0)),
+            (
+                "glide range",
+                Box::new(|p| p.tracks[0].glide = MAX_GLIDE_SECONDS + 1.0),
+            ),
+            ("glide nan", Box::new(|p| p.tracks[0].glide = f32::NAN)),
             ("cutoff", Box::new(|p| p.tracks[0].effects.cutoff_hz = 50.0)),
             (
                 "reverb nan",
@@ -2173,6 +3161,7 @@ mod tests {
             audition_note: 60,
             audition_duration: 0.8,
             kit: None,
+            sample: None,
         });
         assert!(p.validate().unwrap_err().contains("preset"));
         p.normalize();
@@ -2389,5 +3378,602 @@ mod tests {
             assert!(labels.insert(q.label()), "{q:?} label unique");
         }
         assert_eq!(Q::Minor7.symbol(9), "Am7");
+    }
+
+    #[test]
+    fn markers_round_trip_and_legacy_default() {
+        // Songs saved before markers existed have no `markers` key and load
+        // with an empty list.
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[]}"#;
+        let old: Project = serde_json::from_str(legacy).unwrap();
+        assert!(old.markers.is_empty());
+        old.validate().unwrap();
+
+        // Markers serialize inside the song and come back identical.
+        let mut p = Project::empty();
+        p.markers = vec![
+            Marker::new("Intro", 0.0),
+            Marker::new("Chorus", 32.0),
+            Marker::new("Outro", 128.0),
+        ];
+        p.validate().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"markers\":"), "{json}");
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        back.validate().unwrap();
+
+        // An empty list is skipped entirely so files stay tidy.
+        let json = serde_json::to_string(&Project::empty()).unwrap();
+        assert!(!json.contains("\"markers\""), "{json}");
+    }
+
+    #[test]
+    fn marker_validation_rejects_and_normalize_repairs() {
+        let mut p = Project::empty();
+        let bad_step = Marker::new("Nowhere", -4.0);
+        let dup_id = bad_step.id;
+        p.markers = vec![
+            Marker {
+                id: bad_step.id,
+                name: "bad\u{0}name".into(),
+                step: f64::NAN,
+            },
+            bad_step,
+            Marker::new("Late", 48.0),
+            Marker::new("Early", 8.0),
+        ];
+        p.markers[1].id = dup_id;
+        assert!(p.validate().is_err());
+        p.normalize();
+        p.validate().unwrap();
+        // Sorted by step; steps clamped into 0..=MAX_PATTERN_STEPS; the NaN
+        // repaired to 0 and the control-char name cleaned; the duplicate id
+        // re-issued.
+        let steps: Vec<f64> = p.markers.iter().map(|m| m.step).collect();
+        assert_eq!(steps, vec![0.0, 0.0, 8.0, 48.0]);
+        assert!(p
+            .markers
+            .iter()
+            .all(|m| !m.name.chars().any(|c| c.is_control())));
+        let ids: HashSet<u64> = p.markers.iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), p.markers.len(), "duplicate ids re-issued");
+
+        // The count cap is enforced by validate and repaired by normalize.
+        p.markers = (0..MAX_MARKERS + 5)
+            .map(|i| Marker::new(format!("S{i}"), i as f64))
+            .collect();
+        assert!(p.validate().is_err());
+        p.normalize();
+        assert_eq!(p.markers.len(), MAX_MARKERS);
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn chord_events_round_trip_and_legacy_default() {
+        // Songs saved before the chord strip existed have no `chord_events`
+        // key and load with an empty list.
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[]}"#;
+        let old: Project = serde_json::from_str(legacy).unwrap();
+        assert!(old.chord_events.is_empty());
+        old.validate().unwrap();
+
+        // Chord events serialize inside the song and come back identical.
+        let mut p = Project::empty();
+        p.chord_events = vec![
+            ChordEvent::new(9, ChordQuality::Minor7, 16.0),
+            ChordEvent::new(0, ChordQuality::Major, 0.0),
+            ChordEvent::new(6, ChordQuality::HalfDiminished7, 32.0),
+        ];
+        p.validate().unwrap();
+        assert_eq!(p.chord_events[0].label(), "Am7");
+        assert_eq!(p.chord_events[2].label(), "F#m7b5");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"chord_events\":"), "{json}");
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        back.validate().unwrap();
+
+        // An empty list is skipped entirely so files stay tidy.
+        let json = serde_json::to_string(&Project::empty()).unwrap();
+        assert!(!json.contains("\"chord_events\""), "{json}");
+    }
+
+    #[test]
+    fn chord_event_validation_rejects_and_normalize_repairs() {
+        let mut p = Project::empty();
+        let bad_step = ChordEvent::new(0, ChordQuality::Major, -4.0);
+        let dup_id = bad_step.id;
+        p.chord_events = vec![
+            ChordEvent {
+                id: dup_id,
+                step: f64::NAN,
+                root: 99,
+                quality: ChordQuality::Minor,
+            },
+            bad_step,
+            ChordEvent::new(7, ChordQuality::Dominant7, 48.0),
+            ChordEvent::new(0, ChordQuality::Major, 8.0),
+        ];
+        assert!(p.validate().is_err());
+        p.normalize();
+        p.validate().unwrap();
+        // Sorted by step; steps clamped into 0..=MAX_PATTERN_STEPS with the
+        // NaN repaired to 0; the out-of-range root reduced to a pitch class;
+        // the duplicate id re-issued.
+        let steps: Vec<f64> = p.chord_events.iter().map(|e| e.step).collect();
+        assert_eq!(steps, vec![0.0, 0.0, 8.0, 48.0]);
+        assert!(p.chord_events.iter().all(|e| e.root < 12));
+        let ids: HashSet<u64> = p.chord_events.iter().map(|e| e.id).collect();
+        assert_eq!(ids.len(), p.chord_events.len(), "duplicate ids re-issued");
+
+        // Roots are pitch classes: 0..=11 only.
+        p.chord_events = vec![ChordEvent::new(0, ChordQuality::Major, 0.0)];
+        p.chord_events[0].root = 12;
+        assert!(p.validate().is_err());
+        p.normalize();
+        assert_eq!(p.chord_events[0].root, 0);
+        p.validate().unwrap();
+
+        // The count cap is enforced by validate and repaired by normalize.
+        p.chord_events = (0..MAX_CHORD_EVENTS + 5)
+            .map(|i| ChordEvent::new(0, ChordQuality::Major, i as f64))
+            .collect();
+        assert!(p.validate().is_err());
+        p.normalize();
+        assert_eq!(p.chord_events.len(), MAX_CHORD_EVENTS);
+        p.validate().unwrap();
+    }
+
+    fn pt(step: f64, value: f32) -> AutomationPoint {
+        AutomationPoint { step, value }
+    }
+
+    #[test]
+    fn automation_value_interpolates_and_flattens_at_the_ends() {
+        // An empty lane has no value — callers keep the un-automated mix.
+        assert_eq!(automation_value(&[], 8.0), None);
+        let lane = [pt(4.0, 0.0), pt(12.0, 1.0)];
+        // Flat at the first point's value before it, linear between points.
+        assert_eq!(automation_value(&lane, -3.0), Some(0.0));
+        assert_eq!(automation_value(&lane, 4.0), Some(0.0));
+        assert_eq!(automation_value(&lane, 8.0), Some(0.5));
+        assert_eq!(automation_value(&lane, 10.0), Some(0.75));
+        assert_eq!(automation_value(&lane, 12.0), Some(1.0));
+        // Flat at the last point's value after it.
+        assert_eq!(automation_value(&lane, 99.0), Some(1.0));
+        // A single point is flat everywhere; a non-finite query is defensive.
+        let one = [pt(8.0, 0.4)];
+        assert_eq!(automation_value(&one, -1.0), Some(0.4));
+        assert_eq!(automation_value(&one, 64.0), Some(0.4));
+        assert_eq!(automation_value(&lane, f64::NAN), Some(0.0));
+        // Duplicate steps draw a jump: the later point wins at that step —
+        // also when the duplicates sit on the lane's first or last step.
+        let jump = [pt(4.0, 0.0), pt(8.0, 0.25), pt(8.0, 0.75), pt(12.0, 1.0)];
+        assert_eq!(automation_value(&jump, 8.0), Some(0.75));
+        assert_eq!(automation_value(&jump, 10.0), Some(0.875));
+        let head = [pt(4.0, 0.2), pt(4.0, 0.8), pt(12.0, 1.0)];
+        assert_eq!(automation_value(&head, 4.0), Some(0.8));
+        let tail = [pt(4.0, 0.0), pt(12.0, 0.5), pt(12.0, 0.9)];
+        assert_eq!(automation_value(&tail, 12.0), Some(0.9));
+        let flat = [pt(6.0, 0.3), pt(6.0, 0.7)];
+        assert_eq!(automation_value(&flat, 0.0), Some(0.3));
+        assert_eq!(automation_value(&flat, 6.0), Some(0.7));
+        assert_eq!(automation_value(&flat, 99.0), Some(0.7));
+    }
+
+    #[test]
+    fn automation_serde_round_trip_and_legacy_default() {
+        let mut p = Project::empty();
+        p.tracks[0].automation = Some(Automation {
+            volume: vec![pt(0.0, 1.0), pt(16.0, 0.0)],
+            pan: vec![pt(8.0, -0.5)],
+        });
+        p.validate().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+
+        // `None` and empty lanes stay out of the JSON entirely, which is what
+        // makes songs saved before automation existed load as `None`.
+        let json = serde_json::to_string(&Project::empty()).unwrap();
+        assert!(!json.contains("\"automation\""), "{json}");
+        let legacy: Project = serde_json::from_str(&json).unwrap();
+        assert!(legacy.tracks.iter().all(|t| t.automation.is_none()));
+        let mut p2 = Project::empty();
+        p2.tracks[0].automation = Some(Automation {
+            volume: vec![],
+            pan: vec![pt(0.0, 0.5)],
+        });
+        let json = serde_json::to_string(&p2).unwrap();
+        // Match the `"lane":[points]` shape — the plain `"volume"` substring
+        // also appears on `master_volume` and the track fader.
+        assert!(!json.contains("\"volume\":["), "{json}");
+        assert!(json.contains("\"pan\":["), "{json}");
+    }
+
+    #[test]
+    fn automation_validation_rejects_and_normalize_repairs() {
+        let mut p = Project::empty();
+        let valid = |p: &mut Project| {
+            let mut q = p.clone();
+            q.normalize();
+            q.validate().unwrap();
+            q
+        };
+        // Unsorted lane.
+        p.tracks[0].automation = Some(Automation {
+            volume: vec![pt(8.0, 0.5), pt(4.0, 0.5)],
+            pan: vec![],
+        });
+        assert!(p.validate().is_err());
+        let q = valid(&mut p);
+        assert_eq!(
+            q.tracks[0].automation.as_ref().unwrap().volume,
+            vec![pt(4.0, 0.5), pt(8.0, 0.5)]
+        );
+
+        // Out-of-range steps and values, non-finite data.
+        p.tracks[0].automation = Some(Automation {
+            volume: vec![
+                pt(-2.0, 3.0),
+                pt(9.0, f32::NAN),
+                pt(MAX_PATTERN_STEPS as f64 + 1.0, -1.0),
+            ],
+            pan: vec![pt(f64::INFINITY, 5.0)],
+        });
+        assert!(p.validate().is_err());
+        let q = valid(&mut p);
+        let auto = q.tracks[0].automation.as_ref().unwrap();
+        assert!(auto.pan.is_empty());
+        assert_eq!(
+            auto.volume,
+            vec![
+                pt(0.0, MAX_AUTOMATION_GAIN),
+                pt(MAX_PATTERN_STEPS as f64, 0.0)
+            ]
+        );
+
+        // The per-lane point cap is enforced.
+        p.tracks[0].automation = Some(Automation {
+            volume: (0..MAX_AUTOMATION_POINTS + 1)
+                .map(|i| pt(i as f64, 0.5))
+                .collect(),
+            pan: vec![],
+        });
+        assert!(p.validate().is_err());
+        let q = valid(&mut p);
+        assert_eq!(
+            q.tracks[0].automation.as_ref().unwrap().volume.len(),
+            MAX_AUTOMATION_POINTS
+        );
+
+        // Removing the last point drops the whole block back to `None`.
+        p.tracks[0].automation = Some(Automation::default());
+        let q = valid(&mut p);
+        assert!(q.tracks[0].automation.is_none());
+    }
+
+    #[test]
+    fn track_arp_validated_normalized_and_serde_defaults() {
+        // A well-formed arpeggiator block validates and round-trips.
+        let mut p = Project::empty();
+        p.tracks[0].arp = ArpSettings {
+            enabled: true,
+            rate: ArpRate::ThirtySecond,
+            octaves: 2,
+            direction: ArpDirection::UpDown,
+            gate: 0.5,
+        };
+        p.validate().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"rate\":\"thirty_second\""), "{json}");
+        assert!(json.contains("\"direction\":\"up_down\""), "{json}");
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+
+        // Out-of-range fields are rejected and repaired.
+        let mut p = Project::empty();
+        p.tracks[0].arp.octaves = 0;
+        assert!(p.validate().is_err(), "octaves 0 rejected");
+        p.tracks[0].arp.octaves = MAX_ARP_OCTAVES + 1;
+        assert!(p.validate().is_err(), "octaves above max rejected");
+        p.tracks[0].arp.octaves = 1;
+        p.tracks[0].arp.gate = f32::NAN;
+        assert!(p.validate().is_err(), "NaN gate rejected");
+        p.tracks[0].arp.gate = 0.05;
+        assert!(p.validate().is_err(), "gate below min rejected");
+        p.normalize();
+        p.validate().unwrap();
+        assert_eq!(p.tracks[0].arp.octaves, 1);
+        assert!((p.tracks[0].arp.gate - MIN_ARP_GATE).abs() < 1e-6);
+
+        // Songs saved before the arpeggiator existed have no `arp` key and
+        // load disabled with defaults.
+        let mut value = serde_json::to_value(&p).unwrap();
+        for t in value["tracks"].as_array_mut().unwrap() {
+            t.as_object_mut().unwrap().remove("arp");
+        }
+        let legacy: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.tracks[0].arp, ArpSettings::default());
+        assert!(!legacy.tracks[0].arp.enabled);
+
+        // A hand-edited partial block fills the rest from defaults.
+        let partial: ArpSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(partial.enabled);
+        assert_eq!(partial.rate, ArpRate::default());
+        assert_eq!(partial.gate, default_arp_gate());
+    }
+
+    // ----- subgroup buses ----------------------------------------------------
+
+    #[test]
+    fn buses_default_for_legacy_songs_and_skip_when_default() {
+        // Songs saved before buses existed have no `buses` key: they load
+        // with the four defaults.
+        let mut value = serde_json::to_value(Project::empty()).unwrap();
+        value.as_object_mut().unwrap().remove("buses");
+        let legacy: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.buses, default_buses());
+        assert_eq!(legacy.buses[0].name, "Bus A");
+        assert_eq!(legacy.buses[3].name, "Bus D");
+
+        // Untouched buses stay out of the saved file; a changed one writes
+        // the key and round-trips.
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("\"buses\""), "{json}");
+        let mut p = legacy;
+        p.buses[0].name = "Drums".into();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"buses\""), "{json}");
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.buses[0].name, "Drums");
+    }
+
+    #[test]
+    fn track_bus_validated_normalized_and_defaulted() {
+        // Legacy tracks have no `bus` key — they load master-routed, and
+        // master routing stays out of the saved file.
+        let mut p = Project::empty();
+        p.tracks[0].bus = 2;
+        p.validate().unwrap();
+        let mut value = serde_json::to_value(&p).unwrap();
+        for t in value["tracks"].as_array_mut().unwrap() {
+            t.as_object_mut().unwrap().remove("bus");
+        }
+        let legacy: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.tracks[0].bus, 0);
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("\"bus\":"), "{json}");
+
+        // Values past NUM_BUSES are rejected and clamped on repair.
+        p.tracks[0].bus = NUM_BUSES as u8 + 1;
+        assert!(p.validate().is_err());
+        p.normalize();
+        p.validate().unwrap();
+        assert_eq!(p.tracks[0].bus, NUM_BUSES as u8);
+    }
+
+    #[test]
+    fn bus_fields_validated_normalized_and_partial_defaulted() {
+        let mut p = Project::empty();
+        p.buses[0].volume = 1.5;
+        assert!(p.validate().is_err());
+        p.buses[0].volume = f32::NAN;
+        assert!(p.validate().is_err());
+        p.buses[0].volume = 0.8;
+        p.buses[1].pan = -3.0;
+        assert!(p.validate().is_err());
+        p.buses[1].pan = 0.0;
+        p.buses[2].name = "bad\u{0007}name".into();
+        assert!(p.validate().is_err());
+        p.normalize();
+        p.validate().unwrap();
+        assert_eq!(p.buses[0].volume, 0.8);
+        assert_eq!(p.buses[1].pan, 0.0);
+
+        // A hand-edited partial bus object fills the rest from defaults.
+        let mut value = serde_json::to_value(&p).unwrap();
+        let arr = value["buses"].as_array_mut().unwrap();
+        arr[0] = serde_json::json!({ "name": "Drums" });
+        let partial: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(partial.buses[0].name, "Drums");
+        assert_eq!(partial.buses[0].volume, default_bus_volume());
+    }
+
+    #[test]
+    fn bus_mute_solo_compose_with_track_mute_solo() {
+        let mut p = Project::empty();
+        p.tracks.push(create_track(Instrument::Piano));
+        // Track 0 joins Bus A; track 1 stays master-direct.
+        p.tracks[0].bus = 1;
+
+        // A muted bus silences its whole group, even a soloed member.
+        p.buses[0].mute = true;
+        assert!(!p.is_track_audible(0));
+        assert!(p.is_track_audible(1));
+        p.tracks[0].solo = true;
+        assert!(!p.is_track_audible(0), "solo cannot override a muted bus");
+        p.tracks[0].solo = false;
+        p.buses[0].mute = false;
+
+        // A soloed bus isolates its group: master-direct tracks go silent.
+        p.buses[0].solo = true;
+        assert!(p.is_track_audible(0));
+        assert!(!p.is_track_audible(1));
+        assert!(
+            !p.is_bus_audible(0),
+            "bus 0 (master) fails while a bus is soloed"
+        );
+        assert!(p.is_bus_audible(1));
+
+        // Track mute/solo still applies on top of the bus gate.
+        p.tracks[0].mute = true;
+        assert!(!p.is_track_audible(0));
+        p.tracks[0].mute = false;
+        p.buses[0].solo = false;
+
+        // Soloing a different bus silences this group too.
+        p.buses[2].solo = true;
+        assert!(!p.is_track_audible(0));
+        assert!(!p.is_track_audible(1));
+        p.buses[2].solo = false;
+        assert!(p.is_track_audible(0) && p.is_track_audible(1));
+    }
+
+    // ----- audio clips ------------------------------------------------------
+
+    /// An audio track holding one clip; `file` defaults to a valid staged
+    /// name so tests can mutate single fields.
+    fn audio_project() -> Project {
+        let mut p = Project::empty();
+        let mut t = create_audio_track("Imported");
+        t.audio_clips.push(AudioClip {
+            id: next_id(),
+            file: "0123456789abcdef.wav".to_string(),
+            name: "take 1.wav".to_string(),
+            start: 8.0,
+            length: 32.0,
+            offset: 0.0,
+            loops: 2,
+            fade_in: 4.0,
+            fade_out: 8.0,
+        });
+        p.tracks.push(t);
+        p
+    }
+
+    #[test]
+    fn audio_clip_model_round_trip_and_legacy_default() {
+        let p = audio_project();
+        p.validate().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"audio\":true"), "{json}");
+        assert!(json.contains("\"audio_clips\""), "{json}");
+        assert!(json.contains("0123456789abcdef.wav"), "{json}");
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+
+        // Tracks without the new keys load as ordinary pattern tracks and
+        // re-serialize without them.
+        let mut value = serde_json::to_value(&p).unwrap();
+        for t in value["tracks"].as_array_mut().unwrap() {
+            let o = t.as_object_mut().unwrap();
+            o.remove("audio");
+            o.remove("audio_clips");
+        }
+        let legacy: Project = serde_json::from_value(value).unwrap();
+        assert!(legacy
+            .tracks
+            .iter()
+            .all(|t| !t.audio && t.audio_clips.is_empty()));
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("\"audio_clips\""), "{json}");
+
+        // `audio_ref_name_ok` fences the store reference: bare hash names
+        // pass, paths and traversal never do.
+        assert!(audio_ref_name_ok("0123456789abcdef.wav"));
+        for bad in ["", ".", "..", "../x.wav", "a/b.wav", "b\\c.wav", "x y.wav"] {
+            assert!(!audio_ref_name_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn audio_clip_validation_and_normalize() {
+        let p = audio_project();
+        // A missing staged file is *not* an error — the clip plays silence.
+        p.validate().unwrap();
+
+        for (field, bad) in [
+            (
+                "file",
+                Box::new(|c: &mut AudioClip| c.file = "../etc/passwd".into())
+                    as Box<dyn Fn(&mut AudioClip)>,
+            ),
+            ("file", Box::new(|c| c.file = "abs/path.wav".into())),
+            ("start", Box::new(|c| c.start = -1.0)),
+            ("start", Box::new(|c| c.start = f64::NAN)),
+            ("length", Box::new(|c| c.length = 0.0)),
+            ("length", Box::new(|c| c.length = f64::INFINITY)),
+            ("offset", Box::new(|c| c.offset = -0.5)),
+            ("offset", Box::new(|c| c.offset = MAX_AUDIO_SECONDS + 1.0)),
+            ("loops", Box::new(|c| c.loops = 0)),
+            ("loops", Box::new(|c| c.loops = MAX_CLIP_LOOPS + 1)),
+            ("fade_in", Box::new(|c| c.fade_in = c.span() + 1.0)),
+            ("fade_out", Box::new(|c| c.fade_out = -0.5)),
+        ] {
+            let mut p = audio_project();
+            bad(&mut p.tracks[1].audio_clips[0]);
+            assert!(p.validate().is_err(), "bad {field} accepted");
+            let _ = field;
+        }
+
+        // Id shared with pattern clips: a collision across the two lists
+        // rejects, and normalize re-issues it.
+        let mut p = audio_project();
+        p.tracks[1].audio_clips[0].id = p.tracks[0].clips[0].id;
+        assert!(p.validate().is_err());
+        p.normalize();
+        p.validate().unwrap();
+        assert_ne!(p.tracks[1].audio_clips[0].id, p.tracks[0].clips[0].id);
+
+        // Normalize drops unresolvable references and repairs the rest.
+        let mut p = audio_project();
+        p.tracks[1].audio_clips[0].offset = -3.0;
+        p.tracks[1].audio_clips[0].loops = 99;
+        p.tracks[1].audio_clips[0].fade_in = 10_000.0;
+        p.tracks[1]
+            .audio_clips
+            .push(AudioClip::new("a/b.wav", "bad", 0.0, 16.0));
+        p.tracks[1]
+            .audio_clips
+            .push(AudioClip::new("ok.wav", "lost", -4.0, 16.0));
+        p.validate().unwrap_err();
+        p.normalize();
+        p.validate().unwrap();
+        assert_eq!(p.tracks[1].audio_clips.len(), 1);
+        let c = &p.tracks[1].audio_clips[0];
+        assert_eq!(c.offset, 0.0);
+        assert_eq!(c.loops, MAX_CLIP_LOOPS);
+        assert!(c.fade_in <= c.span());
+
+        // The per-track cap is enforced and repaired.
+        let mut p = audio_project();
+        p.tracks[1].audio_clips = (0..MAX_AUDIO_CLIPS_PER_TRACK + 3)
+            .map(|i| AudioClip::new(format!("f{i}.wav",), "n", i as f64, 1.0))
+            .collect();
+        assert!(p.validate().is_err());
+        p.normalize();
+        assert_eq!(p.tracks[1].audio_clips.len(), MAX_AUDIO_CLIPS_PER_TRACK);
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn audio_track_ignores_pattern_events_but_validates() {
+        // An audio lane contributes no note events even if a stray clip is
+        // hand-edited into `clips` — the snapshot schedules `audio_clips`.
+        let mut p = audio_project();
+        let mut pattern = create_pattern(Instrument::Pad, 16);
+        pattern.notes.push(Note::new(60, 0.0, 4.0, 0.8));
+        let pat_id = pattern.id;
+        p.tracks[1].patterns.push(pattern);
+        p.tracks[1].clips.push(Clip {
+            id: next_id(),
+            pattern_id: pat_id,
+            start: 0.0,
+            loops: 1,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        });
+        p.validate().unwrap();
+        let lane_events = |p: &Project| {
+            p.events(false)
+                .iter()
+                .filter(|e| e.track_index == 1)
+                .count()
+        };
+        assert_eq!(lane_events(&p), 0, "audio lane ignores pattern clips");
+        p.tracks[1].audio = false;
+        assert_eq!(lane_events(&p), 1, "the same clip plays when unflagged");
     }
 }

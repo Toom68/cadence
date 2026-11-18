@@ -115,6 +115,220 @@ pub fn recovery_path() -> PathBuf {
     data_dir().join("recovery").join(RECOVERY_FILE)
 }
 
+// ----- audio store ---------------------------------------------------------
+
+/// Directory holding imported WAV files referenced by
+/// [`crate::model::AudioClip::file`]. Staged names are bare
+/// `<content-hash>.wav` filenames, so projects record a tiny safe reference
+/// while the bytes live beside the autosave data.
+pub fn audio_dir() -> PathBuf {
+    data_dir().join("audio")
+}
+
+/// Largest WAV file the audio store accepts — also the read cap when a
+/// clip's file is decoded for playback.
+pub const MAX_AUDIO_FILE_BYTES: u64 = 48 * 1024 * 1024;
+
+/// Accepted WAV sample-rate range, matching the rates the renderer can run at.
+pub const MIN_AUDIO_SAMPLE_RATE: u32 = 8_000;
+pub const MAX_AUDIO_SAMPLE_RATE: u32 = 384_000;
+
+/// Decoded-frame cap per channel; the file-byte cap binds first for normal
+/// content, this only fences pathological high-rate files.
+const MAX_AUDIO_FRAMES: usize = 32 * 1024 * 1024;
+
+/// What a staged file contributes to an `AudioClip`: the store file name
+/// plus the decoded source duration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StagedAudio {
+    /// Store-relative file name (the value [`crate::model::AudioClip::file`]
+    /// stores — never a path).
+    pub file: String,
+    /// Source duration in seconds; the clip's timeline `length` derives
+    /// from `seconds / project.seconds_per_step()` at import time.
+    pub seconds: f64,
+}
+
+/// Copies `source` into the audio store under a content-hash name and
+/// returns the clip reference. The source is decoded first so a bogus pick
+/// never leaves a dead file in the store; re-importing identical content
+/// reuses the staged copy instead of duplicating it.
+pub fn stage_audio_file(source: &Path) -> Result<StagedAudio, String> {
+    stage_audio_file_into(&audio_dir(), source)
+}
+
+/// The store-parameterized core of [`stage_audio_file`] — tests point it at
+/// a temp directory, production callers go through [`audio_dir`].
+fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, String> {
+    let shown = source.display();
+    let meta = fs::metadata(source).map_err(|err| format!("Could not open {shown}: {err}"))?;
+    if !meta.is_file() {
+        return Err(format!("{shown} is not a file."));
+    }
+    if meta.len() > MAX_AUDIO_FILE_BYTES {
+        return Err(format!(
+            "{shown} is too large ({:.1} MB). Audio clips are limited to {} MB.",
+            meta.len() as f64 / (1024.0 * 1024.0),
+            MAX_AUDIO_FILE_BYTES / (1024 * 1024)
+        ));
+    }
+    let file = File::open(source).map_err(|err| format!("Could not open {shown}: {err}"))?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_AUDIO_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("Could not read {shown}: {err}"))?;
+    if bytes.len() as u64 > MAX_AUDIO_FILE_BYTES {
+        return Err(format!("{shown} is too large."));
+    }
+    let decoded = decode_wav_f32(&bytes).map_err(|err| format!("{shown}: {err}"))?;
+    let name = format!("{:016x}.wav", audio_content_hash(&bytes));
+    fs::create_dir_all(dir)
+        .map_err(|err| format!("Could not create the audio store {}: {err}", dir.display()))?;
+    let dest = dir.join(&name);
+    if !dest.is_file() {
+        write_file_atomic(&dest, &bytes)?;
+    }
+    Ok(StagedAudio {
+        file: name,
+        seconds: decoded.seconds,
+    })
+}
+
+/// Reads a staged file by its store-relative `name` for decoding. Returns
+/// `None` for anything unsafe, missing, unreadable or oversize — a missing
+/// clip file is a documented tolerance (the clip plays silence), never a
+/// load failure.
+pub fn read_audio_file(name: &str) -> Option<Vec<u8>> {
+    if !crate::model::audio_ref_name_ok(name) {
+        return None;
+    }
+    let path = audio_dir().join(name);
+    let meta = fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_AUDIO_FILE_BYTES {
+        return None;
+    }
+    let file = File::open(&path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_AUDIO_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_AUDIO_FILE_BYTES).then_some(bytes)
+}
+
+/// FNV-1a over the whole file, seeded with its length: the staged name
+/// changes whenever the content does, so a name always means one file.
+fn audio_content_hash(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ bytes.len() as u64;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// A decoded WAV file: normalized stereo `f32` at the source sample rate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedWav {
+    /// Source sample rate in Hz.
+    pub sample_rate: u32,
+    /// Source length in seconds (`frames / sample_rate`, capped).
+    pub seconds: f64,
+    /// Left channel (the source itself when the file is mono).
+    pub left: Vec<f32>,
+    /// Right channel (identical to `left` when the file is mono).
+    pub right: Vec<f32>,
+}
+
+/// Decodes WAV bytes into normalized stereo `f32`. Integer PCM scales by
+/// bit depth (with the unsigned-8-bit correction hound leaves out), float
+/// data is clamped, mono duplicates into both channels and wider layouts
+/// fold even channels left / odd right. Anything malformed is an `Err`,
+/// never a panic; decoding stops at [`MAX_AUDIO_FRAMES`] so a pathological
+/// file cannot allocate unboundedly.
+pub fn decode_wav_f32(bytes: &[u8]) -> Result<DecodedWav, String> {
+    let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes))
+        .map_err(|err| format!("Not a WAV file: {err}"))?;
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
+    if channels == 0 {
+        return Err("The WAV file has no audio channels.".to_string());
+    }
+    if !(MIN_AUDIO_SAMPLE_RATE..=MAX_AUDIO_SAMPLE_RATE).contains(&spec.sample_rate) {
+        return Err(format!(
+            "Unsupported sample rate {} Hz ({}–{} Hz only).",
+            spec.sample_rate, MIN_AUDIO_SAMPLE_RATE, MAX_AUDIO_SAMPLE_RATE
+        ));
+    }
+    let (left, right) = match spec.sample_format {
+        hound::SampleFormat::Float => decode_channels(&mut reader, channels, |s: f32| s)?,
+        hound::SampleFormat::Int => {
+            if !(8..=32).contains(&spec.bits_per_sample) {
+                return Err(format!(
+                    "Unsupported bit depth {} (8–32 bit PCM or float WAV only).",
+                    spec.bits_per_sample
+                ));
+            }
+            let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
+            // RIFF stores ≤ 8-bit PCM unsigned, but hound reads it as
+            // signed — re-offset so real 8-bit files decode correctly.
+            let unsigned = spec.bits_per_sample <= 8;
+            decode_channels(&mut reader, channels, move |s: i32| {
+                let v = if unsigned { (s & 0xFF) - 128 } else { s };
+                v as f32 * scale
+            })?
+        }
+    };
+    if left.is_empty() {
+        return Err("The WAV file contains no audio.".to_string());
+    }
+    Ok(DecodedWav {
+        sample_rate: spec.sample_rate,
+        seconds: left.len() as f64 / spec.sample_rate as f64,
+        left,
+        right,
+    })
+}
+
+/// Per-channel decode loop behind [`decode_wav_f32`]: folds arbitrary
+/// channel counts into stereo — even channel indices lean left, odd lean
+/// right, each side normalized by its channel count — and duplicates mono
+/// into both channels. Stops at [`MAX_AUDIO_FRAMES`].
+fn decode_channels<S: hound::Sample>(
+    reader: &mut hound::WavReader<impl std::io::Read>,
+    channels: usize,
+    mut to_f32: impl FnMut(S) -> f32,
+) -> Result<(Vec<f32>, Vec<f32>), String> {
+    let left_n = channels.div_ceil(2);
+    let right_n = (channels / 2).max(1);
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let (mut acc_l, mut acc_r) = (0.0f32, 0.0f32);
+    let mut chan = 0usize;
+    for sample in reader.samples::<S>() {
+        let v = to_f32(sample.map_err(|err| format!("bad audio data: {err}"))?).clamp(-1.5, 1.5);
+        if chan.is_multiple_of(2) {
+            acc_l += v;
+        } else {
+            acc_r += v;
+        }
+        chan += 1;
+        if chan == channels {
+            left.push((acc_l / left_n as f32).clamp(-1.0, 1.0));
+            right.push((acc_r / right_n as f32).clamp(-1.0, 1.0));
+            acc_l = 0.0;
+            acc_r = 0.0;
+            chan = 0;
+            if left.len() >= MAX_AUDIO_FRAMES {
+                break;
+            }
+        }
+    }
+    if channels == 1 {
+        right = left.clone();
+    }
+    Ok((left, right))
+}
+
 /// Writes the crash-recovery autosave atomically.
 pub fn save_recovery(project: &Project) -> Result<(), String> {
     let path = recovery_path();
@@ -268,5 +482,146 @@ mod tests {
     fn oversize_text_is_rejected_before_parsing() {
         let text = " ".repeat(MAX_PROJECT_BYTES as usize + 1);
         assert!(project_from_json(&text).unwrap_err().contains("too large"));
+    }
+
+    // ----- audio store ------------------------------------------------------
+
+    /// Writes a tiny 16-bit mono WAV (one quarter-note of a 220 Hz sine at
+    /// 44.1 kHz) to `dir/name` and returns its path plus byte content.
+    fn write_test_wav(dir: &Path, name: &str) -> (PathBuf, Vec<u8>) {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for i in 0..11_025u32 {
+                let t = i as f32 / spec.sample_rate as f32;
+                let s = (t * 220.0 * std::f32::consts::TAU).sin() * 0.6;
+                w.write_sample((s * i16::MAX as f32) as i16).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let bytes = cursor.into_inner();
+        let path = dir.join(name);
+        fs::write(&path, &bytes).unwrap();
+        (path, bytes)
+    }
+
+    /// Unique throwaway directory under the system temp dir.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cadence-audio-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn stage_audio_file_copies_and_reports_duration() {
+        let src = temp_dir("src");
+        let store = temp_dir("store");
+        let (wav, _bytes) = write_test_wav(&src, "Take One.wav");
+
+        let staged = stage_audio_file_into(&store, &wav).unwrap();
+        assert!(
+            crate::model::audio_ref_name_ok(&staged.file),
+            "{:?}",
+            staged.file
+        );
+        assert!(staged.file.ends_with(".wav"));
+        assert!((staged.seconds - 0.25).abs() < 0.01, "{}", staged.seconds);
+        // The store holds the exact bytes under the hashed name.
+        let dest = store.join(&staged.file);
+        assert_eq!(fs::read(&dest).unwrap(), fs::read(&wav).unwrap());
+
+        // Re-staging identical content hits the same file without rewriting.
+        let again = stage_audio_file_into(&store, &wav).unwrap();
+        assert_eq!(again.file, staged.file);
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 1);
+
+        // Rejects a non-WAV and never leaves a store entry behind.
+        let bogus = src.join("nope.wav");
+        fs::write(&bogus, b"not a wav").unwrap();
+        assert!(stage_audio_file_into(&store, &bogus).is_err());
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 1);
+        assert!(stage_audio_file_into(&store, &src.join("missing.wav")).is_err());
+        assert!(
+            stage_audio_file_into(&store, &src).is_err(),
+            "a dir is not a file"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn decode_wav_f32_handles_formats_and_garbage() {
+        // 16-bit mono: identical channels, normalized peak, right duration.
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for i in 0..8_000i16 {
+                w.write_sample((i / 4).saturating_mul(16)).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let d = decode_wav_f32(&cursor.into_inner()).unwrap();
+        assert_eq!(d.sample_rate, 8_000);
+        assert_eq!(d.left.len(), 8_000);
+        assert_eq!(d.left, d.right);
+        assert!((d.seconds - 1.0).abs() < 0.001);
+        assert!(d.left.iter().all(|v| (-1.0..=1.0).contains(v)));
+        assert!(d.left.iter().any(|v| v.abs() > 0.5));
+
+        // 32-bit float stereo keeps left and right independent.
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for _ in 0..441 {
+                w.write_sample(-0.9f32).unwrap();
+                w.write_sample(0.9f32).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let d = decode_wav_f32(&cursor.into_inner()).unwrap();
+        assert_eq!(d.left.len(), 441);
+        assert!(d.left.iter().all(|v| *v < 0.0));
+        assert!(d.right.iter().all(|v| *v > 0.0));
+
+        // Garbage never decodes.
+        assert!(decode_wav_f32(b"").is_err());
+        assert!(decode_wav_f32(b"RIFFxxxxWAVE").is_err());
+        assert!(decode_wav_f32(&vec![0u8; 4096]).is_err());
+    }
+
+    #[test]
+    fn read_audio_file_fences_the_store() {
+        // Everything that is not a plain staged name fails fast — before any
+        // filesystem access — and a missing-but-valid name reads as `None`.
+        for bad in ["", ".", "..", "../x.wav", "a/b.wav", "b\\c.wav", "x y.wav"] {
+            assert!(read_audio_file(bad).is_none(), "{bad}");
+        }
+        assert!(read_audio_file("0000000000000000.wav").is_none());
     }
 }

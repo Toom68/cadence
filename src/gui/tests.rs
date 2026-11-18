@@ -239,6 +239,7 @@ fn test_preset() -> InstrumentPreset {
         audition_note: 55,
         audition_duration: 1.6,
         kit: None,
+        sample: None,
     }
 }
 
@@ -2438,7 +2439,7 @@ fn clipboard_copy_prefers_focused_domain_over_stale_selection() {
     ui.app.focus = super::Focus::Arranger;
     ui.key_mod(Key::C, Modifiers::COMMAND);
     assert!(
-        matches!(ui.app.clipboard, Clipboard::Clips(_)),
+        matches!(ui.app.clipboard, Clipboard::Clips(..)),
         "arranger-focused copy prefers clips"
     );
 }
@@ -2466,7 +2467,7 @@ fn clipboard_clips_copy_paste_lands_on_same_tracks_at_playhead() {
     ui.app.transport.position = 24.0;
     ui.key_mod(Key::C, Modifiers::COMMAND);
     assert!(
-        matches!(ui.app.clipboard, Clipboard::Clips(_)),
+        matches!(ui.app.clipboard, Clipboard::Clips(..)),
         "clips beat notes on the clipboard"
     );
     ui.key_mod(Key::V, Modifiers::COMMAND);
@@ -2600,7 +2601,7 @@ fn clipboard_cut_clips_and_track() {
         ui.app.project.tracks[0].clips.is_empty(),
         "cut removes the clip"
     );
-    assert!(matches!(ui.app.clipboard, Clipboard::Clips(_)));
+    assert!(matches!(ui.app.clipboard, Clipboard::Clips(..)));
     ui.app.transport.position = 16.0;
     ui.key_mod(Key::V, Modifiers::COMMAND);
     let track = &ui.app.project.tracks[0];

@@ -34,7 +34,7 @@ pub(super) enum Dialog {
     /// A file action waiting on a save / don't-save / cancel decision.
     Unsaved(PendingAction),
     /// Launch-time offer to restore the crash-recovery autosave.
-    Recovery(Project),
+    Recovery(Box<Project>),
     /// Non-fatal instrument-pack load problems.
     PackErrors(Vec<String>),
     /// Name + key for a new song (after any unsaved-changes decision).
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn recovery_offer_survives_frames_and_escape() {
         let mut app = headless();
-        app.dialog = Dialog::Recovery(Project::demo());
+        app.dialog = Dialog::Recovery(Box::new(Project::demo()));
         app.recovery_offered = true;
         let project = app.project.clone();
         let state = app.history.state();

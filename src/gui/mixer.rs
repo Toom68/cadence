@@ -1,4 +1,5 @@
-//! Mixer: one channel strip per track plus the master strip.
+//! Mixer: one channel strip per track, the four fixed subgroup bus strips,
+//! plus the master strip.
 
 use egui::{
     pos2, vec2, Align, Color32, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
@@ -214,6 +215,10 @@ impl CadenceApp {
                     for id in ids {
                         self.channel_strip(ui, id, strip_h);
                     }
+                    ui.separator();
+                    for i in 0..ops::NUM_BUSES {
+                        self.bus_strip(ui, i, strip_h);
+                    }
                 });
             });
         // The master strip centres vertically too when compact strips are
@@ -320,10 +325,12 @@ impl CadenceApp {
                     }
                 });
             });
-            // Instrument label + pedalboard toggle.
+            // Instrument label + pedalboard toggle + output-bus selector.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                let inst_w = (ui.available_width() - 34.0).max(24.0);
+                let (fw, fh) = if compact { (24.0, 14.0) } else { (30.0, 18.0) };
+                let bw = if compact { 30.0 } else { 40.0 };
+                let inst_w = (ui.available_width() - fw - bw - 2.0 * gap).max(24.0);
                 let inst_h = if compact { 12.0 } else { 16.0 };
                 ui.allocate_ui(vec2(inst_w, inst_h), |ui| {
                     let full = ops::instrument_label(&track).into_owned();
@@ -335,7 +342,6 @@ impl CadenceApp {
                     )
                     .on_hover_text(full);
                 });
-                let (fw, fh) = if compact { (24.0, 14.0) } else { (30.0, 18.0) };
                 if theme::chip(
                     ui,
                     pal,
@@ -348,6 +354,31 @@ impl CadenceApp {
                 .clicked()
                 {
                     ui.data_mut(|d| d.insert_temp(fx_key(id), !fx_open));
+                }
+                // Output route: "M" = straight to the master strip, a letter
+                // = that fixed subgroup bus.
+                let mut choice = track.bus;
+                egui::ComboBox::from_id_salt(("bus", id))
+                    .width(bw)
+                    .selected_text(ops::bus_label(choice))
+                    .show_ui(ui, |ui| {
+                        for b in 0..=ops::NUM_BUSES as u8 {
+                            let label = if b == 0 {
+                                "M  Master".to_string()
+                            } else {
+                                format!(
+                                    "{}  {}",
+                                    ops::bus_label(b),
+                                    self.project.buses[(b - 1) as usize].name
+                                )
+                            };
+                            ui.selectable_value(&mut choice, b, label);
+                        }
+                    });
+                if choice != track.bus {
+                    self.edit("Track bus", Some(&format!("bus-{id}")), |p| {
+                        ops::set_track_bus(p, id, choice);
+                    });
                 }
             });
             ui.add_space(if compact { 1.0 } else { 2.0 });
@@ -614,6 +645,135 @@ impl CadenceApp {
                     }
                 });
             }
+        }
+    }
+
+    /// One fixed subgroup strip: name, solo/mute, fader + pan. Slimmer than
+    /// a track strip — buses carry no instrument, effects or sends.
+    fn bus_strip(&mut self, ui: &mut Ui, index: usize, height: f32) {
+        let pal = self.palette();
+        let compact = compact_mode(ui);
+        let num = index as u8 + 1;
+        let bus = self.project.buses[index].clone();
+        let audible = self.project.is_bus_audible(num);
+        let members = ops::bus_members(&self.project, num);
+        let margin = if compact { 4.0 } else { 6.0 };
+        let gap = if compact { 2.0 } else { 3.0 };
+        let strip_w = if compact { 64.0 } else { 88.0 };
+        let content_w = strip_w - 2.0 * margin;
+        let color = pal.link;
+        let frame = egui::Frame::new()
+            .fill(pal.raised)
+            .stroke(Stroke::new(1.0_f32, pal.border_soft))
+            .corner_radius(if compact { 5 } else { 8 })
+            .inner_margin(Margin::same(margin as i8));
+        let resp = frame.show(ui, |ui| {
+            ui.set_width(content_w);
+            ui.set_height(height - 2.0 * margin);
+            let top = ui.cursor().min;
+            ui.painter().rect_filled(
+                Rect::from_min_size(top - vec2(margin, margin), vec2(strip_w, 3.0)),
+                egui::CornerRadius {
+                    nw: 8,
+                    ne: 8,
+                    sw: 0,
+                    se: 0,
+                },
+                color,
+            );
+            // Inline rename; `edit` coalesces keystrokes under one group key.
+            let mut name = bus.name.clone();
+            let r = ui
+                .add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(content_w)
+                        .font(egui::FontId::proportional(11.0)),
+                )
+                .on_hover_text(format!(
+                    "{}\n{} track{}",
+                    bus.name,
+                    members,
+                    if members == 1 { "" } else { "s" }
+                ));
+            if r.changed() {
+                self.edit("Bus name", Some(&format!("bname-{index}")), |p| {
+                    ops::rename_bus(p, index, &name);
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let (cw, ch) = if compact { (16.0, 13.0) } else { (18.0, 16.0) };
+                if theme::chip(ui, pal, "S", bus.solo, pal.warn, vec2(cw, ch), "Solo bus").clicked()
+                {
+                    self.edit("Bus solo", Some(&format!("bsolo-{index}")), |p| {
+                        p.buses[index].solo = !p.buses[index].solo;
+                    });
+                }
+                if theme::chip(ui, pal, "M", bus.mute, pal.danger, vec2(cw, ch), "Mute bus")
+                    .clicked()
+                {
+                    self.edit("Bus mute", Some(&format!("bmute-{index}")), |p| {
+                        p.buses[index].mute = !p.buses[index].mute;
+                    });
+                }
+            });
+            ui.add_space(1.0);
+            let fader_h = (ui.available_height() - 18.0).clamp(
+                if compact { 36.0 } else { 56.0 },
+                if compact { 110.0 } else { 240.0 },
+            );
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.vertical(|ui| {
+                    let mut vol = bus.volume;
+                    if theme::fader(
+                        ui,
+                        pal,
+                        &mut vol,
+                        0.7,
+                        fader_h,
+                        color,
+                        &format!("{} volume", bus.name),
+                    )
+                    .changed()
+                    {
+                        self.edit("Bus volume", Some(&format!("bvol-{index}")), |p| {
+                            p.buses[index].volume = vol.clamp(0.0, 1.0);
+                        });
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.0}%", bus.volume * 100.0))
+                            .small()
+                            .color(pal.text_dim),
+                    );
+                });
+                ui.vertical(|ui| {
+                    let mut pan = (bus.pan + 1.0) / 2.0;
+                    let ks = if compact { 18.0 } else { 24.0 };
+                    if theme::knob(
+                        ui,
+                        pal,
+                        &mut pan,
+                        0.5,
+                        true,
+                        "Pan",
+                        &sidebar::pan_text(bus.pan),
+                        color,
+                        ks,
+                    )
+                    .changed()
+                    {
+                        let v = (pan * 2.0 - 1.0).clamp(-1.0, 1.0);
+                        self.edit("Bus pan", Some(&format!("bpan-{index}")), |p| {
+                            p.buses[index].pan = if v.abs() < 0.02 { 0.0 } else { v };
+                        });
+                    }
+                });
+            });
+        });
+        if !audible {
+            ui.painter()
+                .rect_filled(resp.response.rect, 8.0, Color32::from_black_alpha(70));
         }
     }
 

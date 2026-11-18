@@ -22,12 +22,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use egui::{
-    Color32, Context, Event, Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Stroke,
-    SurrenderFocusOn, ViewportCommand,
+    Color32, Context, CursorIcon, Event, Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText,
+    Stroke, StrokeKind, SurrenderFocusOn, ViewportCommand,
 };
 
 use crate::audio::AudioEngine;
-use crate::model::{Clip, Instrument, Project, Track};
+use crate::model::{AudioClip, Clip, Instrument, Project, Track};
 
 pub use history::History;
 
@@ -130,7 +130,9 @@ enum Clipboard {
     Notes(Vec<ops::NoteSnap>),
     /// Arranger clips as `(track_id, clip)` snapshots on their original
     /// tracks, shifted so the group's left edge lands on the playhead.
-    Clips(Vec<(u64, Clip)>),
+    /// The two vecs are pattern clips and imported-WAV clips — a selection
+    /// may mix both kinds (they share the clip id space).
+    Clips(Vec<(u64, Clip)>, Vec<(u64, AudioClip)>),
     /// A whole track; pastes as a fresh deep copy appended at the end.
     Track(Box<Track>),
 }
@@ -340,6 +342,8 @@ impl CadenceApp {
         self.stop();
         self.transport.position = 0.0;
         self.transport.start_marker = 0.0;
+        // The loop region is session state for this song, not part of it.
+        self.transport.loop_region = None;
         self.project = project;
         self.history.reset();
         self.doc.path = path;
@@ -371,7 +375,12 @@ impl CadenceApp {
         let existing_clips: BTreeSet<u64> = project
             .tracks
             .iter()
-            .flat_map(|t| t.clips.iter().map(|c| c.id))
+            .flat_map(|t| {
+                t.clips
+                    .iter()
+                    .map(|c| c.id)
+                    .chain(t.audio_clips.iter().map(|c| c.id))
+            })
             .collect();
         self.sel.clips.retain(|id| existing_clips.contains(id));
         if self.sel.clip.is_some_and(|id| existing_clips.contains(&id)) {
@@ -450,7 +459,10 @@ impl CadenceApp {
         self.project
             .tracks
             .iter()
-            .find(|t| t.clips.iter().any(|c| c.id == clip_id))
+            .find(|t| {
+                t.clips.iter().any(|c| c.id == clip_id)
+                    || t.audio_clips.iter().any(|c| c.id == clip_id)
+            })
             .map(|t| t.id)
     }
 
@@ -492,12 +504,23 @@ impl CadenceApp {
         ops::collect_clips(&self.project, &self.selected_clip_ids())
     }
 
+    /// The imported-WAV half of [`Self::selected_clip_snapshots`] — the two
+    /// lists partition the shared clip-id selection.
+    fn selected_audio_clip_snapshots(&self) -> Vec<(u64, AudioClip)> {
+        ops::collect_audio_clips(&self.project, &self.selected_clip_ids())
+    }
+
     fn select_all_arranger_clips(&mut self) {
         let ids: BTreeSet<u64> = self
             .project
             .tracks
             .iter()
-            .flat_map(|t| t.clips.iter().map(|c| c.id))
+            .flat_map(|t| {
+                t.clips
+                    .iter()
+                    .map(|c| c.id)
+                    .chain(t.audio_clips.iter().map(|c| c.id))
+            })
             .collect();
         self.set_clip_selection(ids, self.sel.clip);
         self.focus = Focus::Arranger;
@@ -529,9 +552,10 @@ impl CadenceApp {
             }
         } else {
             let clips = self.selected_clip_snapshots();
-            if !clips.is_empty() {
-                let n = clips.len();
-                if self.edit(
+            let aclips = self.selected_audio_clip_snapshots();
+            let n = clips.len() + aclips.len();
+            if n > 0
+                && self.edit(
                     if n == 1 {
                         "Delete clip"
                     } else {
@@ -542,10 +566,13 @@ impl CadenceApp {
                         for (track, clip) in &clips {
                             ops::delete_clip(p, *track, clip.id);
                         }
+                        for (track, clip) in &aclips {
+                            ops::delete_audio_clip(p, *track, clip.id);
+                        }
                     },
-                ) {
-                    self.clear_arranger_clip_selection();
-                }
+                )
+            {
+                self.clear_arranger_clip_selection();
             }
         }
     }
@@ -573,25 +600,34 @@ impl CadenceApp {
             }
         } else {
             let clips = self.selected_clip_snapshots();
-            if !clips.is_empty() {
+            let aclips = self.selected_audio_clip_snapshots();
+            if !clips.is_empty() || !aclips.is_empty() {
                 let primary = self.sel.clip;
                 let mut new = None;
                 self.edit(
-                    if clips.len() == 1 {
+                    if clips.len() + aclips.len() == 1 {
                         "Duplicate clip"
                     } else {
                         "Duplicate clips"
                     },
                     None,
-                    |p| new = ops::duplicate_clip_group_after(p, &clips),
+                    |p| new = ops::duplicate_clip_groups_after(p, &clips, &aclips),
                 );
                 match new {
                     Some(ids) => {
                         let set: BTreeSet<u64> = ids.iter().copied().collect();
+                        // `copy_mixed_clip_group` returns pattern ids first,
+                        // then audio — index the matching snapshot list.
                         let primary = primary.and_then(|old| {
                             clips
                                 .iter()
                                 .position(|(_, c)| c.id == old)
+                                .or_else(|| {
+                                    aclips
+                                        .iter()
+                                        .position(|(_, c)| c.id == old)
+                                        .map(|i| i + clips.len())
+                                })
                                 .and_then(|i| ids.get(i).copied())
                         });
                         self.set_clip_selection(set, primary);
@@ -676,10 +712,14 @@ impl CadenceApp {
             }
         } else if semitones == 0 {
             let clips = self.selected_clip_snapshots();
-            if !clips.is_empty() {
+            let aclips = self.selected_audio_clip_snapshots();
+            if !clips.is_empty() || !aclips.is_empty() {
                 let grid = self.arranger.snap.steps();
+                let dstep =
+                    ops::mixed_group_delta(&self.project, &clips, &aclips, steps as f64 * grid);
                 self.edit("Move clips", Some("nudge-clips"), |p| {
-                    ops::move_clip_group(p, &clips, steps as f64 * grid);
+                    ops::move_clip_group(p, &clips, dstep);
+                    ops::move_audio_clip_group(p, &aclips, dstep);
                 });
             }
         }
@@ -729,9 +769,10 @@ impl CadenceApp {
             }
         }
         let clips = self.selected_clip_snapshots();
-        if !clips.is_empty() {
-            let n = clips.len();
-            self.clipboard = Clipboard::Clips(clips);
+        let aclips = self.selected_audio_clip_snapshots();
+        if !clips.is_empty() || !aclips.is_empty() {
+            let n = clips.len() + aclips.len();
+            self.clipboard = Clipboard::Clips(clips, aclips);
             self.set_status(
                 StatusKind::Info,
                 format!("Copied {n} clip{}.", sidebar::plural(n)),
@@ -771,7 +812,7 @@ impl CadenceApp {
                 "Nothing to paste — copy notes, clips or a track first.",
             ),
             Clipboard::Notes(snaps) => self.paste_notes(&snaps, ctx),
-            Clipboard::Clips(originals) => self.paste_clips(&originals),
+            Clipboard::Clips(originals, audio) => self.paste_clips(&originals, &audio),
             Clipboard::Track(track) => self.paste_track(&track),
         }
     }
@@ -849,19 +890,22 @@ impl CadenceApp {
     }
 
     /// Pastes clip snapshots back onto their original tracks, shifted so the
-    /// group's left edge lands on the playhead (`copy_clip_group` clamps the
-    /// move inside the song like every other clip edit). The new clips become
-    /// the selection.
-    fn paste_clips(&mut self, originals: &[(u64, Clip)]) {
-        if originals.is_empty() {
+    /// group's left edge lands on the playhead (`copy_mixed_clip_group`
+    /// clamps the move inside the song like every other clip edit).
+    /// `audio` holds the imported-WAV snapshots; the new clips become the
+    /// selection.
+    fn paste_clips(&mut self, originals: &[(u64, Clip)], audio: &[(u64, AudioClip)]) {
+        if originals.is_empty() && audio.is_empty() {
             return;
         }
-        // `copy_clip_group` checks clip limits atomically but pushes clips
-        // track by track — a track deleted since the copy would otherwise
-        // leave a partial paste behind. Refuse up front instead.
+        // `copy_mixed_clip_group` checks clip limits atomically but pushes
+        // clips track by track — a track deleted since the copy would
+        // otherwise leave a partial paste behind. Refuse up front instead.
         if originals
             .iter()
-            .any(|(track_id, _)| ops::track(&self.project, *track_id).is_none())
+            .map(|(track_id, _)| *track_id)
+            .chain(audio.iter().map(|(track_id, _)| *track_id))
+            .any(|track_id| ops::track(&self.project, track_id).is_none())
         {
             self.set_status(
                 StatusKind::Warning,
@@ -872,11 +916,12 @@ impl CadenceApp {
         let min_start = originals
             .iter()
             .map(|(_, c)| c.start)
+            .chain(audio.iter().map(|(_, c)| c.start))
             .fold(f64::INFINITY, f64::min);
         let dstep = self.transport.position - min_start;
         let mut new = None;
         self.edit("Paste clips", None, |p| {
-            new = ops::copy_clip_group(p, originals, dstep);
+            new = ops::copy_mixed_clip_group(p, originals, audio, dstep);
         });
         match new {
             Some(ids) => {
@@ -925,14 +970,18 @@ impl CadenceApp {
             }
         }
         let clips = self.selected_clip_snapshots();
-        if !clips.is_empty() {
-            let n = clips.len();
+        let aclips = self.selected_audio_clip_snapshots();
+        if !clips.is_empty() || !aclips.is_empty() {
+            let n = clips.len() + aclips.len();
             if self.edit(if n == 1 { "Cut clip" } else { "Cut clips" }, None, |p| {
                 for (track, clip) in &clips {
                     ops::delete_clip(p, *track, clip.id);
                 }
+                for (track, clip) in &aclips {
+                    ops::delete_audio_clip(p, *track, clip.id);
+                }
             }) {
-                self.clipboard = Clipboard::Clips(clips);
+                self.clipboard = Clipboard::Clips(clips, aclips);
                 self.clear_arranger_clip_selection();
                 self.set_status(
                     StatusKind::Info,
@@ -994,22 +1043,19 @@ impl CadenceApp {
         self.edit(&format!("Add {} track", instrument.name()), None, |p| {
             id = ops::add_track(p, instrument)
         });
-        match id {
-            Some(id) => {
-                self.select_track(id);
-                self.tab = Tab::Editor;
-                self.focus = Focus::Editor;
-                self.arranger.reveal_track = Some(id);
-                self.set_status(
-                    StatusKind::Success,
-                    format!("Added a {} track", instrument.name()),
-                );
-            }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
-            ),
-        }
+        self.finish_track_add(id, format!("Added a {} track", instrument.name()));
+    }
+
+    /// Edit ▸ Add Track ▸ Audio Track: an empty lane that imported-WAV
+    /// clips can live on (File ▸ Import Audio File… creates one on demand,
+    /// too).
+    fn add_audio_track(&mut self) {
+        let mut id = None;
+        self.edit("Add audio track", None, |p| id = ops::add_audio_track(p));
+        self.finish_track_add(id, "Added an audio track".to_string());
+        // `finish_track_add` aims focus at the note editor, which an audio
+        // lane has no use for — the arranger is its editing surface.
+        self.focus = Focus::Arranger;
     }
 
     fn preview(&self, track_id: u64, pitch: u8, velocity: f32) {
@@ -1341,6 +1387,12 @@ impl CadenceApp {
         if key(Modifiers::NONE, Key::Delete) || key(Modifiers::NONE, Key::Backspace) {
             self.delete_selection();
         }
+        // B splits the clip under the pointer / at the playhead — but only
+        // while the arranger owns keyboard edits; with the editor focused it
+        // stays a note-audition key for `keyboard_play` (which runs below).
+        if self.focus == Focus::Arranger && key(Modifiers::NONE, Key::B) {
+            self.split_clip_at_playhead(ctx);
+        }
         if key(Modifiers::SHIFT, Key::ArrowUp) {
             self.nudge(0, 12);
         } else if key(Modifiers::NONE, Key::ArrowUp) {
@@ -1421,6 +1473,12 @@ impl CadenceApp {
                         if ui.add(item("Import MIDI…", None)).clicked() {
                             self.request(PendingAction::ImportMidi);
                         }
+                        if ui.add(item("Import Sample…", None)).clicked() {
+                            self.import_sample_dialog();
+                        }
+                        if ui.add(item("Import Audio File…", None)).clicked() {
+                            self.import_audio_clip_dialog();
+                        }
                         if ui.add(item("Export MIDI…", None)).clicked() {
                             self.export_midi_dialog();
                         }
@@ -1430,7 +1488,7 @@ impl CadenceApp {
                                 !exporting,
                                 item(
                                     if exporting {
-                                        "Exporting WAV…"
+                                        "Exporting…"
                                     } else {
                                         "Export WAV…"
                                     },
@@ -1440,6 +1498,22 @@ impl CadenceApp {
                             .clicked()
                         {
                             self.export_wav_dialog();
+                        }
+                        if ui
+                            .add_enabled(
+                                !exporting,
+                                item(
+                                    if exporting {
+                                        "Exporting…"
+                                    } else {
+                                        "Export Stems…"
+                                    },
+                                    None,
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.export_stems_dialog();
                         }
                         ui.separator();
                         if ui
@@ -1492,6 +1566,21 @@ impl CadenceApp {
                         {
                             self.delete_selection();
                         }
+                        // While the menu is open the pointer is on the menu,
+                        // not the grid, so the enabled state reflects the
+                        // playhead/selection fallback.
+                        if ui
+                            .add_enabled(
+                                self.split_clip_target(ui.ctx()).is_some(),
+                                item("Split Clip at Playhead", None).shortcut_text("B"),
+                            )
+                            .on_disabled_hover_text(
+                                "Hover a clip, or select one the playhead crosses",
+                            )
+                            .clicked()
+                        {
+                            self.split_clip_at_playhead(ui.ctx());
+                        }
                         if ui
                             .add(item("Select All Notes", Some(&SC_SELECT_ALL)))
                             .clicked()
@@ -1535,6 +1624,15 @@ impl CadenceApp {
                         {
                             self.open_arpeggiator();
                         }
+                        if ui
+                            .add_enabled(self.has_note_targets(), item("Humanize Notes", None))
+                            .on_disabled_hover_text("Select notes or open a pattern that has notes")
+                            .clicked()
+                        {
+                            if let Some((track_id, pid)) = self.editor_target() {
+                                self.humanize_notes(track_id, pid);
+                            }
+                        }
                         ui.separator();
                         ui.menu_button("Add Track", |ui| {
                             for inst in Instrument::ALL {
@@ -1547,6 +1645,17 @@ impl CadenceApp {
                                 {
                                     self.add_track(inst);
                                 }
+                            }
+                            ui.separator();
+                            if ui
+                                .add_enabled(
+                                    self.project.tracks.len() < ops::MAX_TRACKS,
+                                    egui::Button::new("Audio Track"),
+                                )
+                                .on_hover_text("A lane for imported WAV clips")
+                                .clicked()
+                            {
+                                self.add_audio_track();
                             }
                         });
                     });
@@ -1775,7 +1884,7 @@ impl CadenceApp {
                                     .fill(pal.accent),
                             );
                             ui.label(
-                                RichText::new(format!("Exporting WAV {:.0}%", p * 100.0))
+                                RichText::new(format!("{} {:.0}%", job.verb(), p * 100.0))
                                     .small()
                                     .color(pal.accent),
                             );
@@ -1899,7 +2008,7 @@ impl CadenceApp {
 
     fn empty_state(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        theme::card(pal).show(ui, |ui| {
+        let card = theme::card(pal).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.25).max(20.0));
@@ -1922,6 +2031,25 @@ impl CadenceApp {
                 });
             });
         });
+        // A dragged library sound can start the song too: the arranger isn't
+        // shown while there are no tracks, so the empty canvas takes the
+        // drop and adds the first track.
+        if card
+            .response
+            .dnd_hover_payload::<sidebar::QuickSound>()
+            .is_some()
+        {
+            ui.painter().rect_stroke(
+                card.response.rect.shrink(1.0),
+                10.0,
+                Stroke::new(1.5_f32, pal.accent),
+                StrokeKind::Inside,
+            );
+            ui.ctx().set_cursor_icon(CursorIcon::Copy);
+        }
+        if let Some(sound) = card.response.dnd_release_payload::<sidebar::QuickSound>() {
+            self.add_sound_track_at(&sound, 0);
+        }
     }
 }
 

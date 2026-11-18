@@ -8,7 +8,7 @@ use egui::{
 };
 
 use super::theme::{self, Icon};
-use super::{ops, CadenceApp, StatusKind};
+use super::{arranger, ops, CadenceApp, StatusKind};
 
 /// Grace period after `play` during which a not-yet-playing engine status
 /// is not treated as "song ended".
@@ -32,6 +32,10 @@ pub(super) struct TransportState {
     /// Where Stop returns to (last seek position).
     pub start_marker: f64,
     pub looping: bool,
+    /// Repeat bounds `(start_step, end_step)` for `looping`, drawn on the
+    /// arranger ruler. Session-only — never saved into the `.cadence` file.
+    /// `None` (or `looping` off) plays to the song end as before.
+    pub loop_region: Option<(f64, f64)>,
     pub metronome: bool,
     pub peak: [f32; 2],
     pub voices: usize,
@@ -52,17 +56,39 @@ impl CadenceApp {
         }
     }
 
+    /// Where playback actually begins: rewinds past the song end, and jumps
+    /// back to the loop region's start when the position is beyond its end —
+    /// otherwise `play` would chase (and briefly sound) notes that can never
+    /// be reached before the first wrap.
+    fn play_start(&self, from: f64) -> f64 {
+        let total = self.project.total_steps();
+        let mut from = if from.is_finite() { from.max(0.0) } else { 0.0 };
+        if from >= total - 0.01 {
+            from = 0.0;
+        }
+        if self.transport.looping {
+            if let Some((a, b)) = self.transport.loop_region {
+                let (a, b) = (a.max(0.0), b.min(total));
+                if b - a > 0.0 && from >= b - 0.01 {
+                    from = a;
+                }
+            }
+        }
+        from
+    }
+
     pub(super) fn play(&mut self) {
         let Some(engine) = &self.engine else {
             self.set_status(StatusKind::Warning, "No audio output device, so playback is unavailable. You can keep editing and export to WAV.");
             return;
         };
-        let total = self.project.total_steps();
-        let mut from = self.transport.position;
-        if from >= total - 0.01 {
-            from = 0.0;
-        }
-        match engine.play(&self.project, from, self.transport.looping) {
+        let from = self.play_start(self.transport.position);
+        match engine.play(
+            &self.project,
+            from,
+            self.transport.looping,
+            self.transport.loop_region,
+        ) {
             Ok(()) => {
                 self.engine_dirty = false;
                 self.transport.playing = true;
@@ -107,7 +133,13 @@ impl CadenceApp {
         self.transport.start_marker = step;
         if self.transport.playing {
             if let Some(engine) = &self.engine {
-                if let Err(err) = engine.play(&self.project, step, self.transport.looping) {
+                let from = self.play_start(step);
+                if let Err(err) = engine.play(
+                    &self.project,
+                    from,
+                    self.transport.looping,
+                    self.transport.loop_region,
+                ) {
                     self.set_status(StatusKind::Error, format!("Could not seek: {err}"));
                 }
                 self.engine_dirty = false;
@@ -121,7 +153,13 @@ impl CadenceApp {
         if self.transport.playing {
             let pos = self.transport.position;
             if let Some(engine) = &self.engine {
-                let _ = engine.play(&self.project, pos, self.transport.looping);
+                let from = self.play_start(pos);
+                let _ = engine.play(
+                    &self.project,
+                    from,
+                    self.transport.looping,
+                    self.transport.loop_region,
+                );
                 self.engine_dirty = false;
                 self.transport.started_at = Some(Instant::now());
             }
@@ -243,6 +281,14 @@ impl CadenceApp {
                         self.stop();
                     }
                     ui.add_space(2.0);
+                    let loop_tip = match self.transport.loop_region {
+                        Some((a, b)) => format!(
+                            "Loop bars {}–{} on repeat (L) · drag the arranger ruler's top strip to move it, ✕ on the band clears it",
+                            arranger::bar_number(a),
+                            arranger::bar_number_end(b),
+                        ),
+                        None => "Loop the whole song (L) · drag the arranger ruler's top strip to loop a section".to_string(),
+                    };
                     if theme::icon_button(
                         ui,
                         pal,
@@ -250,7 +296,7 @@ impl CadenceApp {
                         32.0,
                         self.transport.looping,
                         pal.accent,
-                        "Loop the whole song (L)",
+                        &loop_tip,
                     )
                     .clicked()
                     {
@@ -546,6 +592,30 @@ fn bpm_from_taps(taps: &[Instant]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_start_clamps_into_the_loop_region() {
+        let mut app = CadenceApp::headless(crate::model::Project::empty()); // 8 bars = 128 steps
+        app.transport.looping = true;
+        app.transport.loop_region = Some((32.0, 64.0));
+        assert_eq!(app.play_start(80.0), 32.0, "past the end → region start");
+        assert_eq!(app.play_start(64.0), 32.0);
+        assert_eq!(app.play_start(48.0), 48.0, "inside the region");
+        assert_eq!(
+            app.play_start(10.0),
+            10.0,
+            "before it: the lead-in plays once"
+        );
+        app.transport.looping = false;
+        assert_eq!(app.play_start(80.0), 80.0, "no clamp while looping is off");
+        app.transport.looping = true;
+        app.transport.loop_region = None;
+        assert_eq!(app.play_start(200.0), 0.0, "past the song end rewinds");
+        // A region outliving a shrunk song is ignored, not clamped into noise.
+        app.project.bars = 1;
+        app.transport.loop_region = Some((32.0, 64.0));
+        assert_eq!(app.play_start(200.0), 0.0);
+    }
 
     fn assert_bpm(actual: Option<f64>, expected: f64) {
         let bpm = actual.expect("expected a tempo");

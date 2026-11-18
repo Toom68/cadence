@@ -7,15 +7,18 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::model::{
-    create_pattern, create_track, next_id, ChordQuality, Clip, FontRef, Instrument, Note, Pattern,
-    Project, SongKey, Track,
+    create_audio_track, create_pattern, create_track, next_id, AudioClip, Automation,
+    AutomationLane, AutomationPoint, ChordEvent, ChordQuality, Clip, FontRef, Instrument, Marker,
+    Note, Pattern, Project, SongKey, Track, MAX_NAME_CHARS,
 };
 use crate::packs::InstrumentPreset;
 
 pub use crate::model::{
-    MAX_BARS, MAX_BPM, MAX_CLIPS_PER_TRACK, MAX_CLIP_LOOPS, MAX_NOTES_PER_PATTERN,
-    MAX_PATTERNS_PER_TRACK, MAX_PATTERN_STEPS, MAX_SONG_EVENTS, MAX_SWING, MAX_TRACKS, MIN_BARS,
-    MIN_BPM, MIN_NOTE_DURATION, STEPS_PER_BAR,
+    ArpDirection, MAX_ARP_OCTAVES, MAX_AUDIO_CLIPS_PER_TRACK, MAX_AUTOMATION_POINTS, MAX_BARS,
+    MAX_BPM, MAX_CHORD_EVENTS, MAX_CLIPS_PER_TRACK, MAX_CLIP_LOOPS, MAX_MARKERS,
+    MAX_NOTES_PER_PATTERN, MAX_PATTERNS_PER_TRACK, MAX_PATTERN_STEPS, MAX_SONG_EVENTS, MAX_SWING,
+    MAX_TRACKS, MIN_AUDIO_CLIP_STEPS, MIN_BARS, MIN_BPM, MIN_NOTE_DURATION, NUM_BUSES,
+    STEPS_PER_BAR,
 };
 
 pub const MAX_PITCH: u8 = 127;
@@ -24,11 +27,15 @@ pub const PATTERN_LENGTHS: [u32; 8] = [8, 16, 32, 48, 64, 128, 192, 256];
 /// Longest song in steps; clips must start before and fit inside this.
 pub const MAX_SONG_STEPS: f64 = (MAX_BARS * STEPS_PER_BAR) as f64;
 
-/// Display label for a track's sound: "Font · Program" for SoundFont tracks
-/// ([`FontRef::label`]), else the pack preset name or the built-in name —
-/// the same precedence playback uses. Borrowed for preset/built-in tracks so
-/// the per-frame callers (arranger, mixer, editor) don't allocate.
+/// Display label for a track's sound: "Audio" for imported-WAV lanes,
+/// "Font · Program" for SoundFont tracks ([`FontRef::label`]), else the
+/// pack preset name or the built-in name — the same precedence playback
+/// uses. Borrowed for preset/built-in tracks so the per-frame callers
+/// (arranger, mixer, editor) don't allocate.
 pub fn instrument_label(track: &Track) -> Cow<'_, str> {
+    if track.audio {
+        return Cow::Borrowed("Audio");
+    }
     match &track.font {
         Some(font) => Cow::Owned(font.label()),
         None => Cow::Borrowed(track.sound_name()),
@@ -80,12 +87,18 @@ pub fn max_clip_loops(track: &Track, clip: &Clip) -> u32 {
     MAX_CLIP_LOOPS.min((MAX_SONG_EVENTS / notes) as u32).max(1)
 }
 
-/// End of the last clip in the song, in steps.
+/// End of the last clip in the song, in steps — imported-WAV clips count
+/// just like pattern clips so the arranger scrolls and `bars` fits them.
 pub fn content_end(project: &Project) -> f64 {
     project
         .tracks
         .iter()
-        .flat_map(|t| t.clips.iter().map(move |c| c.start + clip_len(t, c)))
+        .flat_map(|t| {
+            t.clips
+                .iter()
+                .map(move |c| c.start + clip_len(t, c))
+                .chain(t.audio_clips.iter().map(|a| a.start + a.span()))
+        })
         .fold(0.0, f64::max)
 }
 
@@ -189,6 +202,9 @@ pub fn duplicate_track(project: &mut Project, track_id: u64) -> Option<u64> {
             c.pattern_id = *new;
         }
     }
+    for c in &mut t.audio_clips {
+        c.id = next_id();
+    }
     let id = t.id;
     project.tracks.insert(idx + 1, t);
     Some(id)
@@ -227,6 +243,11 @@ pub fn paste_track(project: &mut Project, source: &Track) -> Option<u64> {
         if let Some((_, new)) = map.iter().find(|(old, _)| *old == c.pattern_id) {
             c.pattern_id = *new;
         }
+    }
+    // Audio clips reference the shared store by name, not this track's
+    // patterns — they copy verbatim apart from a fresh id.
+    for c in &mut t.audio_clips {
+        c.id = next_id();
     }
     let id = push_track(project, t)?;
     fit_bars_to_content(project);
@@ -300,6 +321,61 @@ pub fn set_track_font(project: &mut Project, track_id: u64, font: Option<FontRef
         t.instrument = Instrument::Lead;
     }
     true
+}
+
+// ----- subgroup buses ------------------------------------------------------
+
+/// One-character route label for a [`Track::bus`] value: `"M"` for the
+/// master (bus 0), `"A"`..=`"D"` for the fixed subgroups. Out-of-range
+/// values (only reachable unvalidated) label as `"?"`.
+pub fn bus_label(bus: u8) -> &'static str {
+    match bus {
+        0 => "M",
+        b if (1..=NUM_BUSES as u8).contains(&b) => {
+            const LABELS: [&str; NUM_BUSES] = ["A", "B", "C", "D"];
+            LABELS[(b - 1) as usize]
+        }
+        _ => "?",
+    }
+}
+
+/// Routes a track to the master (`bus = 0`) or one of the fixed subgroup
+/// buses (`1..=NUM_BUSES`), clamped like `Project::normalize` does.
+/// `false` when the track is missing or already on that bus.
+pub fn set_track_bus(project: &mut Project, track_id: u64, bus: u8) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let bus = bus.min(NUM_BUSES as u8);
+    if t.bus == bus {
+        return false;
+    }
+    t.bus = bus;
+    true
+}
+
+/// Renames bus `index` (`0..NUM_BUSES`); the name goes through the same
+/// cleaning as load repair — control chars stripped, length capped, empty
+/// falls back to the letter name. `false` if the index is out of range or
+/// the cleaned name is unchanged.
+pub fn rename_bus(project: &mut Project, index: usize, name: &str) -> bool {
+    let Some(bus) = project.buses.get_mut(index) else {
+        return false;
+    };
+    let fallback = crate::model::bus_name(index).to_owned();
+    let mut cleaned = name.to_string();
+    crate::model::clamp_name(&mut cleaned, &fallback);
+    if bus.name == cleaned {
+        return false;
+    }
+    bus.name = cleaned;
+    true
+}
+
+/// Tracks currently routed to `bus` (0 = master). Used by the mixer to show
+/// whether a subgroup is in use.
+pub fn bus_members(project: &Project, bus: u8) -> usize {
+    project.tracks.iter().filter(|t| t.bus == bus).count()
 }
 
 /// Places a clip, clamped inside the maximum song length. `None` if the
@@ -425,6 +501,776 @@ pub fn set_clip_fades(
     true
 }
 
+// ----- audio clips ---------------------------------------------------------
+
+/// Adds an audio lane — the track kind imported-WAV clips live on.
+/// `None` at the track limit.
+pub fn add_audio_track(project: &mut Project) -> Option<u64> {
+    push_track(project, create_audio_track("Audio"))
+}
+
+/// Whether `clip_id` is an imported-WAV clip on `track` (vs a pattern clip).
+pub fn is_audio_clip(track: &Track, clip_id: u64) -> bool {
+    track.audio_clips.iter().any(|c| c.id == clip_id)
+}
+
+/// The imported-WAV clip `clip_id` on `track`.
+pub fn audio_clip(track: &Track, clip_id: u64) -> Option<&AudioClip> {
+    track.audio_clips.iter().find(|c| c.id == clip_id)
+}
+
+/// Places a staged audio file as a clip on `track_id`. `file` is the
+/// store-relative name from `persistence::stage_audio_file`; `name` the
+/// display label; `length` the steps one repetition spans. `None` at the
+/// per-track audio-clip cap or when the track is missing.
+pub fn add_audio_clip(
+    project: &mut Project,
+    track_id: u64,
+    file: &str,
+    name: &str,
+    start: f64,
+    length: f64,
+) -> Option<u64> {
+    let t = track_mut(project, track_id)?;
+    if t.audio_clips.len() >= MAX_AUDIO_CLIPS_PER_TRACK {
+        return None;
+    }
+    let length = if length.is_finite() {
+        length.clamp(MIN_AUDIO_CLIP_STEPS, MAX_SONG_STEPS)
+    } else {
+        STEPS_PER_BAR as f64
+    };
+    let mut clip = AudioClip::new(file, name, clamp_clip_start(start, length), length);
+    crate::model::clamp_name(&mut clip.name, "Audio");
+    let id = clip.id;
+    t.audio_clips.push(clip);
+    fit_bars_to_content(project);
+    Some(id)
+}
+
+/// Moves an imported-WAV clip (clamped like [`move_clip`]).
+pub fn move_audio_clip(project: &mut Project, track_id: u64, clip_id: u64, start: f64) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(len) = audio_clip(t, clip_id).map(|c| c.span()) else {
+        return false;
+    };
+    if let Some(c) = t.audio_clips.iter_mut().find(|c| c.id == clip_id) {
+        c.start = clamp_clip_start(start, len);
+    }
+    fit_bars_to_content(project);
+    true
+}
+
+/// Deletes an imported-WAV clip. `false` if the track or clip is missing.
+pub fn delete_audio_clip(project: &mut Project, track_id: u64, clip_id: u64) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let before = t.audio_clips.len();
+    t.audio_clips.retain(|c| c.id != clip_id);
+    t.audio_clips.len() != before
+}
+
+/// Sets an audio clip's loop count, clamped to `1..=MAX_CLIP_LOOPS` (audio
+/// clips produce no note events, so the event budget never binds), then
+/// re-clamps fades to the new span — same rules as [`set_clip_loops`].
+pub fn set_audio_clip_loops(
+    project: &mut Project,
+    track_id: u64,
+    clip_id: u64,
+    loops: u32,
+) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(clip) = t.audio_clips.iter_mut().find(|c| c.id == clip_id) else {
+        return false;
+    };
+    clip.loops = loops.clamp(1, MAX_CLIP_LOOPS);
+    let span = clip.span();
+    clip.fade_in = clean_fade(clip.fade_in, span);
+    clip.fade_out = clean_fade(clip.fade_out, span);
+    fit_bars_to_content(project);
+    true
+}
+
+/// Sets an audio clip's fade-in/fade-out lengths in steps, each clamped to
+/// `0..=span` — same rules as [`set_clip_fades`].
+pub fn set_audio_clip_fades(
+    project: &mut Project,
+    track_id: u64,
+    clip_id: u64,
+    fade_in: f64,
+    fade_out: f64,
+) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(span) = audio_clip(t, clip_id).map(|c| c.span()) else {
+        return false;
+    };
+    let clean = |v: f64| clean_fade(v, span);
+    if let Some(clip) = t.audio_clips.iter_mut().find(|c| c.id == clip_id) {
+        clip.fade_in = clean(fade_in);
+        clip.fade_out = clean(fade_out);
+    }
+    true
+}
+
+/// Steps one clip repetition occupies: the pattern length for pattern
+/// clips, [`AudioClip::length`] for imported-WAV clips.
+pub fn any_clip_rep_len(track: &Track, clip_id: u64) -> Option<f64> {
+    if let Some(c) = track.clips.iter().find(|c| c.id == clip_id) {
+        let plen =
+            pattern(track, c.pattern_id).map_or(STEPS_PER_BAR as f64, |p| p.length.max(1) as f64);
+        return Some(plen);
+    }
+    audio_clip(track, clip_id).map(|c| c.length)
+}
+
+/// Largest loop count the gesture layer may offer for `clip_id`: the
+/// event-budget cap for pattern clips, [`MAX_CLIP_LOOPS`] for audio.
+pub fn max_any_clip_loops(track: &Track, clip_id: u64) -> Option<u32> {
+    if let Some(c) = track.clips.iter().find(|c| c.id == clip_id) {
+        return Some(max_clip_loops(track, c));
+    }
+    audio_clip(track, clip_id).map(|_| MAX_CLIP_LOOPS)
+}
+
+/// Current `(start, span, loops, fade_in, fade_out)` of `clip_id` whichever
+/// kind it is — the snapshot the fade/loop drags and context menu read.
+pub fn any_clip_props(track: &Track, clip_id: u64) -> Option<(f64, f64, u32, f64, f64)> {
+    if let Some(c) = track.clips.iter().find(|c| c.id == clip_id) {
+        return Some((c.start, clip_len(track, c), c.loops, c.fade_in, c.fade_out));
+    }
+    audio_clip(track, clip_id).map(|c| (c.start, c.span(), c.loops, c.fade_in, c.fade_out))
+}
+
+/// Sets a clip's loop count whichever kind it is (see [`set_clip_loops`]
+/// and [`set_audio_clip_loops`]).
+pub fn set_any_clip_loops(project: &mut Project, track_id: u64, clip_id: u64, loops: u32) -> bool {
+    match track(project, track_id) {
+        Some(t) if is_audio_clip(t, clip_id) => {
+            set_audio_clip_loops(project, track_id, clip_id, loops)
+        }
+        _ => set_clip_loops(project, track_id, clip_id, loops),
+    }
+}
+
+/// Sets a clip's fades whichever kind it is.
+pub fn set_any_clip_fades(
+    project: &mut Project,
+    track_id: u64,
+    clip_id: u64,
+    fade_in: f64,
+    fade_out: f64,
+) -> bool {
+    match track(project, track_id) {
+        Some(t) if is_audio_clip(t, clip_id) => {
+            set_audio_clip_fades(project, track_id, clip_id, fade_in, fade_out)
+        }
+        _ => set_clip_fades(project, track_id, clip_id, fade_in, fade_out),
+    }
+}
+
+/// Deletes a clip whichever kind it is (see [`delete_clip`] /
+/// [`delete_audio_clip`]).
+pub fn delete_any_clip(project: &mut Project, track_id: u64, clip_id: u64) -> bool {
+    match track(project, track_id) {
+        Some(t) if is_audio_clip(t, clip_id) => delete_audio_clip(project, track_id, clip_id),
+        _ => delete_clip(project, track_id, clip_id),
+    }
+}
+
+/// The next default name for a section marker, cycling through
+/// Intro/Verse/Chorus/... and appending a number once a name repeats.
+pub fn next_marker_name(project: &Project) -> String {
+    const SECTIONS: [&str; 8] = [
+        "Intro", "Verse", "Chorus", "Bridge", "Break", "Drop", "Solo", "Outro",
+    ];
+    let mut names = BTreeSet::new();
+    for m in &project.markers {
+        names.insert(m.name.as_str());
+    }
+    let mut round = 1;
+    loop {
+        for base in SECTIONS {
+            let name = if round == 1 {
+                base.to_string()
+            } else {
+                format!("{base} {round}")
+            };
+            if !names.contains(name.as_str()) {
+                return name;
+            }
+        }
+        round += 1;
+    }
+}
+
+/// Adds a section marker at `step` (clamped to `0..=MAX_PATTERN_STEPS`),
+/// named `name` or [`next_marker_name`] when `None`. `None` result means the
+/// [`MAX_MARKERS`] cap is reached. The list is kept sorted by step then id.
+pub fn add_marker(project: &mut Project, step: f64, name: Option<String>) -> Option<u64> {
+    if project.markers.len() >= MAX_MARKERS {
+        return None;
+    }
+    let mut name = name.unwrap_or_else(|| next_marker_name(project));
+    crate::model::clamp_name(&mut name, "Section");
+    let id = next_id();
+    project.markers.push(Marker {
+        id,
+        name,
+        step: clamp_marker_step(step),
+    });
+    project
+        .markers
+        .sort_by(|a, b| a.step.total_cmp(&b.step).then(a.id.cmp(&b.id)));
+    Some(id)
+}
+
+/// Moves a marker to `step` (clamped like [`add_marker`]) and re-sorts the
+/// list. `false` if no marker has that id.
+pub fn move_marker(project: &mut Project, marker_id: u64, step: f64) -> bool {
+    let Some(m) = project.markers.iter_mut().find(|m| m.id == marker_id) else {
+        return false;
+    };
+    m.step = clamp_marker_step(step);
+    project
+        .markers
+        .sort_by(|a, b| a.step.total_cmp(&b.step).then(a.id.cmp(&b.id)));
+    true
+}
+
+/// Renames a marker; the name goes through the same cleaning as load repair
+/// (control chars stripped, length capped, empty falls back to the old name).
+/// `false` if the id is unknown.
+pub fn rename_marker(project: &mut Project, marker_id: u64, name: &str) -> bool {
+    let Some(m) = project.markers.iter_mut().find(|m| m.id == marker_id) else {
+        return false;
+    };
+    let mut cleaned = name.to_string();
+    crate::model::clamp_name(&mut cleaned, &m.name.clone());
+    m.name = cleaned;
+    true
+}
+
+/// Deletes a marker. `false` if the id is unknown.
+pub fn delete_marker(project: &mut Project, marker_id: u64) -> bool {
+    let before = project.markers.len();
+    project.markers.retain(|m| m.id != marker_id);
+    project.markers.len() != before
+}
+
+/// Clamps a marker position to `0..=MAX_PATTERN_STEPS`; non-finite becomes 0.
+fn clamp_marker_step(step: f64) -> f64 {
+    if step.is_finite() {
+        step.clamp(0.0, MAX_PATTERN_STEPS as f64)
+    } else {
+        0.0
+    }
+}
+
+/// Clamps an automation point's `value` to its lane's range; non-finite falls
+/// back to `fallback` (the point's previous value on moves, the lane's
+/// neutral value on adds) rather than writing NaN into the model.
+fn clamp_auto_value(lane: AutomationLane, value: f32, fallback: f32) -> f32 {
+    let (lo, hi) = Automation::value_range(lane);
+    if value.is_finite() {
+        value.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+
+/// Adds a point at (`step`, `value`) on `track`'s `lane`, creating the
+/// track's automation block on first use. A point already on `step` takes
+/// the new value instead of stacking a second breakpoint there. The lane
+/// stays sorted by step; the point's index inside it is returned, or `None`
+/// when the [`MAX_AUTOMATION_POINTS`] cap is reached.
+pub fn add_automation_point(
+    project: &mut Project,
+    track_id: u64,
+    lane: AutomationLane,
+    step: f64,
+    value: f32,
+) -> Option<usize> {
+    let t = track_mut(project, track_id)?;
+    let point = AutomationPoint {
+        step: clamp_marker_step(step),
+        value: clamp_auto_value(lane, value, Automation::neutral(lane)),
+    };
+    let lane = t
+        .automation
+        .get_or_insert_with(Automation::default)
+        .lane_mut(lane);
+    if let Some(i) = lane.iter().position(|p| p.step == point.step) {
+        lane[i].value = point.value;
+        return Some(i);
+    }
+    if lane.len() >= MAX_AUTOMATION_POINTS {
+        return None;
+    }
+    let i = lane.partition_point(|p| p.step < point.step);
+    lane.insert(i, point);
+    Some(i)
+}
+
+/// Moves the point at `index` on `track`'s `lane` to (`step`, `value`). The
+/// lane re-sorts when the new step crosses a neighbour, so the index the
+/// point lands at is returned — a caller dragging the point keeps following
+/// it through the resort. `None` when the track, the automation block or
+/// `index` does not exist.
+pub fn move_automation_point(
+    project: &mut Project,
+    track_id: u64,
+    lane: AutomationLane,
+    index: usize,
+    step: f64,
+    value: f32,
+) -> Option<usize> {
+    let auto = track_mut(project, track_id)?.automation.as_mut()?;
+    let points = auto.lane_mut(lane);
+    let old = *points.get(index)?;
+    points[index] = AutomationPoint {
+        step: clamp_marker_step(step),
+        value: clamp_auto_value(lane, value, old.value),
+    };
+    // Bubble the displaced element back into order instead of re-sorting the
+    // whole lane: the drag stays attached to the same point and the returned
+    // index is where it actually sits after crossing its neighbours.
+    let mut i = index;
+    while i > 0 && points[i].step < points[i - 1].step {
+        points.swap(i, i - 1);
+        i -= 1;
+    }
+    while i + 1 < points.len() && points[i].step > points[i + 1].step {
+        points.swap(i, i + 1);
+        i += 1;
+    }
+    Some(i)
+}
+
+/// Removes the point at `index` from `track`'s `lane`. When both lanes end
+/// up empty the automation block itself drops back to `None`, keeping saved
+/// songs free of `"automation": {}` husks. `false` when nothing was removed.
+pub fn delete_automation_point(
+    project: &mut Project,
+    track_id: u64,
+    lane: AutomationLane,
+    index: usize,
+) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(auto) = t.automation.as_mut() else {
+        return false;
+    };
+    if index >= auto.lane(lane).len() {
+        return false;
+    }
+    auto.lane_mut(lane).remove(index);
+    if auto.is_empty() {
+        t.automation = None;
+    }
+    true
+}
+
+/// Drops every point on `track`'s `lane` (and the automation block once both
+/// lanes are empty). `false` when the lane had no points to clear.
+pub fn clear_automation_lane(project: &mut Project, track_id: u64, lane: AutomationLane) -> bool {
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(auto) = t.automation.as_mut() else {
+        return false;
+    };
+    if auto.lane(lane).is_empty() {
+        return false;
+    }
+    auto.lane_mut(lane).clear();
+    if auto.is_empty() {
+        t.automation = None;
+    }
+    true
+}
+
+/// The chord event sitting exactly on `step`, if one is there. Chord
+/// positions are bar-aligned, so an exact match is the "chord on this bar"
+/// lookup the strip uses before it writes.
+pub fn chord_event_at_step(project: &Project, step: f64) -> Option<u64> {
+    project
+        .chord_events
+        .iter()
+        .find(|ev| ev.step == step)
+        .map(|ev| ev.id)
+}
+
+/// Adds a chord label at `step` (clamped to `0..=MAX_PATTERN_STEPS`); `root`
+/// is taken mod 12 like every pitch class. `None` result means the
+/// [`MAX_CHORD_EVENTS`] cap is reached. The list stays sorted by step then id.
+pub fn add_chord_event(
+    project: &mut Project,
+    step: f64,
+    root: u8,
+    quality: ChordQuality,
+) -> Option<u64> {
+    if project.chord_events.len() >= MAX_CHORD_EVENTS {
+        return None;
+    }
+    let id = next_id();
+    project.chord_events.push(ChordEvent {
+        id,
+        step: clamp_marker_step(step),
+        root: root % 12,
+        quality,
+    });
+    sort_chord_events(project);
+    Some(id)
+}
+
+/// Moves a chord event to `step` (clamped like [`add_chord_event`]) and
+/// re-sorts the list. `false` if no event has that id.
+pub fn move_chord_event(project: &mut Project, event_id: u64, step: f64) -> bool {
+    let Some(ev) = project.chord_events.iter_mut().find(|e| e.id == event_id) else {
+        return false;
+    };
+    ev.step = clamp_marker_step(step);
+    sort_chord_events(project);
+    true
+}
+
+/// Replaces a chord event's root and quality. `false` if the id is unknown.
+pub fn set_chord_event(
+    project: &mut Project,
+    event_id: u64,
+    root: u8,
+    quality: ChordQuality,
+) -> bool {
+    let Some(ev) = project.chord_events.iter_mut().find(|e| e.id == event_id) else {
+        return false;
+    };
+    ev.root = root % 12;
+    ev.quality = quality;
+    true
+}
+
+/// Steps a chord event's quality `delta` slots through [`ChordQuality::ALL`],
+/// wrapping at both ends — the click-cycling the strip chips do. `false` if
+/// the id is unknown.
+pub fn cycle_chord_event_quality(project: &mut Project, event_id: u64, delta: i32) -> bool {
+    let Some(ev) = project.chord_events.iter_mut().find(|e| e.id == event_id) else {
+        return false;
+    };
+    let n = ChordQuality::ALL.len() as i32;
+    let i = ChordQuality::ALL
+        .iter()
+        .position(|&q| q == ev.quality)
+        .unwrap_or(0) as i32;
+    ev.quality = ChordQuality::ALL[(i + delta).rem_euclid(n) as usize];
+    true
+}
+
+/// Steps a chord event's root `delta` semitones, wrapping at the octave.
+/// `false` if the id is unknown.
+pub fn cycle_chord_event_root(project: &mut Project, event_id: u64, delta: i32) -> bool {
+    let Some(ev) = project.chord_events.iter_mut().find(|e| e.id == event_id) else {
+        return false;
+    };
+    ev.root = ((ev.root as i32 + delta).rem_euclid(12)) as u8;
+    true
+}
+
+/// Deletes a chord event. `false` if the id is unknown.
+pub fn delete_chord_event(project: &mut Project, event_id: u64) -> bool {
+    let before = project.chord_events.len();
+    project.chord_events.retain(|e| e.id != event_id);
+    project.chord_events.len() != before
+}
+
+/// Chord symbol for a strip chip — "C", "Am7", "F#m7b5". Thin wrapper over
+/// [`ChordQuality::symbol`] so call sites never re-derive the root/suffix.
+pub fn chord_event_label(ev: &ChordEvent) -> String {
+    ev.label()
+}
+
+/// The chord a plain click on the strip writes: the key's tonic (I in a
+/// major key, i in a minor one) — the first of [`diatonic_chords`].
+pub fn tonic_chord_spec(key: SongKey) -> ChordSpec {
+    diatonic_chords(key)[0].spec
+}
+
+fn sort_chord_events(project: &mut Project) {
+    project
+        .chord_events
+        .sort_by(|a, b| a.step.total_cmp(&b.step).then(a.id.cmp(&b.id)));
+}
+
+/// Positions within this many steps of a clip edge or a repetition boundary
+/// count as landing on it, so splits stay on whole steps/loops.
+const SPLIT_EDGE_TOL: f64 = 1e-6;
+
+/// Whether `at_step` falls strictly inside the clip's span — the only spot
+/// where [`split_clip`] produces two non-empty pieces.
+pub fn can_split_clip(project: &Project, track_id: u64, clip_id: u64, at_step: f64) -> bool {
+    let Some(t) = track(project, track_id) else {
+        return false;
+    };
+    let Some(clip) = t.clips.iter().find(|c| c.id == clip_id) else {
+        return false;
+    };
+    let Some(pat) = pattern(t, clip.pattern_id) else {
+        return false;
+    };
+    let s = at_step - clip.start;
+    let span = clip.span(pat.length.max(1) as f64);
+    // The new right clip starts at `at_step`, which `Project::validate`
+    // bounds like any other clip start.
+    s > SPLIT_EDGE_TOL && span - s > SPLIT_EDGE_TOL && at_step < MAX_PATTERN_STEPS as f64
+}
+
+/// Whole-step length for a split-off pattern: the piece's span rounded to an
+/// integer (ceil when it is not essentially whole), but never below the
+/// smallest length that still covers every note start — `Project::events`
+/// only plays notes with `start < length`. A ceil adds under one step of
+/// silent overhang; clip spans are whole numbers of steps, so a fractional
+/// cut can never land exactly on both edges.
+fn split_piece_len(span: f64, max_note_start: f64) -> u32 {
+    let rounded = span.round();
+    let base = if (span - rounded).abs() <= SPLIT_EDGE_TOL {
+        rounded
+    } else {
+        span.ceil()
+    };
+    base.max(max_note_start.floor() + 1.0).max(1.0) as u32
+}
+
+/// Cuts the clip at `at_step` (song steps) into two adjacent clips. The
+/// left piece keeps `clip_id` and the clip's `fade_in`; the new right clip
+/// — inserted immediately after it in `track.clips` — starts at the split
+/// point with a fresh id and the clip's `fade_out`.
+///
+/// A clip is only a reference to whole pattern repetitions: it cannot
+/// express "start halfway through a pattern". A cut landing on a repetition
+/// boundary therefore needs no new data — the left clip just plays fewer
+/// loops and the right clip the remaining ones of the same pattern. A cut
+/// inside a repetition instead flattens each half's played notes into a new
+/// single-play pattern (named "… split"): notes crossing the cut are
+/// shortened on the left and continue from step 0 on the right, so the two
+/// pieces sound exactly like the original clip.
+///
+/// `false` — leaving `project` untouched — when the track, clip or pattern
+/// is missing, `at_step` is not strictly inside the clip's span, or the two
+/// new patterns would not fit the per-track pattern, note or length limits.
+pub fn split_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f64) -> bool {
+    // `Project::validate` counts every clip's notes times loops against
+    // `MAX_SONG_EVENTS`; a note crossing the cut is counted in both halves,
+    // so the check below needs the project's current theoretical total.
+    let events_now: usize = project
+        .tracks
+        .iter()
+        .flat_map(|t| {
+            t.clips.iter().map(move |c| {
+                t.patterns
+                    .iter()
+                    .find(|p| p.id == c.pattern_id)
+                    .map_or(0, |p| p.notes.len())
+                    * c.loop_count() as usize
+            })
+        })
+        .sum();
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(ci) = t.clips.iter().position(|c| c.id == clip_id) else {
+        return false;
+    };
+    if t.clips.len() >= MAX_CLIPS_PER_TRACK {
+        return false;
+    }
+    let clip = t.clips[ci].clone();
+    let Some(pat_len) = t
+        .patterns
+        .iter()
+        .find(|p| p.id == clip.pattern_id)
+        .map(|p| p.length.max(1) as f64)
+    else {
+        return false;
+    };
+    let loops = clip.loop_count();
+    let span = pat_len * loops as f64;
+    let s = at_step - clip.start;
+    // Strict interior only, and the right clip's start must stay a legal
+    // clip position (`validate` rejects starts at or past the song limit).
+    if !s.is_finite()
+        || s <= SPLIT_EDGE_TOL
+        || span - s <= SPLIT_EDGE_TOL
+        || at_step >= MAX_PATTERN_STEPS as f64
+    {
+        return false;
+    }
+    // A cut (essentially) on a repetition boundary: the same pattern plays
+    // `m` loops on the left and the remaining `loops - m` on the right.
+    let reps = s / pat_len;
+    let m = reps.round() as u32;
+    if m >= 1 && m < loops && (reps - f64::from(m)).abs() * pat_len <= SPLIT_EDGE_TOL {
+        let lspan = pat_len * f64::from(m);
+        if clip.start + lspan >= MAX_PATTERN_STEPS as f64 {
+            return false;
+        }
+        let left = &mut t.clips[ci];
+        left.loops = m;
+        left.fade_in = clean_fade(left.fade_in, lspan);
+        left.fade_out = 0.0;
+        t.clips.insert(
+            ci + 1,
+            Clip {
+                id: next_id(),
+                pattern_id: clip.pattern_id,
+                start: clip.start + lspan,
+                loops: loops - m,
+                fade_in: 0.0,
+                fade_out: clean_fade(clip.fade_out, span - lspan),
+            },
+        );
+        return true;
+    }
+    // A cut inside a repetition: flatten the notes the clip actually plays —
+    // tiled per loop and clipped to the pattern edge the way
+    // `Project::events` clips them — and deal the two halves out into fresh
+    // single-play patterns so each piece sounds like the original.
+    let mut pat_notes = 0usize;
+    let mut left_notes: Vec<(u8, f64, f64, f32)> = Vec::new();
+    let mut right_notes: Vec<(u8, f64, f64, f32)> = Vec::new();
+    if let Some(pat) = t.patterns.iter().find(|p| p.id == clip.pattern_id) {
+        pat_notes = pat.notes.len();
+        for rep in 0..loops {
+            let off = rep as f64 * pat_len;
+            for n in &pat.notes {
+                if !(n.start >= 0.0 && n.start < pat_len) || !n.duration.is_finite() {
+                    continue;
+                }
+                let pos = off + n.start;
+                // `Project::events` clips to the pattern edge and drops
+                // anything left at zero length — match that here.
+                let d = n.duration.min(pat_len - n.start).max(0.0);
+                if d <= 0.0 {
+                    continue;
+                }
+                let end = pos + d;
+                // Notes starting before the cut belong to the left piece,
+                // shortened at the cut when they hang over it.
+                if pos < s {
+                    left_notes.push((n.pitch.min(127), pos, (s - pos).min(end - pos), n.velocity));
+                }
+                // Notes still sounding at the cut belong to the right piece,
+                // shifted so the cut becomes step 0; a hanging note resumes
+                // from 0 with just its remaining tail.
+                if end > s {
+                    let start = pos.max(s) - s;
+                    right_notes.push((n.pitch.min(127), start, end - s - start, n.velocity));
+                }
+            }
+        }
+    }
+    if left_notes.len() > MAX_NOTES_PER_PATTERN
+        || right_notes.len() > MAX_NOTES_PER_PATTERN
+        || t.patterns.len() + 2 > MAX_PATTERNS_PER_TRACK
+        || events_now.saturating_sub(pat_notes * loops as usize)
+            + left_notes.len()
+            + right_notes.len()
+            > MAX_SONG_EVENTS
+    {
+        return false;
+    }
+    let len_l = split_piece_len(s, left_notes.iter().map(|n| n.1).fold(0.0, f64::max));
+    let len_r = split_piece_len(
+        span - s,
+        right_notes.iter().map(|n| n.1).fold(0.0, f64::max),
+    );
+    if len_l > MAX_PATTERN_STEPS || len_r > MAX_PATTERN_STEPS {
+        return false;
+    }
+    // Names keep the source's prefix plus " split" (truncated so a
+    // max-length source name still validates); `unique_name` disambiguates.
+    let base: String = t
+        .patterns
+        .iter()
+        .find(|p| p.id == clip.pattern_id)
+        .map(|p| {
+            let head: String = p.name.chars().take(MAX_NAME_CHARS - 6).collect();
+            format!("{head} split")
+        })
+        .unwrap_or_else(|| "Split".to_string());
+    // The disambiguation suffix could re-exceed the cap; clip it again.
+    let name_l: String = unique_name(&base, t.patterns.iter().map(|p| p.name.clone()))
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect();
+    let name_r: String = unique_name(
+        &base,
+        t.patterns
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(std::iter::once(name_l.clone())),
+    )
+    .chars()
+    .take(MAX_NAME_CHARS)
+    .collect();
+    let build = |name: String, length: u32, notes: Vec<(u8, f64, f64, f32)>| {
+        let mut pat = Pattern {
+            id: next_id(),
+            name,
+            length,
+            notes: notes
+                .into_iter()
+                .map(|(pitch, start, duration, velocity)| Note {
+                    id: next_id(),
+                    pitch,
+                    start,
+                    // A sliver left by the cut clamps up to the minimum note
+                    // length — dropping it would lose the attack.
+                    duration: duration.clamp(MIN_NOTE_DURATION, MAX_PATTERN_STEPS as f64),
+                    velocity: if velocity.is_finite() {
+                        velocity.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    },
+                })
+                .collect(),
+        };
+        pat.sort_notes();
+        pat
+    };
+    let left_pat = build(name_l, len_l, left_notes);
+    let right_pat = build(name_r, len_r, right_notes);
+    let (left_pid, right_pid) = (left_pat.id, right_pat.id);
+    t.patterns.push(left_pat);
+    t.patterns.push(right_pat);
+    {
+        let left = &mut t.clips[ci];
+        left.pattern_id = left_pid;
+        left.loops = 1;
+        left.fade_in = clean_fade(left.fade_in, len_l as f64);
+        left.fade_out = 0.0;
+    }
+    t.clips.insert(
+        ci + 1,
+        Clip {
+            id: next_id(),
+            pattern_id: right_pid,
+            start: at_step,
+            loops: 1,
+            fade_in: 0.0,
+            fade_out: clean_fade(clip.fade_out, len_r as f64),
+        },
+    );
+    fit_bars_to_content(project);
+    true
+}
+
 /// Places up to `times` copies of a clip back-to-back after it, stopping at
 /// the maximum song length or clip limit. Returns the last new id, if any fit.
 pub fn repeat_clip(
@@ -457,6 +1303,35 @@ pub fn repeat_clip(
     last
 }
 
+/// Places up to `times` copies of an imported-WAV clip back-to-back after
+/// it — [`repeat_clip`]'s audio counterpart, capped by
+/// [`MAX_AUDIO_CLIPS_PER_TRACK`].
+pub fn repeat_audio_clip(
+    project: &mut Project,
+    track_id: u64,
+    clip_id: u64,
+    times: usize,
+) -> Option<u64> {
+    let t = track_mut(project, track_id)?;
+    let clip = audio_clip(t, clip_id)?.clone();
+    let len = clip.span();
+    let mut last = None;
+    for i in 1..=times {
+        let start = clip.start + len * i as f64;
+        if start + len > MAX_SONG_STEPS + 1e-9 || t.audio_clips.len() >= MAX_AUDIO_CLIPS_PER_TRACK {
+            break;
+        }
+        let id = next_id();
+        let mut copy = clip.clone();
+        copy.id = id;
+        copy.start = start;
+        t.audio_clips.push(copy);
+        last = Some(id);
+    }
+    fit_bars_to_content(project);
+    last
+}
+
 pub fn collect_clips(project: &Project, ids: &BTreeSet<u64>) -> Vec<(u64, Clip)> {
     project
         .tracks
@@ -471,19 +1346,9 @@ pub fn collect_clips(project: &Project, ids: &BTreeSet<u64>) -> Vec<(u64, Clip)>
         .collect()
 }
 
-pub fn clip_group_delta(project: &Project, originals: &[(u64, Clip)], dstep: f64) -> f64 {
-    if originals.is_empty() {
-        return 0.0;
-    }
-    let mut min_start = f64::INFINITY;
-    let mut max_end = f64::NEG_INFINITY;
-    for (track_id, clip) in originals {
-        let Some(track) = track(project, *track_id) else {
-            continue;
-        };
-        min_start = min_start.min(clip.start);
-        max_end = max_end.max(clip.start + clip_len(track, clip));
-    }
+/// Bounds-clamps a group move delta: the group's leftmost clip start must
+/// stay `>= 0` and its rightmost end inside [`MAX_SONG_STEPS`].
+fn bounded_group_delta(min_start: f64, max_end: f64, dstep: f64) -> f64 {
     if !min_start.is_finite() || !max_end.is_finite() {
         return 0.0;
     }
@@ -495,6 +1360,38 @@ pub fn clip_group_delta(project: &Project, originals: &[(u64, Clip)], dstep: f64
         return 0.0;
     }
     dstep.clamp(lo, hi)
+}
+
+pub fn clip_group_delta(project: &Project, originals: &[(u64, Clip)], dstep: f64) -> f64 {
+    mixed_group_delta(project, originals, &[], dstep)
+}
+
+/// The drag-delta clamp for a selection that may mix pattern clips and
+/// imported-WAV clips — the same bounds as [`clip_group_delta`] over both
+/// lists' combined extents.
+pub fn mixed_group_delta(
+    project: &Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dstep: f64,
+) -> f64 {
+    if originals.is_empty() && audio.is_empty() {
+        return 0.0;
+    }
+    let mut min_start = f64::INFINITY;
+    let mut max_end = f64::NEG_INFINITY;
+    for (track_id, clip) in originals {
+        let Some(track) = track(project, *track_id) else {
+            continue;
+        };
+        min_start = min_start.min(clip.start);
+        max_end = max_end.max(clip.start + clip_len(track, clip));
+    }
+    for (_, clip) in audio {
+        min_start = min_start.min(clip.start);
+        max_end = max_end.max(clip.start + clip.span());
+    }
+    bounded_group_delta(min_start, max_end, dstep)
 }
 
 pub fn move_clip_group(project: &mut Project, originals: &[(u64, Clip)], dstep: f64) -> bool {
@@ -578,6 +1475,178 @@ pub fn duplicate_clip_group_after(
         return None;
     }
     copy_clip_group(project, originals, (end - start).max(1.0))
+}
+
+/// Snapshots of the selected imported-WAV clips, `(track_id, clip)` like
+/// [`collect_clips`].
+pub fn collect_audio_clips(project: &Project, ids: &BTreeSet<u64>) -> Vec<(u64, AudioClip)> {
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| {
+            t.audio_clips
+                .iter()
+                .filter(|c| ids.contains(&c.id))
+                .cloned()
+                .map(|c| (t.id, c))
+        })
+        .collect()
+}
+
+/// Moves a group of imported-WAV clips by `dstep` (pre-clamped by the
+/// caller through [`mixed_group_delta`]) — [`move_clip_group`]'s audio
+/// counterpart.
+pub fn move_audio_clip_group(
+    project: &mut Project,
+    originals: &[(u64, AudioClip)],
+    dstep: f64,
+) -> bool {
+    if let [(track_id, original)] = originals {
+        return move_audio_clip(project, *track_id, original.id, original.start + dstep);
+    }
+    let mut changed = false;
+    for (track_id, original) in originals {
+        if let Some(t) = track_mut(project, *track_id) {
+            if let Some(c) = t.audio_clips.iter_mut().find(|c| c.id == original.id) {
+                let start = original.start + dstep;
+                if (c.start - start).abs() > f64::EPSILON {
+                    c.start = start;
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        fit_bars_to_content(project);
+    }
+    changed
+}
+
+/// Copies a group of imported-WAV clips by `dstep` — [`copy_clip_group`]'s
+/// audio counterpart, capped at [`MAX_AUDIO_CLIPS_PER_TRACK`] per track.
+/// Clip references (the staged `file` names) carry over unchanged.
+pub fn copy_audio_clip_group(
+    project: &mut Project,
+    originals: &[(u64, AudioClip)],
+    dstep: f64,
+) -> Option<Vec<u64>> {
+    if originals.is_empty() {
+        return None;
+    }
+    let mut needed: Vec<(u64, usize)> = Vec::new();
+    for (track_id, _) in originals {
+        if let Some((_, n)) = needed.iter_mut().find(|(id, _)| id == track_id) {
+            *n += 1;
+        } else {
+            needed.push((*track_id, 1));
+        }
+    }
+    for (track_id, n) in &needed {
+        let t = track(project, *track_id)?;
+        if t.audio_clips.len() + *n > MAX_AUDIO_CLIPS_PER_TRACK {
+            return None;
+        }
+    }
+    let mut ids = Vec::with_capacity(originals.len());
+    for (track_id, original) in originals {
+        let t = track_mut(project, *track_id)?;
+        let id = next_id();
+        let mut clip = original.clone();
+        clip.id = id;
+        clip.start = original.start + dstep;
+        t.audio_clips.push(clip);
+        ids.push(id);
+    }
+    fit_bars_to_content(project);
+    Some(ids)
+}
+
+/// Copies a mixed pattern/audio clip selection by `dstep` as one operation
+/// (Alt-drag, paste and duplicate all route here). Every target track's
+/// clip caps are checked before anything is pushed, so a failed copy never
+/// leaves half a group behind. Returns the new ids in copy order (pattern
+/// clips first, then audio clips).
+pub fn copy_mixed_clip_group(
+    project: &mut Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dstep: f64,
+) -> Option<Vec<u64>> {
+    if originals.is_empty() {
+        return copy_audio_clip_group(project, audio, dstep);
+    }
+    if audio.is_empty() {
+        return copy_clip_group(project, originals, dstep);
+    }
+    let dstep = mixed_group_delta(project, originals, audio, dstep);
+    // Pre-check every track against both caps so the two pushes below are
+    // guaranteed to succeed together.
+    for track_id in originals
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(audio.iter().map(|(id, _)| *id))
+    {
+        let t = track(project, track_id)?;
+        let want_pat = originals.iter().filter(|(id, _)| *id == track_id).count();
+        let want_aud = audio.iter().filter(|(id, _)| *id == track_id).count();
+        if t.clips.len() + want_pat > MAX_CLIPS_PER_TRACK
+            || t.audio_clips.len() + want_aud > MAX_AUDIO_CLIPS_PER_TRACK
+        {
+            return None;
+        }
+    }
+    let mut ids = Vec::with_capacity(originals.len() + audio.len());
+    for (track_id, original) in originals {
+        let t = track_mut(project, *track_id)?;
+        let id = next_id();
+        let mut clip = original.clone();
+        clip.id = id;
+        clip.start = original.start + dstep;
+        t.clips.push(clip);
+        ids.push(id);
+    }
+    for (track_id, original) in audio {
+        let t = track_mut(project, *track_id)?;
+        let id = next_id();
+        let mut clip = original.clone();
+        clip.id = id;
+        clip.start = original.start + dstep;
+        t.audio_clips.push(clip);
+        ids.push(id);
+    }
+    fit_bars_to_content(project);
+    Some(ids)
+}
+
+/// Duplicates a mixed pattern/audio selection right after itself —
+/// [`duplicate_clip_group_after`]'s mixed counterpart.
+pub fn duplicate_clip_groups_after(
+    project: &mut Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+) -> Option<Vec<u64>> {
+    if audio.is_empty() {
+        return duplicate_clip_group_after(project, originals);
+    }
+    if originals.is_empty() && audio.is_empty() {
+        return None;
+    }
+    let start = originals
+        .iter()
+        .map(|(_, c)| c.start)
+        .chain(audio.iter().map(|(_, c)| c.start))
+        .fold(f64::INFINITY, f64::min);
+    let end = originals
+        .iter()
+        .filter_map(|(track_id, clip)| {
+            track(project, *track_id).map(|t| clip.start + clip_len(t, clip))
+        })
+        .chain(audio.iter().map(|(_, c)| c.start + c.span()))
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !start.is_finite() || !end.is_finite() {
+        return None;
+    }
+    copy_mixed_clip_group(project, originals, audio, (end - start).max(1.0))
 }
 
 /// Gives a clip its own copy of its pattern so edits don't affect other clips.
@@ -764,48 +1833,10 @@ pub fn delete_notes(p: &mut Pattern, ids: &[u64]) -> bool {
 
 // ----- arpeggiator -----------------------------------------------------------
 
-/// Most octaves an arpeggio may span.
-pub const MAX_ARP_OCTAVES: u32 = 3;
 /// Accent added to the first note of every bar when [`ArpSpec::accent`] is set.
 pub const ARP_ACCENT: f32 = 0.15;
 /// Fraction of the rate each arpeggio note sounds for (leaves a small gap).
 pub const ARP_GATE: f64 = 0.9;
-
-/// Order in which chord tones are played.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ArpDirection {
-    /// Lowest to highest, looping.
-    #[default]
-    Up,
-    /// Highest to lowest, looping.
-    Down,
-    /// Up then back down without repeating the top or bottom note.
-    UpDown,
-    /// A deterministic pseudo-random tone each step (seeded from the pattern id).
-    Random,
-    /// Every chord tone together on each hit.
-    Block,
-}
-
-impl ArpDirection {
-    pub const ALL: [ArpDirection; 5] = [
-        ArpDirection::Up,
-        ArpDirection::Down,
-        ArpDirection::UpDown,
-        ArpDirection::Random,
-        ArpDirection::Block,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ArpDirection::Up => "Up",
-            ArpDirection::Down => "Down",
-            ArpDirection::UpDown => "Up-Down",
-            ArpDirection::Random => "Random",
-            ArpDirection::Block => "Block chords",
-        }
-    }
-}
 
 /// Everything needed to render one arpeggio into a pattern.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -940,6 +1971,27 @@ pub fn generate_arpeggio(p: &mut Pattern, spec: &ArpSpec) -> usize {
     written
 }
 
+/// Whether the per-track live arpeggiator ([`crate::model::Track::arp`]) can
+/// sound on `track`. The audio engine applies it to the track's primary
+/// sound whenever it is not drums (`!Sound::is_drums()`): a valid SoundFont
+/// always arpeggiates (its GM program is melodic), a kit preset never does,
+/// and otherwise the built-in instrument decides — exactly the precedence
+/// `TrackParams::from_track` uses, mirrored here so inspector hints match
+/// playback.
+pub fn arp_audible(track: &Track) -> bool {
+    if track
+        .font
+        .as_ref()
+        .is_some_and(|f| !f.name.trim().is_empty())
+    {
+        return true;
+    }
+    match &track.preset {
+        Some(p) => p.kit.is_none(),
+        None => !track.instrument.is_drums(),
+    }
+}
+
 // ----- chords & strums -------------------------------------------------------
 // The chord/strum/humanize API below is `allow(dead_code)` until the editor
 // wires it in — same pattern as `EditorRects` in editor.rs.
@@ -1004,6 +2056,33 @@ pub fn diatonic_chords(key: SongKey) -> [DiatonicChord; 7] {
         degree,
         spec: ChordSpec::new(key.degree_root(degree), key.degree_chord_quality(degree)),
     })
+}
+
+/// Snaps `pitch` to the nearest MIDI pitch whose pitch class belongs to
+/// `key`'s scale — its seven diatonic degrees — for the editor's
+/// snap-to-scale drawing and note drags. In-scale pitches return unchanged.
+/// The search widens outward semitone by semitone and checks the pitch below
+/// before the one above, so an out-of-scale pitch exactly between two scale
+/// tones snaps *down*. (In major/natural-minor every chromatic pitch is such
+/// a tie, so the snap is always one semitone — never a leap.) Pitches at the
+/// MIDI extremes snap inward: the unreachable side is skipped, so a low
+/// out-of-scale pitch moves up instead of disappearing below pitch 0.
+pub fn snap_pitch_to_scale(key: SongKey, pitch: u8) -> u8 {
+    let pcs = key.pitch_classes();
+    let pitch = i32::from(pitch.min(MAX_PITCH));
+    for d in 0..=6 {
+        let down = pitch - d;
+        if down >= 0 && pcs[down as usize % 12] {
+            return down as u8;
+        }
+        let up = pitch + d;
+        if up <= i32::from(MAX_PITCH) && pcs[up as usize % 12] {
+            return up as u8;
+        }
+    }
+    // Unreachable for a heptatonic scale (every 12-pitch window holds all
+    // seven scale tones) — return the input rather than panic.
+    pitch as u8
 }
 
 /// A chord tone before voicing: a pitch class, the octave it prefers and its
@@ -1099,6 +2178,119 @@ pub fn chord_snaps(
             velocity,
         })
         .collect()
+}
+
+/// Effective MIDI pitch of `t` voiced as-is — the `(octave + 1) * 12 +
+/// pitch_class` mapping [`chord_midi_pitches`] uses, kept as `i64` so
+/// extreme octaves can't overflow before range checks.
+fn chord_note_pitch(t: &ChordNote) -> i64 {
+    (t.octave as i64 + 1) * 12 + (t.pitch_class % 12) as i64
+}
+
+/// Inverts `tones` `n` times: each inversion moves the lowest sounding tone
+/// up one octave — the first inversion of C–E–G is E–G–C′. Inverting more
+/// times than there are tones keeps rotating: a triad inverted three times
+/// is its root voicing an octave up, so [`chord_midi_pitches`] re-centres it
+/// on the same sounding pitches. A rotated tone that would pass
+/// [`MAX_PITCH`] clamps to the highest in-range pitch of its class (and a
+/// tone already above the range clamps down), so the count is preserved and
+/// the voicing's pitch classes stay a rotation of the input's. The result is
+/// re-sorted low to high; `n` is capped at twelve rotations per tone, past
+/// which every tone already sits at the top of MIDI range.
+#[allow(dead_code)]
+pub fn invert_chord(tones: &[ChordNote], n: usize) -> Vec<ChordNote> {
+    let mut out = tones.to_vec();
+    if out.is_empty() {
+        return out;
+    }
+    for _ in 0..n.min(out.len().saturating_mul(12)) {
+        let lo = out
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, t)| chord_note_pitch(t))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let t = &mut out[lo];
+        // Highest octave that keeps this pitch class inside MIDI range.
+        let max_octave = ((i64::from(MAX_PITCH) - i64::from(t.pitch_class % 12)) / 12 - 1) as i32;
+        t.octave = (t.octave + 1).min(max_octave);
+    }
+    out.sort_by_key(chord_note_pitch);
+    out
+}
+
+/// What the chord strip's slash-bass option adds under a stamped chord:
+/// nothing, the chord's own root, or a scale degree of the song key — so a
+/// C chord can stamp as C, C/G or C/E without changing its quality.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChordBass {
+    /// No extra tone under the voicing.
+    #[default]
+    Off,
+    /// The chord's own root — the classic bass doubling.
+    Root,
+    /// A 0-based scale degree of the song key: `Degree(0)` is always the
+    /// tonic, `Degree(4)` the dominant, whatever the chord's own root is.
+    Degree(usize),
+}
+
+#[allow(dead_code)]
+impl ChordBass {
+    /// The bass pitch class (0..=11) to voice under a chord on `chord_root`
+    /// in `key`, or `None` when the option is off.
+    pub fn pitch_class(self, key: SongKey, chord_root: u8) -> Option<u8> {
+        match self {
+            ChordBass::Off => None,
+            ChordBass::Root => Some(chord_root % 12),
+            ChordBass::Degree(degree) => Some(key.degree_root(degree)),
+        }
+    }
+}
+
+/// Returns `tones` plus one bass tone on pitch class `bass_pc`, voiced
+/// roughly an octave below the chord's lowest tone — the pitch of that
+/// class nearest `lowest - 12`, a tritone tie going low. The bass lands
+/// strictly below the voicing and inside `0..=MAX_PITCH`; if nothing of
+/// that class fits in range the chord is returned unchanged. Re-sorted low
+/// to high, like [`invert_chord`]. The tone carries the lowest tone's
+/// velocity.
+#[allow(dead_code)]
+pub fn with_bass(tones: &[ChordNote], bass_pc: u8) -> Vec<ChordNote> {
+    let mut out = tones.to_vec();
+    if out.is_empty() {
+        return out;
+    }
+    let (lo, velocity) = out
+        .iter()
+        .map(|t| (chord_note_pitch(t), t.velocity))
+        .min_by_key(|&(pitch, _)| pitch)
+        .unwrap_or((0, 1.0));
+    let bass_pc = i64::from(bass_pc % 12);
+    // `below` = semitones from `target` down to the `bass_pc` pitch
+    // at-or-under it; past a tritone the pitch above `target` is nearer.
+    let target = lo - 12;
+    let below = (target.rem_euclid(12) + 12 - bass_pc).rem_euclid(12);
+    let mut bass = if below > 6 {
+        target + 12 - below
+    } else {
+        target - below
+    };
+    if bass < 0 {
+        bass += 12;
+    }
+    // The `+ 12` recovery can overshoot into the voicing when the chord
+    // already sits at the bottom of MIDI range — then there is no room
+    // for a bass tone at all, so the chord is left unchanged.
+    if (0..=i64::from(MAX_PITCH)).contains(&bass) && bass < lo {
+        out.push(ChordNote {
+            pitch_class: bass.rem_euclid(12) as u8,
+            octave: (bass.div_euclid(12) - 1) as i32,
+            velocity,
+        });
+        out.sort_by_key(chord_note_pitch);
+    }
+    out
 }
 
 /// Direction a strummed chord is rolled.
@@ -2594,6 +3786,41 @@ mod tests {
         assert!(distinct.len() >= 4, "random walk covers the chord");
     }
 
+    #[test]
+    fn arp_audible_follows_the_playing_sound() {
+        // Built-ins: melodic instruments arpeggiate, the drum kit does not.
+        assert!(arp_audible(&create_track(Instrument::Piano)));
+        assert!(!arp_audible(&create_track(Instrument::Drums)));
+        // A melodic pack preset arpeggiates even on a Drums-editor track.
+        let melodic = crate::packs::template_pack("mel-pack", "Melodic")
+            .unwrap()
+            .instruments[0]
+            .clone();
+        assert!(melodic.kit.is_none());
+        assert!(arp_audible(&Track::from_preset(Instrument::Drums, melodic)));
+        // A kit preset never does, whatever the editor instrument is.
+        let kit: InstrumentPreset = serde_json::from_str(
+            r#"{
+                "id": "test.kit", "name": "Kit",
+                "kit": { "pieces": [
+                    { "name": "Kick", "pitch": 36, "voice": {
+                        "oscillators": [{"waveform":"sine"}] } }
+                ] } }"#,
+        )
+        .unwrap();
+        assert!(!arp_audible(&Track::from_preset(
+            Instrument::Piano,
+            kit.clone()
+        )));
+        // A valid SoundFont always counts as melodic, even with a kit fallback.
+        let mut fonted = Track::from_font(Instrument::Drums, FontRef::new("GeneralUser", 0));
+        fonted.preset = Some(kit);
+        assert!(arp_audible(&fonted));
+        // An empty font name leaves the (drum) fallback — no arp.
+        fonted.font = Some(FontRef::new("  ", 0));
+        assert!(!arp_audible(&fonted));
+    }
+
     // ----- chords, strums & humanizing -----------------------------------------
 
     #[test]
@@ -2650,6 +3877,55 @@ mod tests {
             assert_eq!(a[d].spec.root, root, "degree {d}");
             assert_eq!(a[d].spec.symbol(), symbol, "degree {d}");
         }
+    }
+
+    #[test]
+    fn snap_pitch_to_scale_keeps_scale_tones() {
+        // Every scale tone in every octave stays put, in both modes.
+        for mode in KeyMode::ALL {
+            for root in 0..12 {
+                let key = SongKey::new(root, mode);
+                for pitch in 0..=MAX_PITCH {
+                    let snapped = snap_pitch_to_scale(key, pitch);
+                    if key.pitch_classes()[pitch as usize % 12] {
+                        assert_eq!(snapped, pitch, "{key:?} moved in-scale {pitch}");
+                    } else {
+                        assert_ne!(snapped, pitch, "{key:?} kept chromatic {pitch}");
+                        assert!(
+                            key.pitch_classes()[snapped as usize % 12],
+                            "{key:?} snapped {pitch} to out-of-scale {snapped}"
+                        );
+                        // Diatonic scales step by whole/half tones only, so a
+                        // chromatic pitch is always one semitone from scale.
+                        assert_eq!((snapped as i32 - pitch as i32).abs(), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snap_pitch_to_scale_ties_snap_down_and_clamps_edges() {
+        let c = SongKey::new(0, KeyMode::Major);
+        // Every chromatic pitch in C major sits exactly between two scale
+        // tones; the tie resolves to the lower neighbour.
+        assert_eq!(snap_pitch_to_scale(c, 61), 60, "C#4 -> C4");
+        assert_eq!(snap_pitch_to_scale(c, 63), 62, "D#4 -> D4");
+        assert_eq!(snap_pitch_to_scale(c, 66), 65, "F#4 -> F4");
+        assert_eq!(snap_pitch_to_scale(c, 68), 67, "G#4 -> G4");
+        assert_eq!(snap_pitch_to_scale(c, 70), 69, "A#4 -> A4");
+        // A minor {9,11,0,2,4,5,7}: B (11) is in scale, C (0) is too; the
+        // chromatic run snaps downward the same way.
+        let a = SongKey::new(9, KeyMode::Minor);
+        assert_eq!(snap_pitch_to_scale(a, 58), 57, "A#3 -> A3");
+        assert_eq!(snap_pitch_to_scale(a, 61), 60, "C#4 -> C4");
+        // Pitch 0 can't move down: it snaps up to the nearest scale tone.
+        let c_sharp_minor = SongKey::new(1, KeyMode::Minor); // pcs {1,3,4,6,8,9,11}
+        assert_eq!(snap_pitch_to_scale(c_sharp_minor, 0), 1);
+        // Pitch 127 (G): out of B major's scale -> down to F# (126).
+        let b_major = SongKey::new(11, KeyMode::Major);
+        assert!(!b_major.pitch_classes()[127 % 12]);
+        assert_eq!(snap_pitch_to_scale(b_major, 127), 126);
     }
 
     #[test]
@@ -2911,5 +4187,625 @@ mod tests {
         assert_eq!(scale_velocities(&mut pat, None, f32::NAN), 0);
         assert_eq!(scale_velocities(&mut pat, None, -1.0), 0);
         assert!((pat.notes[1].velocity - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn marker_ops_add_move_rename_delete_and_validate() {
+        let mut p = Project::empty();
+        let a = add_marker(&mut p, 64.0, None).unwrap();
+        let b = add_marker(&mut p, 8.0, Some("Intro".into())).unwrap();
+        let c = add_marker(&mut p, -3.0, Some("  ".into())).unwrap();
+        assert_eq!(p.markers.len(), 3);
+        // Sorted by step; negative step clamps to 0; the blank name fell back.
+        assert_eq!(p.markers[0].id, c);
+        assert_eq!(p.markers[0].step, 0.0);
+        assert_eq!(p.markers[0].name, "Section");
+        assert_eq!(p.markers[1].id, b);
+        assert_eq!(p.markers[2].id, a);
+        p.validate().unwrap();
+
+        // Auto names cycle through the section list without repeating:
+        // "Intro" is taken (twice), so the next free names come out in order.
+        let d = add_marker(&mut p, 16.0, None).unwrap();
+        let e = add_marker(&mut p, 24.0, None).unwrap();
+        let names: Vec<&str> = p.markers.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names.iter().position(|n| *n == "Verse"), Some(2));
+        assert!(names.contains(&"Chorus"));
+        let _ = (d, e);
+
+        // Move clamps into range and re-sorts.
+        assert!(move_marker(&mut p, a, 999_999.0));
+        assert_eq!(
+            p.markers.last().unwrap().id,
+            a,
+            "moved marker sorts to the end"
+        );
+        assert_eq!(p.markers.last().unwrap().step, MAX_PATTERN_STEPS as f64);
+        assert!(!move_marker(&mut p, 999_999, 0.0));
+
+        // Rename cleans the name; unknown ids are a no-op.
+        assert!(rename_marker(&mut p, b, "Verse\u{0} One"));
+        let b_name = p.markers.iter().find(|m| m.id == b).unwrap().name.clone();
+        assert_eq!(b_name, "Verse One");
+        assert!(!rename_marker(&mut p, 999_999, "x"));
+        p.validate().unwrap();
+
+        // Delete removes exactly that marker; unknown ids report false.
+        assert!(delete_marker(&mut p, b));
+        assert!(!p.markers.iter().any(|m| m.id == b));
+        assert!(!delete_marker(&mut p, b));
+        p.validate().unwrap();
+
+        // The cap rejects further additions but leaves the list intact.
+        p.markers.clear();
+        for _ in 0..MAX_MARKERS {
+            assert!(add_marker(&mut p, 0.0, None).is_some());
+        }
+        assert!(add_marker(&mut p, 0.0, None).is_none());
+        assert_eq!(p.markers.len(), MAX_MARKERS);
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn chord_event_ops_add_move_cycle_delete_and_label() {
+        let mut p = Project::empty();
+        let a = add_chord_event(&mut p, 32.0, 7, ChordQuality::Major).unwrap();
+        let b = add_chord_event(&mut p, 0.0, 0, ChordQuality::Major7).unwrap();
+        let c = add_chord_event(&mut p, -8.0, 21, ChordQuality::Minor7).unwrap();
+        assert_eq!(p.chord_events.len(), 3);
+        // Sorted by step then id; the negative step clamps to 0; the root
+        // reduced mod 12 (21 -> 9 = A). `b` was added before `c`, so it
+        // wins the tie on step 0.
+        assert_eq!(p.chord_events[0].id, b);
+        assert_eq!(p.chord_events[1].id, c);
+        assert_eq!(p.chord_events[2].id, a);
+        assert_eq!(p.chord_events[1].step, 0.0);
+        assert_eq!(chord_event_label(&p.chord_events[0]), "Cmaj7");
+        assert_eq!(chord_event_label(&p.chord_events[1]), "Am7");
+        p.validate().unwrap();
+
+        // The bar lookup only answers for an exact step.
+        assert_eq!(chord_event_at_step(&p, 0.0), Some(b));
+        assert_eq!(chord_event_at_step(&p, 1.0), None);
+
+        // Labels ride the shared symbol logic: root + suffix.
+        let ev = ChordEvent {
+            id: 1,
+            step: 0.0,
+            root: 6,
+            quality: ChordQuality::HalfDiminished7,
+        };
+        assert_eq!(chord_event_label(&ev), "F#m7b5");
+
+        // Move clamps into range and re-sorts.
+        assert!(move_chord_event(&mut p, a, 999_999.0));
+        assert_eq!(p.chord_events.last().unwrap().id, a);
+        assert_eq!(
+            p.chord_events.last().unwrap().step,
+            MAX_PATTERN_STEPS as f64
+        );
+        assert!(!move_chord_event(&mut p, 999_999, 0.0));
+
+        // Click-cycling steps one quality per direction and wraps at both
+        // ends of the list.
+        assert!(cycle_chord_event_quality(&mut p, b, -1));
+        assert_eq!(
+            p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
+            ChordQuality::Dominant7
+        );
+        assert!(cycle_chord_event_quality(&mut p, b, 1));
+        assert_eq!(
+            p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
+            ChordQuality::Major7
+        );
+        assert!(set_chord_event(&mut p, b, 0, ChordQuality::Minor9));
+        assert!(cycle_chord_event_quality(&mut p, b, 1));
+        assert_eq!(
+            p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
+            ChordQuality::Major
+        );
+        assert!(cycle_chord_event_quality(&mut p, b, -1));
+        assert_eq!(
+            p.chord_events.iter().find(|e| e.id == b).unwrap().quality,
+            ChordQuality::Minor9
+        );
+        // And the root wraps at the octave.
+        assert!(cycle_chord_event_root(&mut p, b, 13));
+        assert_eq!(p.chord_events.iter().find(|e| e.id == b).unwrap().root, 1);
+        assert!(!cycle_chord_event_root(&mut p, 999_999, 1));
+
+        // set_chord_event rewrites both fields and normalizes the root.
+        assert!(set_chord_event(&mut p, a, 12 + 5, ChordQuality::Dominant9));
+        let ev = p.chord_events.iter().find(|e| e.id == a).unwrap();
+        assert_eq!((ev.root, ev.quality), (5, ChordQuality::Dominant9));
+        assert!(!set_chord_event(&mut p, 999_999, 0, ChordQuality::Major));
+
+        // The tonic the strip writes comes from the song key.
+        p.key = SongKey::new(9, crate::model::KeyMode::Minor);
+        assert_eq!(tonic_chord_spec(p.key).symbol(), "Am");
+        p.key = SongKey::new(3, crate::model::KeyMode::Major);
+        assert_eq!(tonic_chord_spec(p.key).symbol(), "D#");
+        p.validate().unwrap();
+
+        // Delete removes exactly that event; unknown ids report false.
+        assert!(delete_chord_event(&mut p, b));
+        assert!(!p.chord_events.iter().any(|e| e.id == b));
+        assert!(!delete_chord_event(&mut p, b));
+
+        // The cap rejects further additions but leaves the list intact.
+        p.chord_events.clear();
+        for _ in 0..MAX_CHORD_EVENTS {
+            assert!(add_chord_event(&mut p, 0.0, 0, ChordQuality::Major).is_some());
+        }
+        assert!(add_chord_event(&mut p, 0.0, 0, ChordQuality::Major).is_none());
+        assert_eq!(p.chord_events.len(), MAX_CHORD_EVENTS);
+        p.validate().unwrap();
+    }
+
+    // ----- split_clip --------------------------------------------------------
+
+    /// The first track's (step, duration, pitch) events — a cheap before /
+    /// after comparison that a split reproduces the clip's exact sound.
+    fn clip_events(p: &Project) -> Vec<(f64, f64, u8)> {
+        p.events(false)
+            .into_iter()
+            .filter(|e| e.track_index == 0)
+            .map(|e| (e.step, e.duration, e.pitch))
+            .collect()
+    }
+
+    #[test]
+    fn split_clip_rejects_edges_and_missing_targets() {
+        let (mut p, tid) = project_with(Instrument::Piano);
+        let pid = p.tracks[0].patterns[0].id;
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap(); // 16-step clip
+        let before = p.clone();
+        for at in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -4.0,
+            0.0,
+            16.0,
+            99.0,
+        ] {
+            assert!(!split_clip(&mut p, tid, clip, at), "at {at}");
+            assert_eq!(p, before, "rejected split must not mutate (at {at})");
+        }
+        assert!(!split_clip(&mut p, 999_999, clip, 8.0));
+        assert!(!split_clip(&mut p, tid, 999_999, 8.0));
+        assert_eq!(p, before);
+        // A clip pointing at a deleted pattern cannot split.
+        p.tracks[0].patterns.clear();
+        assert!(!split_clip(&mut p, tid, clip, 8.0));
+    }
+
+    #[test]
+    fn split_clip_mid_pattern_flattens_and_validates() {
+        let (mut p, tid) = project_with(Instrument::Piano);
+        let pid = p.tracks[0].patterns[0].id;
+        let pat = p.tracks[0].patterns.first_mut().unwrap();
+        pat.notes.clear();
+        add_note(pat, 60, 0.0, 2.0, 0.9).unwrap();
+        add_note(pat, 64, 6.0, 4.0, 0.8).unwrap(); // crosses the cut at 8
+        add_note(pat, 67, 12.0, 2.0, 0.7).unwrap();
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap();
+
+        assert!(can_split_clip(&p, tid, clip, 8.0));
+        assert!(split_clip(&mut p, tid, clip, 8.0));
+        p.validate().unwrap();
+        let t = &p.tracks[0];
+        assert_eq!(t.clips.len(), 3, "starter clip + the two pieces");
+        assert_eq!(t.patterns.len(), 3, "two fresh split patterns");
+        let li = t.clips.iter().position(|c| c.id == clip).unwrap();
+        let (l, r) = (&t.clips[li], &t.clips[li + 1]);
+        assert_eq!(l.id, clip, "left keeps the original id");
+        assert_ne!(r.id, clip, "right gets a fresh id");
+        assert_ne!(l.pattern_id, pid);
+        assert_ne!(r.pattern_id, pid);
+        assert_eq!(l.start, 0.0);
+        assert_eq!(r.start, 8.0, "right starts exactly at the split");
+        assert_eq!(l.loops, 1);
+        assert_eq!(r.loops, 1);
+        let lp = pattern(t, l.pattern_id).unwrap();
+        let rp = pattern(t, r.pattern_id).unwrap();
+        assert_eq!(lp.length, 8, "left piece ends exactly at the split");
+        assert_eq!(rp.length, 8);
+        // Left: the first note whole, the crossing note shortened to the cut.
+        assert_eq!(
+            lp.notes
+                .iter()
+                .map(|n| (n.pitch, n.start, n.duration))
+                .collect::<Vec<_>>(),
+            vec![(60, 0.0, 2.0), (64, 6.0, 2.0)]
+        );
+        // Right: the crossing note's tail re-attacks at step 0, the last
+        // note shifted back by the cut.
+        assert_eq!(
+            rp.notes
+                .iter()
+                .map(|n| (n.pitch, n.start, n.duration))
+                .collect::<Vec<_>>(),
+            vec![(64, 0.0, 2.0), (67, 4.0, 2.0)]
+        );
+        assert!(lp.name.contains("split") && rp.name.contains("split"));
+        assert_ne!(lp.id, rp.id);
+    }
+
+    #[test]
+    fn split_clip_preserves_the_event_stream_without_crossings() {
+        let (mut p, tid) = project_with(Instrument::Pad);
+        let pid = p.tracks[0].patterns[0].id;
+        let pat = p.tracks[0].patterns.first_mut().unwrap();
+        pat.notes.clear();
+        add_note(pat, 60, 2.0, 1.0, 0.8).unwrap();
+        add_note(pat, 64, 6.0, 2.0, 0.8).unwrap();
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap();
+        assert!(set_clip_loops(&mut p, tid, clip, 3)); // 48 steps
+        let before = clip_events(&p);
+        // Step 20 lands inside the second repetition: two new patterns hold
+        // the flattened halves, and every event stays where it sounded.
+        assert!(split_clip(&mut p, tid, clip, 20.0));
+        p.validate().unwrap();
+        assert_eq!(clip_events(&p), before);
+        let t = &p.tracks[0];
+        let li = t.clips.iter().position(|c| c.id == clip).unwrap();
+        let (l, r) = (&t.clips[li], &t.clips[li + 1]);
+        assert_eq!(r.start, 20.0);
+        assert_eq!(pattern(t, l.pattern_id).unwrap().length, 20);
+        assert_eq!(pattern(t, r.pattern_id).unwrap().length, 28);
+    }
+
+    #[test]
+    fn split_clip_on_a_loop_boundary_shares_the_pattern() {
+        let (mut p, tid) = project_with(Instrument::Guitar);
+        let pid = p.tracks[0].patterns[0].id;
+        add_note(p.tracks[0].patterns.first_mut().unwrap(), 62, 4.0, 2.0, 0.8).unwrap();
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap();
+        assert!(set_clip_loops(&mut p, tid, clip, 4)); // 64 steps
+        set_clip_fades(&mut p, tid, clip, 2.0, 6.0);
+        let patterns_before = p.tracks[0].patterns.len();
+        let events_before = clip_events(&p);
+
+        assert!(split_clip(&mut p, tid, clip, 32.0));
+        p.validate().unwrap();
+        let t = &p.tracks[0];
+        assert_eq!(t.clips.len(), 3);
+        assert_eq!(
+            t.patterns.len(),
+            patterns_before,
+            "a boundary cut needs no new pattern"
+        );
+        let li = t.clips.iter().position(|c| c.id == clip).unwrap();
+        let (l, r) = (&t.clips[li], &t.clips[li + 1]);
+        assert_eq!(l.id, clip);
+        assert_eq!(l.pattern_id, pid);
+        assert_eq!(r.pattern_id, pid, "right shares the original pattern");
+        assert_eq!(l.loops, 2);
+        assert_eq!(r.loops, 2);
+        assert_eq!(r.start, 32.0);
+        assert_eq!(l.fade_in, 2.0, "left keeps the clip's fade-in");
+        assert_eq!(l.fade_out, 0.0);
+        assert_eq!(r.fade_in, 0.0);
+        assert_eq!(r.fade_out, 6.0, "right keeps the clip's fade-out");
+        assert_eq!(clip_events(&p), events_before);
+    }
+
+    #[test]
+    fn split_clip_fades_clamp_to_their_new_spans() {
+        let (mut p, tid) = project_with(Instrument::Bass);
+        let pid = p.tracks[0].patterns[0].id;
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap(); // 16 steps
+        set_clip_fades(&mut p, tid, clip, 12.0, 12.0);
+        assert!(split_clip(&mut p, tid, clip, 4.0));
+        p.validate().unwrap();
+        let t = &p.tracks[0];
+        let li = t.clips.iter().position(|c| c.id == clip).unwrap();
+        let (l, r) = (&t.clips[li], &t.clips[li + 1]);
+        assert_eq!(l.fade_in, 4.0, "fade-in clamps to the left span");
+        assert_eq!(l.fade_out, 0.0);
+        assert_eq!(r.fade_in, 0.0);
+        assert_eq!(r.fade_out, 12.0, "fade-out keeps its length on the right");
+    }
+
+    #[test]
+    fn split_clip_fractional_cut_keeps_every_note_playing() {
+        let (mut p, tid) = project_with(Instrument::Pluck);
+        let pid = p.tracks[0].patterns[0].id;
+        let pat = p.tracks[0].patterns.first_mut().unwrap();
+        pat.notes.clear();
+        add_note(pat, 60, 4.3, 0.5, 0.8).unwrap(); // starts just before the cut
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap();
+        assert!(split_clip(&mut p, tid, clip, 4.5));
+        p.validate().unwrap();
+        // The note at 4.3 must survive into the left piece, so the left
+        // pattern length rounds up to cover it (clip spans are whole steps).
+        let t = &p.tracks[0];
+        let li = t.clips.iter().position(|c| c.id == clip).unwrap();
+        let lp = pattern(t, t.clips[li].pattern_id).unwrap();
+        assert_eq!(lp.length, 5);
+        assert_eq!(lp.notes[0].start, 4.3);
+        assert_eq!(t.clips[li + 1].start, 4.5);
+    }
+
+    #[test]
+    fn split_clip_honours_track_limits() {
+        let (mut p, tid) = project_with(Instrument::Lead);
+        let pid = p.tracks[0].patterns[0].id;
+        let clip = add_clip(&mut p, tid, pid, 0.0).unwrap();
+        assert!(set_clip_loops(&mut p, tid, clip, 2));
+        // No room for the two flattened patterns: a mid-repetition cut
+        // fails but a loop-boundary cut still works — it adds no patterns.
+        while p.tracks[0].patterns.len() < MAX_PATTERNS_PER_TRACK - 1 {
+            let mut extra = p.tracks[0].patterns[0].clone();
+            extra.id = next_id();
+            p.tracks[0].patterns.push(extra);
+        }
+        assert_eq!(p.tracks[0].patterns.len(), MAX_PATTERNS_PER_TRACK - 1);
+        p.validate().unwrap();
+        assert!(!split_clip(&mut p, tid, clip, 8.0));
+        assert!(split_clip(&mut p, tid, clip, 16.0));
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn split_clip_right_clip_sits_directly_after_the_left() {
+        let (mut p, tid) = project_with(Instrument::Piano);
+        let pid = p.tracks[0].patterns[0].id;
+        let first = add_clip(&mut p, tid, pid, 16.0).unwrap();
+        let second = add_clip(&mut p, tid, pid, 48.0).unwrap();
+        assert!(split_clip(&mut p, tid, first, 24.0));
+        let ids: Vec<u64> = p.tracks[0].clips.iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), 4, "starter clip + first + right + second");
+        assert_eq!(ids[1], first);
+        assert_eq!(ids[3], second, "the right piece inserts after the left");
+        assert!(ids[2] != first && ids[2] != second);
+    }
+
+    // ----- chord inversions & slash bass -------------------------------------
+
+    #[test]
+    fn invert_chord_rotates_the_lowest_tone_up() {
+        let spec = ChordSpec::new(0, ChordQuality::Major); // C major
+        let tones = chord_notes(&spec, 4, 0.8);
+        assert_eq!(chord_midi_pitches(&tones, 60), vec![60, 64, 67]);
+
+        // C–E–G → E–G–C′: the inverted voicing re-centres on the same home.
+        let first = invert_chord(&tones, 1);
+        assert_eq!(first.len(), tones.len(), "inversion keeps every tone");
+        assert_eq!(chord_midi_pitches(&first, 60), vec![52, 55, 60]);
+        // → G–C′–E′ second inversion.
+        let second = invert_chord(&tones, 2);
+        assert_eq!(chord_midi_pitches(&second, 60), vec![55, 60, 64]);
+        // A third rotation on a triad is the root voicing an octave up —
+        // re-centring lands on the same sounding pitches.
+        let third = invert_chord(&tones, 3);
+        assert_eq!(chord_midi_pitches(&third, 60), vec![60, 64, 67]);
+
+        // Zero rotations and empty input are identities.
+        assert_eq!(invert_chord(&tones, 0), tones);
+        assert!(invert_chord(&[], 2).is_empty());
+    }
+
+    #[test]
+    fn invert_chord_preserves_pitch_classes_as_a_rotation() {
+        // Inverting a seventh chord three times puts its top tone on the
+        // bottom: A–C–E–G → G–A–C′–E′.
+        let spec = ChordSpec::new(9, ChordQuality::Minor7);
+        let tones = chord_notes(&spec, 3, 0.8); // A3 C4 E4 G4 = 57 60 64 67
+        let third = invert_chord(&tones, 3);
+        assert_eq!(third.len(), tones.len());
+        // Every output pitch class is one of the input's — a pure rotation.
+        let orig_pcs: Vec<u8> = tones.iter().map(|t| t.pitch_class).collect();
+        assert!(third.iter().all(|t| orig_pcs.contains(&t.pitch_class)));
+        // Re-centred on the same home, the third inversion sounds G A C E.
+        assert_eq!(chord_midi_pitches(&third, 60), vec![55, 57, 60, 64]);
+    }
+
+    #[test]
+    fn invert_chord_clamps_to_midi_range_preserving_count() {
+        // F10 = 137 is already above the range: rotating can't raise it, so
+        // it clamps down to the highest in-range F (F9 = 125) — the count
+        // and the pitch class survive.
+        let tones = vec![
+            ChordNote {
+                pitch_class: 5,
+                octave: 10,
+                velocity: 0.8,
+            },
+            ChordNote {
+                pitch_class: 7,
+                octave: 10,
+                velocity: 0.8,
+            },
+        ];
+        let inv = invert_chord(&tones, 1);
+        assert_eq!(inv.len(), 2, "clamping never drops a tone");
+        let pitches = chord_midi_pitches(&inv, 127);
+        assert!(pitches.iter().all(|&p| p <= MAX_PITCH));
+        // At the very top, C9 = 120 has no C above it in range: the
+        // rotation is a no-op rather than a dropped or folded tone.
+        let top = vec![ChordNote {
+            pitch_class: 0,
+            octave: 9,
+            velocity: 0.8,
+        }];
+        let inv = invert_chord(&top, 3);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(chord_note_pitch(&inv[0]), 120);
+    }
+
+    #[test]
+    fn with_bass_voices_a_tone_below_the_chord() {
+        let spec = ChordSpec::new(0, ChordQuality::Major); // C–E–G
+        let tones = chord_notes(&spec, 4, 0.8);
+        // Root doubling lands exactly an octave under the lowest tone.
+        let bass = with_bass(&tones, 0);
+        assert_eq!(bass.len(), tones.len() + 1);
+        assert_eq!(chord_midi_pitches(&bass, 60), vec![48, 60, 64, 67]);
+        // A slash degree picks the class's pitch nearest an octave below
+        // the lowest tone: G under C4 → G2 = 43 (nearer to 48 than G3 = 55).
+        let bass = with_bass(&tones, 7);
+        assert_eq!(chord_midi_pitches(&bass, 60), vec![43, 60, 64, 67]);
+        // Under a first-inversion voicing the bass tracks the new lowest
+        // tone: E4's C sits at C3 = 48, still below the whole voicing.
+        let inv = invert_chord(&tones, 1);
+        let bass = with_bass(&inv, 0);
+        assert_eq!(chord_midi_pitches(&bass, 60), vec![48, 64, 67, 72]);
+        // Velocity comes from the voicing; empty input stays empty.
+        assert!((bass[0].velocity - 0.8).abs() < 1e-6);
+        assert!(with_bass(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn with_bass_stays_below_the_voicing_or_bows_out() {
+        // A chord already at the bottom of MIDI range has no room for a
+        // bass tone — the chord comes back unchanged rather than doubling.
+        let low = vec![ChordNote {
+            pitch_class: 0,
+            octave: -1,
+            velocity: 0.8,
+        }]; // C(-1) = 0 — nothing fits below it
+        assert_eq!(with_bass(&low, 0).len(), 1);
+        // Whatever fits always lands strictly under the lowest tone and
+        // inside range.
+        let spec = ChordSpec::new(2, ChordQuality::Minor);
+        let tones = chord_notes(&spec, 2, 0.8); // D minor ~ D3
+        let bass = with_bass(&tones, 9); // A
+        let lo = tones.iter().map(chord_note_pitch).min().unwrap();
+        assert!(chord_note_pitch(&bass[0]) < lo);
+        assert!(chord_note_pitch(&bass[0]) >= 0);
+    }
+
+    #[test]
+    fn chord_bass_pitch_class_resolves_root_and_degrees() {
+        let cmaj = SongKey::new(0, KeyMode::Major);
+        assert_eq!(ChordBass::Off.pitch_class(cmaj, 0), None);
+        // The chord root, whatever it is — A minor's bass is A.
+        assert_eq!(ChordBass::Root.pitch_class(cmaj, 9), Some(9));
+        // Scale degrees come from the key: tonic C, dominant G in C major.
+        assert_eq!(ChordBass::Degree(0).pitch_class(cmaj, 0), Some(0));
+        assert_eq!(ChordBass::Degree(4).pitch_class(cmaj, 0), Some(7));
+        // The same degree follows the key — degree 4 of A minor is E.
+        let amin = SongKey::new(9, KeyMode::Minor);
+        assert_eq!(ChordBass::Degree(4).pitch_class(amin, 0), Some(4));
+    }
+
+    #[test]
+    fn automation_points_add_move_delete_and_clear() {
+        use crate::model::{automation_value, AutomationLane};
+        let (mut p, id) = project_with(Instrument::Lead);
+        assert!(p.tracks[0].automation.is_none());
+        let vol = AutomationLane::Volume;
+        let pan = AutomationLane::Pan;
+
+        // First add creates the automation block; points stay sorted by step.
+        assert_eq!(add_automation_point(&mut p, id, vol, 8.0, 1.0), Some(0));
+        assert_eq!(add_automation_point(&mut p, id, vol, 0.0, 0.5), Some(0));
+        assert_eq!(add_automation_point(&mut p, id, vol, 4.0, 0.75), Some(1));
+        let lane = &p.tracks[0].automation.as_ref().unwrap().volume;
+        assert_eq!(
+            lane.iter().map(|pt| pt.step).collect::<Vec<_>>(),
+            [0.0, 4.0, 8.0]
+        );
+        // The lane interpolates the way the renderer reads it.
+        let auto = p.tracks[0].automation.as_ref().unwrap();
+        assert_eq!(automation_value(&auto.volume, 6.0), Some(0.875));
+
+        // Same-step add writes over the existing point rather than stacking.
+        assert_eq!(add_automation_point(&mut p, id, vol, 4.0, 0.2), Some(1));
+        assert_eq!(p.tracks[0].automation.as_ref().unwrap().volume.len(), 3);
+        assert_eq!(
+            p.tracks[0].automation.as_ref().unwrap().volume[1],
+            AutomationPoint {
+                step: 4.0,
+                value: 0.2
+            }
+        );
+
+        // Values clamp to the lane's range; steps clamp to the song span.
+        assert_eq!(add_automation_point(&mut p, id, vol, 9.0, 99.0), Some(3));
+        assert_eq!(
+            p.tracks[0].automation.as_ref().unwrap().volume[3].value,
+            crate::model::MAX_AUTOMATION_GAIN
+        );
+        // A step that clamps onto an existing point overwrites it too.
+        assert_eq!(add_automation_point(&mut p, id, vol, -5.0, 0.4), Some(0));
+        assert_eq!(p.tracks[0].automation.as_ref().unwrap().volume.len(), 4);
+        assert_eq!(
+            p.tracks[0]
+                .automation
+                .as_ref()
+                .unwrap()
+                .volume
+                .first()
+                .unwrap()
+                .step,
+            0.0
+        );
+
+        // Moving a point past a neighbour re-sorts and returns its new index.
+        assert_eq!(
+            move_automation_point(&mut p, id, vol, 0, 12.0, 0.9),
+            Some(3)
+        );
+        assert_eq!(
+            move_automation_point(&mut p, id, vol, 3, -8.0, 0.1),
+            Some(0)
+        );
+        let lane = &p.tracks[0].automation.as_ref().unwrap().volume;
+        assert_eq!(
+            lane[0],
+            AutomationPoint {
+                step: 0.0,
+                value: 0.1
+            }
+        );
+        assert!(lane.windows(2).all(|w| w[0].step <= w[1].step));
+
+        // Deleting the last points of both lanes collapses the block to None.
+        while delete_automation_point(&mut p, id, vol, 0) {}
+        assert!(p.tracks[0].automation.is_none());
+        // A pan lane keeps the block alive until it, too, is empty.
+        assert!(add_automation_point(&mut p, id, pan, 0.0, -0.5).is_some());
+        assert!(add_automation_point(&mut p, id, vol, 0.0, 1.0).is_some());
+        assert!(clear_automation_lane(&mut p, id, vol));
+        let auto = p.tracks[0].automation.as_ref().unwrap();
+        assert!(auto.volume.is_empty() && auto.pan.len() == 1);
+        assert!(!clear_automation_lane(&mut p, id, vol));
+        assert!(clear_automation_lane(&mut p, id, pan));
+        assert!(p.tracks[0].automation.is_none());
+
+        // Bad targets are reported, not panics.
+        assert!(!delete_automation_point(&mut p, id, vol, 0));
+        assert_eq!(move_automation_point(&mut p, id, vol, 0, 0.0, 0.0), None);
+        assert_eq!(add_automation_point(&mut p, u64::MAX, vol, 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn automation_point_cap_is_enforced() {
+        use crate::model::AutomationLane;
+        let (mut p, id) = project_with(Instrument::Piano);
+        for i in 0..crate::model::MAX_AUTOMATION_POINTS {
+            assert!(
+                add_automation_point(&mut p, id, AutomationLane::Volume, i as f64, 0.5).is_some()
+            );
+        }
+        // A new step past the cap is refused; overwriting an existing point isn't.
+        assert_eq!(
+            add_automation_point(
+                &mut p,
+                id,
+                AutomationLane::Volume,
+                crate::model::MAX_AUTOMATION_POINTS as f64 + 4.0,
+                0.5
+            ),
+            None
+        );
+        assert_eq!(
+            add_automation_point(&mut p, id, AutomationLane::Volume, 0.0, 0.7),
+            Some(0)
+        );
+        p.validate().unwrap();
     }
 }
