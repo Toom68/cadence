@@ -12,9 +12,7 @@ use egui::{
 use super::arranger::snap_floor;
 use super::theme;
 use super::{ops, sidebar, CadenceApp, StatusKind};
-use crate::model::{
-    next_id, note_name, ChordQuality, Note, Pattern, SongKey, Track, MAX_PATTERN_STEPS, NOTE_NAMES,
-};
+use crate::model::{next_id, note_name, ChordQuality, Note, Pattern, SongKey, Track, NOTE_NAMES};
 
 const KEYS_W: f32 = 66.0;
 const DRUM_LABEL_W: f32 = 132.0;
@@ -2770,36 +2768,35 @@ impl CadenceApp {
             .editor_paste_target(ctx)
             .map(|(s, _)| s)
             .unwrap_or(self.transport.position);
-        // Chords land one bar apart, so grow the pattern to whole bars when
-        // the progression would otherwise wrap back onto itself — a four-
-        // chord preset in a one-bar pattern becomes four bars of chords.
+        // The progression fills the rest of the pattern: one chord per bar
+        // (repeating the loop when there is room for another pass) when it
+        // fits, else subdivided evenly — four chords in a one-bar pattern
+        // get a beat each, in an eight-bar pattern the loop plays twice.
         let bar = ops::STEPS_PER_BAR as f64;
-        let needed = step + chords.len() as f64 * bar;
-        let grown = (needed / bar).ceil() as u32 * ops::STEPS_PER_BAR;
-        let grown = grown.clamp(pattern_len, MAX_PATTERN_STEPS);
-        // Drop chords that can't fit even after growing (pattern at max, or
-        // a start past the last bar the pattern can hold).
-        let fit = ((f64::from(grown) - step) / bar).floor().max(0.0) as usize;
-        let chords = &chords[..chords.len().min(fit)];
-        if chords.is_empty() {
+        let span = f64::from(pattern_len) - step;
+        let n = chords.len();
+        if !span.is_finite() || span < bar * 0.5 || n == 0 {
             self.set_status(
                 StatusKind::Warning,
-                "No room for a progression here — the pattern is full.",
+                "No room for a progression here — stamp closer to the start.",
             );
             return;
         }
-        // A chord slot: half the pattern, capped at one bar.
-        let duration = (f64::from(pattern_len) * 0.5).clamp(4.0, 16.0);
+        let (slot, count) = if span >= n as f64 * bar {
+            (bar, (span / bar).ceil() as usize)
+        } else {
+            (span / n as f64, n)
+        };
+        let seq: Vec<Vec<u8>> = (0..count).map(|j| chords[j % n].clone()).collect();
+        // Notes run just shy of the next chord's slot so changes stay clean.
+        let duration = (slot * 0.875).clamp(1.0, bar);
         let velocity = self.editor.velocity;
         let spacing = self.editor.chord_spacing;
         let strum = (spacing > 0.0).then_some((spacing, self.editor.chord_direction));
         let mut new = Vec::new();
         self.edit(&format!("Stamp {}", preset.name), None, |p| {
-            if grown > pattern_len {
-                ops::set_track_pattern_length(p, track_id, pid, grown);
-            }
             if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
-                new = ops::stamp_progression(pat, step, chords, bar, duration, velocity, strum);
+                new = ops::stamp_progression(pat, step, &seq, slot, duration, velocity, strum);
             }
         });
         if new.is_empty() {
@@ -2820,18 +2817,9 @@ impl CadenceApp {
                 self.preview(track_id, pitch, 0.9);
             }
         }
-        let grew = if grown > pattern_len {
-            format!(" Pattern grew to {} bars.", grown / ops::STEPS_PER_BAR)
-        } else {
-            String::new()
-        };
         self.set_status(
             StatusKind::Success,
-            format!(
-                "Stamped {} — {n} note{}.{grew}",
-                preset.name,
-                sidebar::plural(n)
-            ),
+            format!("Stamped {} — {n} note{}.", preset.name, sidebar::plural(n)),
         );
     }
 

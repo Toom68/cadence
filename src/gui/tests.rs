@@ -3250,7 +3250,7 @@ fn chord_strip_stamps_diatonic_chord_block_undoable() {
 }
 
 #[test]
-fn stamp_progression_grows_the_pattern_to_fit() {
+fn stamp_progression_fills_the_pattern() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();
     ui.app.add_track(Instrument::Piano);
@@ -3258,38 +3258,43 @@ fn stamp_progression_grows_the_pattern_to_fit() {
     let idx = ui.app.project.tracks.len() - 1;
     ui.app.select_track(ui.app.project.tracks[idx].id);
     ui.step();
-    assert_eq!(ui.pattern(idx, 0).length, 16, "default one-bar pattern");
+    let bar = ops::STEPS_PER_BAR;
+    assert_eq!(ui.pattern(idx, 0).length, bar, "default one-bar pattern");
+    let n_chords = ops::progression_specs(ui.app.project.key, &ops::PROGRESSIONS[0], None).len();
+    assert!(n_chords >= 2, "fixture preset has multiple chords");
 
+    // One-bar pattern: the progression subdivides evenly, one slot per chord.
     ui.app.stamp_progression(&ops::PROGRESSIONS[0], &ui.ctx);
     ui.step();
-    let n_chords = ops::progression_specs(ui.app.project.key, &ops::PROGRESSIONS[0], None).len();
     let pat = ui.pattern(idx, 0);
-    assert_eq!(
-        pat.length,
-        n_chords as u32 * ops::STEPS_PER_BAR,
-        "the pattern grew to one bar per chord"
-    );
-    // Each chord starts one bar apart — a progression, not a stack.
+    assert_eq!(pat.length, bar, "the pattern keeps its length");
+    let slot = f64::from(bar) / n_chords as f64;
     let mut starts: Vec<f64> = pat.notes.iter().map(|n| n.start).collect();
     starts.sort_by(f64::total_cmp);
     starts.dedup();
     assert_eq!(starts.len(), n_chords, "one distinct start per chord");
     for (i, at) in starts.iter().enumerate() {
-        assert_eq!(*at, i as f64 * ops::STEPS_PER_BAR as f64, "chord {i}");
+        assert_eq!(*at, i as f64 * slot, "chord {i} gets an even share");
     }
-    assert!(
-        ui.app
-            .status
-            .as_ref()
-            .is_some_and(|s| s.text.contains("Pattern grew")),
-        "status mentions the growth: {:?}",
-        ui.app.status
-    );
-    // One undo restores both the notes and the one-bar length.
     ui.app.undo();
+    assert!(ui.pattern(idx, 0).notes.is_empty(), "one undo removes it");
+
+    // Eight-bar pattern: the loop repeats at one chord per bar.
+    ui.app.project.tracks[idx].patterns[0].length = bar * 8;
+    ui.app.stamp_progression(&ops::PROGRESSIONS[0], &ui.ctx);
+    ui.step();
     let pat = ui.pattern(idx, 0);
-    assert_eq!(pat.length, ops::STEPS_PER_BAR, "undo shrinks the pattern");
-    assert!(pat.notes.is_empty(), "undo removes the stamped notes");
+    let mut starts: Vec<f64> = pat.notes.iter().map(|n| n.start).collect();
+    starts.sort_by(f64::total_cmp);
+    starts.dedup();
+    assert_eq!(starts.len(), 8, "the loop covers every bar");
+    for (i, at) in starts.iter().enumerate() {
+        assert_eq!(
+            *at,
+            i as f64 * f64::from(bar),
+            "bar {i} gets a chord — the loop repeats"
+        );
+    }
 }
 
 #[test]
