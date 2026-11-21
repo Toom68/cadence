@@ -7,7 +7,8 @@
 use super::dsp::{
     soft_clip, time_coef, DcBlock, Limiter, PingPongDelay, Reverb, Smoother, Svf, SvfCoefs,
 };
-use super::font::FontBank;
+use super::font::{FontBank, FontSynth};
+use super::meter::BlockPeaks;
 use super::song::{BusParams, SongData, TrackParams};
 use super::voice::{DrumKind, NoteStart, Sound, Voice, LEAD_GLIDE_SECONDS};
 use crate::font::FontLibrary;
@@ -60,8 +61,6 @@ pub enum Command {
         seconds: f64,
     },
     Metronome(bool),
-    /// Replaces the SoundFont catalog (parsed off the audio thread).
-    SetFonts(Arc<FontLibrary>),
 }
 
 /// One mixer channel.
@@ -233,7 +232,7 @@ impl Strip {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process(
+    fn process<const METER: bool>(
         &mut self,
         sr: f32,
         l: &[f32],
@@ -241,7 +240,7 @@ impl Strip {
         out: (&mut [f32], &mut [f32]),
         rev: (&mut [f32], &mut [f32]),
         dly: (&mut [f32], &mut [f32]),
-    ) {
+    ) -> f32 {
         let n = l.len();
         let drive = self.drive.skip(n);
         let (pre, makeup) = if drive > 1e-4 {
@@ -261,6 +260,7 @@ impl Strip {
         let (rev_l, rev_r) = rev;
         let (dly_l, dly_r) = dly;
         let mut peak = 0.0f32;
+        let mut output_peak = 0.0f32;
         for (i, (&x0, &y0)) in l.iter().zip(r.iter()).enumerate() {
             let (mut x, mut y) = (x0, y0);
             if pre > 1.0 {
@@ -280,8 +280,12 @@ impl Strip {
             dly_l[i] += ol * dv;
             dly_r[i] += or * dv;
             peak = peak.max(x.abs()).max(y.abs());
+            if METER {
+                output_peak = output_peak.max(ol.abs()).max(or.abs());
+            }
         }
         self.live = peak > 1e-7 || !self.filt_l.is_quiet() || !self.filt_r.is_quiet();
+        output_peak
     }
 }
 
@@ -434,8 +438,17 @@ impl Renderer {
         }
         let mut fresh = Renderer::new(sample_rate);
         // Synthesizers are sample-rate specific: keep the catalog, drop the synths.
-        fresh.font_bank = FontBank::new(fresh.sr, self.font_bank.library().clone());
         std::mem::swap(&mut fresh.song, &mut self.song);
+        let library = Arc::clone(self.font_bank.library());
+        fresh.font_bank = if self.font_bank.is_prepared() {
+            FontBank::prepare(
+                fresh.sr,
+                library,
+                FontBank::track_bindings(&fresh.song.tracks),
+            )
+        } else {
+            FontBank::new(fresh.sr, library)
+        };
         fresh.metronome = self.metronome;
         fresh.loop_region = self.loop_region;
         fresh.master.snap(Self::master_gain(&fresh.song));
@@ -449,10 +462,17 @@ impl Renderer {
     }
 
     /// Installs the SoundFont catalog for `Sound::Font` tracks. Call before
-    /// `load`/`play`; the audio engine routes this through [`Command::SetFonts`].
-    /// Never call on the audio thread.
+    /// `load`/`play` in offline renders.
     pub fn set_fonts(&mut self, library: Arc<FontLibrary>) {
         self.font_bank.set_library(library);
+    }
+
+    pub fn swap_prepared_fonts(&mut self, bank: FontBank) -> FontBank {
+        self.font_bank.swap_prepared(bank)
+    }
+
+    pub fn swap_prepared_preview(&mut self, synth: Box<FontSynth>) -> Option<Box<FontSynth>> {
+        self.font_bank.swap_preview(synth)
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -475,6 +495,10 @@ impl Renderer {
     /// Peak of the most recent rendered block, per channel.
     pub fn peaks(&self) -> (f32, f32) {
         (self.peak_l, self.peak_r)
+    }
+
+    pub fn tracks(&self) -> &[TrackParams] {
+        &self.song.tracks
     }
 
     pub fn latency(&self) -> usize {
@@ -534,19 +558,47 @@ impl Renderer {
                 self.metronome = on;
                 None
             }
-            Command::SetFonts(library) => {
-                self.font_bank.set_library(library);
-                None
-            }
         }
     }
 
     /// Installs a new song snapshot, keeping sounding notes attached to their tracks even if
     /// tracks were reordered; voices of deleted tracks are cut.
     pub fn load(&mut self, song: Box<SongData>) -> Box<SongData> {
+        let same_layout = self.song.tracks.len() == song.tracks.len()
+            && self
+                .song
+                .tracks
+                .iter()
+                .zip(&song.tracks)
+                .all(|(a, b)| a.id == b.id);
+        let was_known = if same_layout {
+            [true; MAX_TRACKS]
+        } else {
+            self.remap_strips(&song.tracks)
+        };
+        for (j, p) in song.tracks.iter().enumerate() {
+            self.strips[j].set(p, self.sr, !was_known[j]);
+        }
+        // Buses occupy fixed slots. Snap while idle, like the master trim.
+        let snap = !self.playing && self.is_quiet();
+        for (strip, p) in self.bus_strips.iter_mut().zip(song.buses.iter()) {
+            strip.set_bus(p, self.sr, snap);
+        }
+        if snap {
+            self.master.snap(Self::master_gain(&song));
+        } else {
+            self.master.target = Self::master_gain(&song);
+        }
+        let old = std::mem::replace(&mut self.song, song);
+        self.font_bank.retain_tracks(&self.song.tracks);
+        self.resync();
+        old
+    }
+
+    fn remap_strips(&mut self, tracks: &[TrackParams]) -> [bool; MAX_TRACKS] {
         let mut map = [None::<usize>; MAX_TRACKS];
         for (i, old) in self.song.tracks.iter().enumerate() {
-            map[i] = song.tracks.iter().position(|t| t.id == old.id);
+            map[i] = tracks.iter().position(|t| t.id == old.id);
         }
         for v in self
             .voices
@@ -572,35 +624,14 @@ impl Renderer {
         {
             std::mem::swap(strip, scratch);
         }
-        let was_known: [bool; MAX_TRACKS] = {
-            let mut k = [false; MAX_TRACKS];
-            for j in map.iter().flatten() {
-                k[*j] = true;
-            }
-            k
-        };
-        for (j, p) in song.tracks.iter().enumerate() {
-            self.strips[j].set(p, self.sr, !was_known[j]);
-        }
-        for s in &mut self.strips[song.tracks.len()..MAX_TRACKS] {
+        for s in &mut self.strips[tracks.len()..MAX_TRACKS] {
             s.silence();
         }
-        // Bus strips occupy fixed slots — no track-id remap to chase — so
-        // they just retarget. Snap while idle so a stopped song applies new
-        // bus levels at once, like the master trim below.
-        let snap = !self.playing && self.is_quiet();
-        for (strip, p) in self.bus_strips.iter_mut().zip(song.buses.iter()) {
-            strip.set_bus(p, self.sr, snap);
+        let mut was_known = [false; MAX_TRACKS];
+        for j in map.into_iter().flatten() {
+            was_known[j] = true;
         }
-        if !self.playing && self.is_quiet() {
-            self.master.snap(Self::master_gain(&song));
-        } else {
-            self.master.target = Self::master_gain(&song);
-        }
-        let old = std::mem::replace(&mut self.song, song);
-        self.font_bank.retain_tracks(&self.song.tracks);
-        self.resync();
-        old
+        was_known
     }
 
     /// Recomputes the next event/beat for the current clock (after load or seek).
@@ -694,6 +725,11 @@ impl Renderer {
     pub fn pause(&mut self) {
         self.playing = false;
         self.release_song_voices();
+    }
+
+    pub fn device_lost(&mut self) {
+        self.playing = false;
+        self.hard_reset();
     }
 
     /// Stops, rewinds and silences everything (voices and effect tails) after a short fade.
@@ -1076,7 +1112,7 @@ impl Renderer {
         }
     }
 
-    fn render_block(&mut self, n: usize) {
+    fn render_block<const METER: bool>(&mut self, n: usize, peaks: &mut BlockPeaks) {
         let mut pos = 0;
         let sps = self.samples_per_step();
         while pos < n {
@@ -1131,7 +1167,7 @@ impl Renderer {
                 self.bus_used[b - 1] = true;
                 (&mut self.bus_l[bb..bb + n], &mut self.bus_r[bb..bb + n])
             };
-            self.strips[s].process(
+            let peak = self.strips[s].process::<METER>(
                 sr,
                 &self.strip_l[base..base + n],
                 &self.strip_r[base..base + n],
@@ -1139,6 +1175,9 @@ impl Renderer {
                 (&mut self.rev_l[..n], &mut self.rev_r[..n]),
                 (&mut self.dly_l[..n], &mut self.dly_r[..n]),
             );
+            if METER && s < MAX_TRACKS {
+                peaks.tracks[s] = peaks.tracks[s].max(peak);
+            }
             self.strip_l[base..base + n].fill(0.0);
             self.strip_r[base..base + n].fill(0.0);
         }
@@ -1158,7 +1197,7 @@ impl Renderer {
                 continue;
             }
             let base = b * MAX_BLOCK;
-            self.bus_strips[b].process(
+            let peak = self.bus_strips[b].process::<METER>(
                 sr,
                 &self.bus_l[base..base + n],
                 &self.bus_r[base..base + n],
@@ -1166,6 +1205,9 @@ impl Renderer {
                 (&mut self.rev_l[..n], &mut self.rev_r[..n]),
                 (&mut self.dly_l[..n], &mut self.dly_r[..n]),
             );
+            if METER {
+                peaks.buses[b] = peaks.buses[b].max(peak);
+            }
             self.bus_l[base..base + n].fill(0.0);
             self.bus_r[base..base + n].fill(0.0);
         }
@@ -1237,6 +1279,15 @@ impl Renderer {
 
     /// Renders `out_l.len()` frames (any length) into the given buffers, overwriting them.
     pub fn render(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        self.render_with_metering::<false>(out_l, out_r, &mut BlockPeaks::default());
+    }
+
+    pub fn render_with_metering<const METER: bool>(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        peaks: &mut BlockPeaks,
+    ) {
         let len = out_l.len().min(out_r.len());
         let mut done = 0;
         let (mut peak_l, mut peak_r) = (0.0f32, 0.0f32);
@@ -1253,7 +1304,7 @@ impl Renderer {
             ] {
                 b[..n].fill(0.0);
             }
-            self.render_block(n);
+            self.render_block::<METER>(n, peaks);
             out_l[done..done + n].copy_from_slice(&self.mix_l[..n]);
             out_r[done..done + n].copy_from_slice(&self.mix_r[..n]);
             peak_l = peak_l.max(self.peak_l);
@@ -1657,7 +1708,7 @@ mod tests {
         run(&mut r, 4096);
         let library = Arc::new(crate::font::FontLibrary::empty());
         r.set_fonts(library.clone());
-        let _ = r.apply(Command::SetFonts(library));
+        r.set_fonts(library);
         assert!(r.is_playing(), "transport survives a catalog swap");
         let (l, _) = run(&mut r, 8192);
         assert!(l.iter().any(|s| s.abs() > 0.001), "drums still play");

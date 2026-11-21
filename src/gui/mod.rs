@@ -1194,6 +1194,12 @@ impl CadenceApp {
             });
             self.style_applied = true;
         }
+        if let Some(engine) = &self.engine {
+            engine.wake_on_device_change(|| {
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            });
+        }
         self.poll_engine();
         self.poll_export();
         self.handle_close_request(ctx);
@@ -1221,10 +1227,10 @@ impl CadenceApp {
         if !self.engine_dirty {
             return;
         }
-        self.engine_dirty = false;
-        if let Some(engine) = &self.engine {
-            engine.set_project(&self.project);
-        }
+        self.engine_dirty = self
+            .engine
+            .as_ref()
+            .is_some_and(|engine| !engine.try_set_project(&self.project));
     }
 
     fn autosave(&mut self, ctx: &Context) {
@@ -1252,7 +1258,9 @@ impl CadenceApp {
             ctx.request_repaint();
         } else if self.export.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
-        } else if self.transport.peak.iter().any(|p| *p > 0.001) {
+        } else if self.transport.peak.iter().any(|p| *p > 0.001)
+            || (self.engine_dirty && self.engine.as_ref().is_some_and(AudioEngine::is_connected))
+        {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
     }
