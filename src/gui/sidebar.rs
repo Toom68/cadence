@@ -2428,6 +2428,23 @@ impl CadenceApp {
     }
 }
 
+/// Layout facts the headless tests read back from the real frame code.
+#[cfg(test)]
+#[derive(Default)]
+struct TestLog {
+    /// Rect of every library card laid out since the last reset.
+    rows: Vec<Rect>,
+    /// Rect and title of every in-flow section header.
+    headers: Vec<(Rect, String)>,
+    /// Title of the section header pinned to the top of the list, if any.
+    sticky: Option<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_LOG: std::cell::RefCell<TestLog> = std::cell::RefCell::new(TestLog::default());
+}
+
 // ----- library view cache -----------------------------------------------------
 
 /// One row of a library section.
@@ -2806,6 +2823,8 @@ fn section_header(
     locked: bool,
 ) -> (Rect, bool) {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), SECTION_H));
+    #[cfg(test)]
+    TEST_LOG.with(|l| l.borrow_mut().headers.push((rect, title.to_owned())));
     let resp = ui.interact(
         rect,
         id,
@@ -2874,6 +2893,8 @@ fn sticky_header(
         },
     );
     let section = &sections[i];
+    #[cfg(test)]
+    TEST_LOG.with(|l| l.borrow_mut().sticky = Some(section.title.clone()));
     paint_section_header(
         ui,
         pal,
@@ -2973,6 +2994,8 @@ fn library_row(
 ) -> RowOut {
     let dnd = dnd_source(ui, spec.id, payload, |ui| library_row_body(ui, pal, spec));
     let rect = dnd.response.rect;
+    #[cfg(test)]
+    TEST_LOG.with(|l| l.borrow_mut().rows.push(rect));
     if ui.ctx().is_being_dragged(spec.id) {
         return RowOut { rect, act: None };
     }
@@ -3751,5 +3774,408 @@ mod tests {
         // "soundfont" matches the whole catalog, for discoverability.
         assert_eq!(font_rows("soundfont").len(), 16);
         assert!(font_rows("definitely nothing").is_empty());
+    }
+
+    // ----- sidebar rework: layout, sections, cache, inspector ---------------------
+
+    use egui::{Event, Modifiers, PointerButton, RawInput};
+
+    /// A headless frame driver with a catalog big enough to scroll.
+    struct Rig {
+        ctx: egui::Context,
+        app: CadenceApp,
+        time: f64,
+        size: egui::Vec2,
+    }
+
+    impl Rig {
+        fn new(app: CadenceApp, w: f32, h: f32) -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                app,
+                time: 0.0,
+                size: vec2(w, h),
+            }
+        }
+
+        fn demo(w: f32, h: f32) -> Self {
+            let mut app = CadenceApp::headless(Project::demo());
+            app.catalog = crate::packs::load_catalog_from(
+                &std::env::temp_dir().join("cadence-sidebar-test-no-packs"),
+            );
+            Self::new(app, w, h)
+        }
+
+        fn step_with(&mut self, events: Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                time: Some(self.time),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            self.time += 1.0 / 60.0;
+            let _ = self.ctx.run(input, |ctx| self.app.frame(ctx));
+        }
+
+        fn steps(&mut self, n: usize) {
+            for _ in 0..n {
+                self.step_with(vec![]);
+            }
+        }
+
+        fn click(&mut self, pos: egui::Pos2) {
+            self.step_with(vec![Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                self.step_with(vec![Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+        }
+
+        fn wheel(&mut self, at: egui::Pos2, dy: f32) {
+            self.step_with(vec![Event::PointerMoved(at)]);
+            self.step_with(vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, dy),
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+
+        /// Width of the sidebar panel as egui stored it.
+        fn panel_width(&self) -> f32 {
+            egui::containers::panel::PanelState::load(&self.ctx, Id::new("sidebar"))
+                .expect("sidebar panel state")
+                .rect
+                .width()
+        }
+
+        fn log(&self) -> (Vec<Rect>, Vec<(Rect, String)>, Option<String>) {
+            TEST_LOG.with(|l| {
+                let l = l.borrow();
+                (l.rows.clone(), l.headers.clone(), l.sticky.clone())
+            })
+        }
+
+        /// Frames with a cleared layout log, so only the last frame is seen.
+        fn settle(&mut self) {
+            self.steps(3);
+            TEST_LOG.with(|l| *l.borrow_mut() = TestLog::default());
+            self.step_with(vec![]);
+        }
+    }
+
+    fn piano_track_selected(app: &mut CadenceApp) {
+        app.add_track(Instrument::Piano);
+    }
+
+    #[test]
+    fn sidebar_stays_within_its_cap_and_never_ratchets() {
+        // 1100 x 760 is the minimum window; 1920 x 1080 the big one.
+        for (w, h) in [(1100.0, 760.0), (1360.0, 860.0), (1920.0, 1080.0)] {
+            for tab in [SideTab::Library, SideTab::Track] {
+                let mut rig = Rig::demo(w, h);
+                piano_track_selected(&mut rig.app);
+                rig.app.side_tab = tab;
+                // Open the chooser and the arpeggiator so the widest layouts render.
+                rig.ctx
+                    .data_mut(|d| d.insert_temp(Id::new(QUICK_ADD_OPEN), true));
+                let id = rig.app.selected_track().expect("selected").id;
+                rig.app.edit("Arp", None, |p| {
+                    if let Some(t) = ops::track_mut(p, id) {
+                        t.arp.enabled = true;
+                    }
+                });
+                rig.steps(4);
+                let first = rig.panel_width();
+                assert!(
+                    (240.0..=380.0).contains(&first),
+                    "{w}x{h} {tab:?}: panel width {first}"
+                );
+                rig.steps(30);
+                let later = rig.panel_width();
+                assert!(
+                    (later - first).abs() < 0.5,
+                    "{w}x{h} {tab:?}: panel width drifted {first} -> {later}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collapsed_rail_is_slim_and_expands_back() {
+        let mut rig = Rig::demo(1360.0, 860.0);
+        rig.steps(3);
+        rig.ctx
+            .data_mut(|d| d.insert_temp(Id::new(SIDEBAR_COLLAPSED), true));
+        rig.steps(4);
+        let rail = rig.panel_width();
+        assert!(
+            (RAIL_W - 2.0..=RAIL_W + 2.0).contains(&rail),
+            "rail width {rail}"
+        );
+        assert_eq!(rig.app.library_rects.search, Rect::NOTHING);
+        rig.ctx
+            .data_mut(|d| d.insert_temp(Id::new(SIDEBAR_COLLAPSED), false));
+        rig.steps(6);
+        assert!(rig.panel_width() > 200.0);
+    }
+
+    #[test]
+    fn library_view_groups_sections_and_caches() {
+        let cat = catalog(&["a.one", "a.two", "b.three", "a.four"]);
+        // All: built-ins first, then one section per consecutive pack run.
+        let v = build_view(&cat, &LibraryBank::All, "", catalog_stamp(&cat));
+        let titles: Vec<&str> = v.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["BUILT-IN", "PACK · A", "PACK · B", "PACK · A"]);
+        let counts: Vec<usize> = v.sections.iter().map(|s| s.count).collect();
+        assert_eq!(counts, [Instrument::ALL.len(), 2, 1, 1]);
+        assert!(v
+            .sections
+            .iter()
+            .all(|s| s.count == s.items.len() && !s.items.is_empty()));
+        // Bank filters keep their own single section.
+        let v = build_view(&cat, &LibraryBank::Pack("b".into()), "", 0);
+        assert_eq!(v.sections.len(), 1);
+        assert_eq!(v.sections[0].items, [LibItem::Preset(2)]);
+        // The SoundFont bank groups the 128 GM programs under 16 families.
+        let v = build_view(&cat, &LibraryBank::Font, "", 0);
+        assert_eq!(v.sections.len(), 16);
+        assert_eq!(v.sections.iter().map(|s| s.count).sum::<usize>(), 128);
+        // No hits: no sections (the empty state shows instead).
+        assert!(build_view(&cat, &LibraryBank::All, "zzzz-nothing", 0)
+            .sections
+            .is_empty());
+
+        // The cache hands out the same view until something it depends on
+        // changes.
+        let ctx = egui::Context::default();
+        let a = library_view(&ctx, &cat, &LibraryBank::All, "");
+        let b = library_view(&ctx, &cat, &LibraryBank::All, "");
+        assert!(Arc::ptr_eq(&a, &b), "unchanged inputs reuse the view");
+        let c = library_view(&ctx, &cat, &LibraryBank::All, "one");
+        assert!(!Arc::ptr_eq(&b, &c), "a new query rebuilds");
+        let d = library_view(&ctx, &cat, &LibraryBank::BuiltIn, "one");
+        assert!(!Arc::ptr_eq(&c, &d), "a new bank rebuilds");
+        let cat2 = catalog(&["a.one", "a.two"]);
+        let e = library_view(&ctx, &cat2, &LibraryBank::BuiltIn, "one");
+        assert!(!Arc::ptr_eq(&d, &e), "a changed catalog rebuilds");
+    }
+
+    #[test]
+    fn library_lays_out_only_visible_cards_without_overlap() {
+        let mut rig = Rig::demo(1360.0, 860.0);
+        rig.settle();
+        let (rows, headers, _) = rig.log();
+        let list = rig.app.library_rects.list;
+        assert!(list.height() > 200.0);
+        let total = Instrument::ALL.len() + rig.app.catalog.instruments.len();
+        assert!(total > 150, "the full catalog is loaded: {total}");
+        assert!(
+            rows.len() < 24,
+            "only the visible cards are laid out, got {}",
+            rows.len()
+        );
+        assert!(!rows.is_empty() && !headers.is_empty());
+        for (i, r) in rows.iter().enumerate() {
+            assert!((r.height() - CARD_H).abs() < 0.01, "uniform card height");
+            assert!(r.right() <= list.right() + 0.5 && r.left() >= list.left() - 0.5);
+            if let Some(next) = rows.get(i + 1) {
+                assert!(r.bottom() <= next.top() + 0.01 || next.top() < r.top() - 1.0);
+            }
+        }
+        // Headers sit above their rows and never overlap a card.
+        for (h, _) in &headers {
+            assert!((h.height() - SECTION_H).abs() < 0.01);
+            assert!(rows.iter().all(|r| !r.intersects(h.shrink(1.0))));
+        }
+    }
+
+    #[test]
+    fn collapsing_a_section_hides_its_rows_and_scrolling_pins_the_header() {
+        let mut rig = Rig::demo(1360.0, 860.0);
+        rig.settle();
+        let (open_rows, headers, sticky) = rig.log();
+        assert!(sticky.is_none(), "nothing pinned at scroll 0");
+        let builtin = headers
+            .iter()
+            .find(|(_, t)| t == "BUILT-IN")
+            .expect("built-in header")
+            .0;
+
+        // Collapse BUILT-IN with a click on its header.
+        rig.click(builtin.center());
+        rig.settle();
+        let (_, headers, _) = rig.log();
+        let collapsed = ctx_closed(&rig.ctx, "builtin");
+        assert!(collapsed, "the click stored the collapsed state");
+        assert!(headers.len() >= 2, "other sections still show");
+        assert!(!open_rows.is_empty());
+        let first_pack = headers[1].0;
+        assert!(
+            first_pack.top() < builtin.bottom() + 2.0 * GAP_S,
+            "the next section moved up under the collapsed header"
+        );
+        // Click again: expands, state remembered across frames.
+        rig.click(builtin.center());
+        rig.settle();
+        assert!(!ctx_closed(&rig.ctx, "builtin"));
+
+        // Scroll far enough that a header passes the top: it pins.
+        let list = rig.app.library_rects.list;
+        for _ in 0..6 {
+            rig.wheel(list.center(), -240.0);
+        }
+        rig.settle();
+        let (_, _, sticky) = rig.log();
+        let pinned = sticky.expect("a header is pinned after scrolling");
+        assert!(
+            pinned.starts_with("PACK") || pinned == "BUILT-IN",
+            "{pinned}"
+        );
+        assert!(rig.app.library_rects.scroll.y > 100.0);
+    }
+
+    fn ctx_closed(ctx: &egui::Context, key: &str) -> bool {
+        ctx.data(|d| d.get_temp::<bool>(Id::new((BANK_CLOSED, key))))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn search_with_no_matches_shows_the_empty_state_and_the_clear_button_works() {
+        let mut rig = Rig::demo(1360.0, 860.0);
+        rig.app.library_filter = "zzzz-no-such-sound".into();
+        rig.settle();
+        let (rows, headers, _) = rig.log();
+        assert!(rows.is_empty() && headers.is_empty(), "no list rows");
+        // The search field's ✕ is the last thing in the field; clicking it
+        // clears the text and the full list comes back.
+        let search = rig.app.library_rects.search;
+        assert!(search.width() > 100.0 && (search.height() - CONTROL_M).abs() < 0.5);
+        rig.click(pos2(search.right() - 14.0, search.center().y));
+        assert_eq!(rig.app.library_filter, "");
+        rig.settle();
+        assert!(!rig.log().0.is_empty(), "rows are back");
+    }
+
+    #[test]
+    fn long_filter_text_stays_inside_the_field() {
+        let mut rig = Rig::demo(1100.0, 760.0);
+        rig.app.library_filter = "x".repeat(200);
+        rig.steps(4);
+        let search = rig.app.library_rects.search;
+        let panel = rig.panel_width();
+        assert!(
+            search.right() <= panel + 1.0,
+            "search {search:?} vs {panel}"
+        );
+    }
+
+    #[test]
+    fn inspector_hides_play_for_drum_tracks_and_audio_lanes() {
+        let drums = create_track(Instrument::Drums);
+        assert!(!Inspected::of(&drums).melodic, "drum kit has no glide/arp");
+        let piano = create_track(Instrument::Piano);
+        assert!(Inspected::of(&piano).melodic);
+        let mut kit = create_track(Instrument::Drums);
+        let mut preset = preset("t.kit");
+        preset.kit = Some(crate::packs::KitSpec {
+            pieces: vec![crate::packs::KitPiece {
+                pitch: 36,
+                name: "Kick".into(),
+                voice: crate::packs::KitVoice::default(),
+            }],
+        });
+        kit.preset = Some(preset);
+        assert!(!Inspected::of(&kit).melodic, "kit presets are drums too");
+        let audio = crate::model::create_audio_track("Vocals");
+        assert!(
+            !Inspected::of(&audio).melodic,
+            "audio lanes are not pitched"
+        );
+        let mut font = create_track(Instrument::Drums);
+        font.font = Some(FontRef::new("GeneralUser", 0));
+        assert!(
+            Inspected::of(&font).melodic,
+            "a font plays pitched programs"
+        );
+    }
+
+    #[test]
+    fn track_tab_renders_for_every_kind_of_track_in_every_theme() {
+        for choice in theme::ThemeChoice::ALL {
+            let mut rig = Rig::demo(1100.0, 760.0);
+            rig.app.theme = choice;
+            rig.app.side_tab = SideTab::Track;
+            rig.ctx
+                .data_mut(|d| d.insert_temp(Id::new(QUICK_ADD_OPEN), true));
+            for inst in Instrument::ALL {
+                rig.app.add_track(inst);
+                rig.steps(2);
+            }
+            rig.app.add_font_track(&FontRef::new("GeneralUser", 24));
+            rig.steps(2);
+            rig.app.project.tracks.clear();
+            rig.app.fix_selection();
+            rig.steps(2);
+            assert!(rig.panel_width() <= 380.0);
+        }
+    }
+
+    #[test]
+    fn dnd_payload_is_only_built_when_the_row_is_dragged() {
+        let ctx = egui::Context::default();
+        let built = std::cell::Cell::new(0);
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                dnd_source(
+                    ui,
+                    Id::new("row"),
+                    || {
+                        built.set(built.get() + 1);
+                        QuickSound::BuiltIn(Instrument::Piano)
+                    },
+                    |ui| ui.label("row"),
+                );
+            });
+        });
+        assert_eq!(built.get(), 0, "an idle row never clones its payload");
+    }
+
+    #[test]
+    fn quick_picks_are_cached_until_the_song_changes() {
+        let mut app = app();
+        app.catalog = catalog(&["test-a.kick", "test-b.pad"]);
+        let ctx = egui::Context::default();
+        let a = app.quick_picks_cached(&ctx);
+        let b = app.quick_picks_cached(&ctx);
+        assert!(Arc::ptr_eq(&a, &b));
+        app.add_track(Instrument::Piano);
+        let c = app.quick_picks_cached(&ctx);
+        assert!(!Arc::ptr_eq(&b, &c), "an edit rebuilds the picks");
+        assert!(matches!(
+            c.picks.recent[0],
+            QuickSound::BuiltIn(Instrument::Piano)
+        ));
+    }
+
+    #[test]
+    fn readouts_and_pan_text_are_stable() {
+        assert_eq!(pan_text(0.0), "C");
+        assert_eq!(pan_text(-0.5), "L50");
+        assert_eq!(pan_text(1.0), "R100");
+        assert_eq!(glide_text(0.0), "Off");
+        assert_eq!(glide_text(0.25), "0.25 s");
+        assert_eq!(elide_query("short"), "short");
+        assert_eq!(elide_query(&"y".repeat(40)).chars().count(), 24);
+        assert!(knob_gap(250.0) > GAP_XS);
+        assert_eq!(knob_gap(100.0), GAP_XS);
     }
 }
