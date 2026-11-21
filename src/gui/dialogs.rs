@@ -10,12 +10,14 @@
 //! autosave on disk can never be lost to an accidental dismissal.
 
 use egui::{
-    vec2, Align, Color32, Context, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui,
+    vec2, Align, Color32, Context, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers,
+    RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui,
 };
 
 use super::files::PendingAction;
 use super::ops::{self, ArpDirection, ArpSpec};
 use super::theme::{self, Palette};
+use super::transport::paint_brand_mark;
 use super::{CadenceApp, StatusKind};
 use crate::model::{
     note_name, ChordQuality, KeyMode, Project, SongKey, MAX_NAME_CHARS, NOTE_NAMES,
@@ -182,6 +184,12 @@ impl Dialog {
     }
 }
 
+/// Dialog widths: one size per kind so they feel like one family.
+const W_COMPACT: f32 = 440.0;
+const W_FORM: f32 = 500.0;
+const W_LIST: f32 = 560.0;
+const W_HELP: f32 = 720.0;
+
 impl CadenceApp {
     /// Draws the active modal dialog. Called once per frame from `frame()`;
     /// also drives the pending-quit viewport close and the periodic pack-folder
@@ -227,7 +235,7 @@ impl CadenceApp {
 
     /// Save / Don't Save / Cancel before New, Demo, Open, MIDI import or Quit.
     /// A failed or cancelled save keeps the dialog (and the dirty flag) so the
-    /// pending action is never lost silently.
+    /// pending action is never lost silently. Enter saves, Escape cancels.
     fn unsaved_dialog(&mut self, ctx: &Context, action: PendingAction) -> bool {
         let pal = self.palette();
         #[derive(Clone, Copy)]
@@ -239,24 +247,24 @@ impl CadenceApp {
         let mut choice = None;
         let name = self.project.name.clone();
         let path = self.doc.path.clone();
-        let resp = modal("cadence-unsaved", pal).show(ctx, |ui| {
-            ui.set_min_width(410.0);
+        let resp = show_dialog(ctx, "cadence-unsaved", pal, W_COMPACT, |ui| {
             header(ui, pal, "UNSAVED CHANGES", "Save your work first?");
-            ui.add_space(6.0);
+            ui.add_space(theme::GAP_S);
+            ui.add(egui::Label::new(theme::strong_text(&name).color(pal.text)).truncate());
             match &path {
                 Some(p) => {
-                    ui.label(RichText::new(&name).color(pal.text));
-                    ui.label(
-                        RichText::new(p.display().to_string())
-                            .small()
-                            .color(pal.text_faint),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(p.display().to_string())
+                                .small()
+                                .color(pal.text_faint),
+                        )
+                        .truncate(),
                     );
                 }
-                None => {
-                    ui.label(RichText::new(format!("{name} (not saved yet)")).color(pal.text));
-                }
+                None => theme::hint(ui, pal, "Not saved to a file yet"),
             }
-            ui.add_space(4.0);
+            ui.add_space(theme::GAP_S);
             let verb = if action == PendingAction::Quit {
                 "quit Cadence"
             } else {
@@ -268,13 +276,11 @@ impl CadenceApp {
                 ))
                 .color(pal.text_dim),
             );
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Save").clicked() {
                     choice = Some(Choice::Save);
                 }
-                if ui
-                    .add(egui::Button::new("Don't Save").min_size(vec2(96.0, 30.0)))
+                if theme::secondary_button(ui, "Don't Save")
                     .on_hover_text("Discard the unsaved changes and continue")
                     .clicked()
                 {
@@ -285,6 +291,9 @@ impl CadenceApp {
                 }
             });
         });
+        if choice.is_none() && enter_pressed(ctx) {
+            choice = Some(Choice::Save);
+        }
         let choice = choice.or_else(|| resp.should_close().then_some(Choice::Cancel));
         match choice {
             Some(Choice::Save) => {
@@ -314,8 +323,9 @@ impl CadenceApp {
     /// This dialog can only be resolved by an explicit choice: Escape, a
     /// backdrop click and ordinary frames all leave it (and
     /// `recovery_offered`) untouched, so the autosave on disk is never lost
-    /// to an accidental dismissal. `handle_close_request` preserves the file
-    /// while `recovery_offered` is set, so the user can also simply close the
+    /// to an accidental dismissal. Enter restores — the non-destructive
+    /// choice. `handle_close_request` preserves the file while
+    /// `recovery_offered` is set, so the user can also simply close the
     /// app and decide next launch.
     fn recovery_dialog(&mut self, ctx: &Context, project: &Project) -> bool {
         let pal = self.palette();
@@ -325,39 +335,48 @@ impl CadenceApp {
             Discard,
         }
         let mut choice = None;
-        let summary = format!(
-            "{}\n{} track{} · {} bars · {:.0} BPM",
-            project.name,
-            project.tracks.len(),
-            if project.tracks.len() == 1 { "" } else { "s" },
-            project.bars,
-            project.bpm,
-        );
-        let _resp = modal("cadence-recovery", pal).show(ctx, |ui| {
-            ui.set_min_width(430.0);
+        let tracks = project.tracks.len();
+        let _resp = show_dialog(ctx, "cadence-recovery", pal, W_COMPACT, |ui| {
             header(ui, pal, "RECOVERY", "Restore unsaved work?");
-            ui.add_space(6.0);
-            ui.label(RichText::new("Cadence found an autosave from a previous session:").color(pal.text_dim));
-            ui.add_space(8.0);
-            ui.label(RichText::new(&summary).color(pal.text));
-            ui.add_space(4.0);
-            ui.label(RichText::new("Restoring replaces the song currently open.").small().color(pal.text_faint));
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            ui.add_space(theme::GAP_S);
+            ui.label(
+                RichText::new("Cadence found an autosave from a previous session:")
+                    .color(pal.text_dim),
+            );
+            ui.add_space(theme::GAP_S);
+            ui.add(egui::Label::new(theme::strong_text(&project.name).color(pal.text)).truncate());
+            ui.label(
+                RichText::new(format!(
+                    "{tracks} track{} · {} bars · {:.0} BPM",
+                    if tracks == 1 { "" } else { "s" },
+                    project.bars,
+                    project.bpm,
+                ))
+                .color(pal.text_dim),
+            );
+            ui.add_space(theme::GAP_S);
+            theme::hint(ui, pal, "Restoring replaces the song currently open.");
+            button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Restore Work").clicked() {
                     choice = Some(Choice::Restore);
                 }
-                if ui
-                    .add(egui::Button::new("Discard").min_size(vec2(96.0, 30.0)))
+                if theme::secondary_button(ui, "Discard")
                     .on_hover_text("Delete the autosave and keep the current song")
                     .clicked()
                 {
                     choice = Some(Choice::Discard);
                 }
             });
-            ui.add_space(6.0);
-            ui.label(RichText::new("This offer stays until you choose — closing Cadence keeps the autosave for next time.").small().color(pal.text_faint));
+            ui.add_space(theme::GAP_S);
+            theme::hint(
+                ui,
+                pal,
+                "This offer stays until you choose — closing Cadence keeps the autosave for next time.",
+            );
         });
+        if choice.is_none() && enter_pressed(ctx) {
+            choice = Some(Choice::Restore);
+        }
         match choice {
             Some(Choice::Restore) => {
                 let project = project.clone();
@@ -404,34 +423,33 @@ impl CadenceApp {
         let pal = self.palette();
         let mut create = false;
         let mut cancel = false;
-        let resp = modal("cadence-new-song", pal).show(ctx, |ui| {
-            ui.set_min_width(440.0);
-            ui.set_max_width(460.0);
+        let resp = show_dialog(ctx, "cadence-new-song", pal, W_COMPACT, |ui| {
             header(ui, pal, "NEW SONG", "Start a new song");
-            ui.add_space(8.0);
+            ui.add_space(theme::GAP_M);
             ui.label(theme::kicker_text(pal, "NAME"));
-            ui.add_space(3.0);
-            ui.add(
+            ui.add_space(theme::GAP_XS);
+            ui.add_sized(
+                vec2(ui.available_width(), theme::CONTROL_M),
                 egui::TextEdit::singleline(&mut draft.name)
-                    .desired_width(f32::INFINITY)
                     .hint_text("Song name")
-                    .char_limit(MAX_NAME_CHARS),
+                    .char_limit(MAX_NAME_CHARS)
+                    .margin(Margin::symmetric(8, 4))
+                    .vertical_align(Align::Center),
             );
-            ui.add_space(12.0);
+            ui.add_space(theme::GAP_M);
             ui.label(theme::kicker_text(pal, "KEY"));
-            ui.add_space(3.0);
+            ui.add_space(theme::GAP_XS);
             key_picker(ui, pal, &mut draft.key);
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(format!(
+            ui.add_space(theme::GAP_S);
+            theme::hint(
+                ui,
+                pal,
+                &format!(
                     "{} — the Arpeggiator offers this key's chords. You can change it later.",
                     draft.key.name()
-                ))
-                .small()
-                .color(pal.text_faint),
+                ),
             );
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Create").clicked() {
                     create = true;
                 }
@@ -546,29 +564,29 @@ impl CadenceApp {
         let mut generate = false;
         let mut done = false;
         let pal = self.palette();
-        let resp = modal("cadence-arp", pal).show(ctx, |ui| {
-            ui.set_min_width(470.0);
-            ui.set_max_width(490.0);
+        const COMBO_W: f32 = 200.0;
+        let resp = show_dialog(ctx, "cadence-arp", pal, W_FORM, |ui| {
             header(ui, pal, "ARPEGGIATOR", "Arpeggiate a chord");
-            ui.label(RichText::new(&target).small().color(pal.text_faint));
-            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(RichText::new(&target).small().color(pal.text_faint)).truncate(),
+            );
+            ui.add_space(theme::GAP_M);
 
             ui.label(theme::kicker_text(pal, "SONG KEY"));
-            ui.add_space(3.0);
+            ui.add_space(theme::GAP_XS);
             key_picker(ui, pal, &mut new_key);
-            ui.add_space(12.0);
+            ui.add_space(theme::GAP_M);
 
             ui.label(theme::kicker_text(pal, "CHORD"));
-            ui.add_space(3.0);
+            ui.add_space(theme::GAP_XS);
             egui::Grid::new("arp-chord")
                 .num_columns(2)
-                .spacing([14.0, 8.0])
+                .spacing([theme::GAP_L, theme::GAP_S])
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Chord").color(pal.text_dim));
-                    egui::ComboBox::from_id_salt("arp-degree")
-                        .width(190.0)
-                        .selected_text(degree_label(key, draft.degree))
-                        .show_ui(ui, |ui| {
+                    form_label(ui, pal, "Chord");
+                    theme::combo("arp-degree", degree_label(key, draft.degree), COMBO_W).show_ui(
+                        ui,
+                        |ui| {
                             for d in 0..7 {
                                 let on = draft.degree == Some(d);
                                 if ui
@@ -586,34 +604,32 @@ impl CadenceApp {
                                 draft.custom_root = draft.root_class(key);
                                 draft.degree = None;
                             }
-                        });
+                        },
+                    );
                     ui.end_row();
                     if draft.degree.is_none() {
-                        ui.label(RichText::new("Root").color(pal.text_dim));
-                        egui::ComboBox::from_id_salt("arp-root")
-                            .width(190.0)
-                            .selected_text(NOTE_NAMES[draft.custom_root as usize % 12])
-                            .show_ui(ui, |ui| {
-                                for (pc, name) in NOTE_NAMES.iter().enumerate() {
-                                    ui.selectable_value(&mut draft.custom_root, pc as u8, *name);
-                                }
-                            });
-                        ui.end_row();
-                    }
-                    ui.label(RichText::new("Type").color(pal.text_dim));
-                    egui::ComboBox::from_id_salt("arp-quality")
-                        .width(190.0)
-                        .selected_text(draft.quality.label())
+                        form_label(ui, pal, "Root");
+                        theme::combo(
+                            "arp-root",
+                            NOTE_NAMES[draft.custom_root as usize % 12],
+                            COMBO_W,
+                        )
                         .show_ui(ui, |ui| {
-                            for q in ChordQuality::ALL {
-                                ui.selectable_value(&mut draft.quality, q, q.label());
+                            for (pc, name) in NOTE_NAMES.iter().enumerate() {
+                                ui.selectable_value(&mut draft.custom_root, pc as u8, *name);
                             }
                         });
+                        ui.end_row();
+                    }
+                    form_label(ui, pal, "Type");
+                    theme::combo("arp-quality", draft.quality.label(), COMBO_W).show_ui(ui, |ui| {
+                        for q in ChordQuality::ALL {
+                            ui.selectable_value(&mut draft.quality, q, q.label());
+                        }
+                    });
                     ui.end_row();
-                    ui.label(RichText::new("Start octave").color(pal.text_dim));
-                    egui::ComboBox::from_id_salt("arp-octave")
-                        .width(190.0)
-                        .selected_text(format!("Octave {}", draft.octave))
+                    form_label(ui, pal, "Start octave");
+                    theme::combo("arp-octave", format!("Octave {}", draft.octave), COMBO_W)
                         .show_ui(ui, |ui| {
                             for o in ARP_MIN_OCTAVE..=ARP_MAX_OCTAVE {
                                 let label = if o == 4 {
@@ -626,68 +642,73 @@ impl CadenceApp {
                         });
                     ui.end_row();
                 });
-            ui.add_space(12.0);
+            ui.add_space(theme::GAP_M);
 
             ui.label(theme::kicker_text(pal, "PATTERN"));
-            ui.add_space(3.0);
+            ui.add_space(theme::GAP_XS);
             egui::Grid::new("arp-pattern")
                 .num_columns(2)
-                .spacing([14.0, 8.0])
+                .spacing([theme::GAP_L, theme::GAP_S])
                 .show(ui, |ui| {
-                    ui.label(RichText::new("Direction").color(pal.text_dim));
-                    egui::ComboBox::from_id_salt("arp-direction")
-                        .width(190.0)
-                        .selected_text(draft.direction.label())
-                        .show_ui(ui, |ui| {
+                    form_label(ui, pal, "Direction");
+                    theme::combo("arp-direction", draft.direction.label(), COMBO_W).show_ui(
+                        ui,
+                        |ui| {
                             for d in ArpDirection::ALL {
                                 ui.selectable_value(&mut draft.direction, d, d.label());
                             }
-                        });
+                        },
+                    );
                     ui.end_row();
-                    ui.label(RichText::new("Octaves").color(pal.text_dim));
-                    ui.add(egui::Slider::new(
-                        &mut draft.octaves,
-                        1..=ops::MAX_ARP_OCTAVES,
-                    ));
+                    form_label(ui, pal, "Octaves");
+                    ui.horizontal(|ui| {
+                        theme::slider(
+                            ui,
+                            pal,
+                            &mut draft.octaves,
+                            1..=ops::MAX_ARP_OCTAVES,
+                            COMBO_W - 40.0,
+                        );
+                        ui.label(RichText::new(draft.octaves.to_string()).color(pal.text_dim));
+                    });
                     ui.end_row();
-                    ui.label(RichText::new("Rate").color(pal.text_dim));
+                    form_label(ui, pal, "Rate");
                     let rate = ARP_RATES
                         .iter()
                         .find(|(r, _)| *r == draft.rate_steps)
                         .map_or("", |(_, l)| l);
-                    egui::ComboBox::from_id_salt("arp-rate")
-                        .width(190.0)
-                        .selected_text(rate)
-                        .show_ui(ui, |ui| {
-                            for (r, label) in ARP_RATES {
-                                ui.selectable_value(&mut draft.rate_steps, r, label);
-                            }
-                        });
+                    theme::combo("arp-rate", rate, COMBO_W).show_ui(ui, |ui| {
+                        for (r, label) in ARP_RATES {
+                            ui.selectable_value(&mut draft.rate_steps, r, label);
+                        }
+                    });
                     ui.end_row();
-                    ui.label(RichText::new("Velocity").color(pal.text_dim));
-                    ui.add(
-                        egui::Slider::new(&mut draft.velocity, 0.2..=1.0)
-                            .custom_formatter(|x, _| format!("{:.0}%", x * 100.0)),
-                    );
+                    form_label(ui, pal, "Velocity");
+                    ui.horizontal(|ui| {
+                        theme::slider(ui, pal, &mut draft.velocity, 0.2..=1.0, COMBO_W - 40.0);
+                        ui.label(
+                            RichText::new(format!("{:.0}%", draft.velocity * 100.0))
+                                .color(pal.text_dim),
+                        );
+                    });
                     ui.end_row();
                 });
-            ui.add_space(6.0);
+            ui.add_space(theme::GAP_S);
             ui.checkbox(&mut draft.accent, "Accent the first note of each bar");
             ui.checkbox(&mut draft.replace, "Replace the pattern's notes");
-            ui.add_space(8.0);
+            ui.add_space(theme::GAP_S);
             let spec = draft.spec(key);
             let tones: Vec<String> = ops::arp_tones(&spec).into_iter().map(note_name).collect();
-            ui.label(
-                RichText::new(format!(
+            theme::hint(
+                ui,
+                pal,
+                &format!(
                     "{}: {}",
                     spec.quality.symbol(spec.chord_root),
                     tones.join(" ")
-                ))
-                .small()
-                .color(pal.text_dim),
+                ),
             );
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Generate").clicked() {
                     generate = true;
                 }
@@ -696,6 +717,9 @@ impl CadenceApp {
                 }
             });
         });
+        if enter_pressed(ctx) {
+            generate = true;
+        }
         if new_key != key {
             self.set_song_key(new_key);
             if let Some(d) = draft.degree {
@@ -715,81 +739,31 @@ impl CadenceApp {
     fn help_dialog(&mut self, ctx: &Context) -> bool {
         let pal = self.palette();
         let mut closed = false;
-        let resp = modal("cadence-help", pal).show(ctx, |ui| {
-            ui.set_min_width(580.0);
-            ui.set_max_width(580.0);
+        let height = (ctx.content_rect().height() - 230.0).clamp(240.0, 560.0);
+        let resp = show_dialog(ctx, "cadence-help", pal, W_HELP, |ui| {
             header(ui, pal, "SHORTCUTS & TIPS", "How to write a song");
-            ui.add_space(6.0);
-            ScrollArea::vertical().max_height(430.0).auto_shrink([false, true]).show(ui, |ui| {
-                help_section(ui, pal, ctx, "FILE", &[
-                    ("New song", Some(&super::SC_NEW)),
-                    ("New from demo", None),
-                    ("Open…", Some(&super::SC_OPEN)),
-                    ("Save", Some(&super::SC_SAVE)),
-                    ("Save as…", Some(&super::SC_SAVE_AS)),
-                    ("Import MIDI…", None),
-                    ("Export MIDI…", None),
-                    ("Export WAV…", Some(&super::SC_EXPORT_WAV)),
-                    ("Quit", Some(&super::SC_QUIT)),
-                ]);
-                help_section(ui, pal, ctx, "EDIT", &[
-                    ("Undo", Some(&super::SC_UNDO)),
-                    ("Redo", Some(&super::SC_REDO)),
-                    ("Duplicate selection", Some(&super::SC_DUPLICATE)),
-                    ("Delete selection", None),
-                    ("Select all notes", Some(&super::SC_SELECT_ALL)),
-                    ("Deselect", None),
-                    ("Cut / copy / paste", None),
-                    ("Arpeggiator…", None),
-                ]);
-                help_section(ui, pal, ctx, "TRANSPORT", &[
-                    ("Play / pause", None),
-                    ("Stop", None),
-                    ("Return to start", None),
-                    ("Loop song", None),
-                    ("Metronome", None),
-                ]);
-                help_section(ui, pal, ctx, "VIEW", &[
-                    ("Pattern editor", Some(&super::SC_EDITOR)),
-                    ("Mixer", Some(&super::SC_MIXER)),
-                    ("Zoom in / out", None),
-                    ("Fit song", None),
-                    ("Follow playhead", None),
-                ]);
-                help_section_text(ui, pal, "COMPUTER KEYBOARD", &[
-                    ("White keys C D E F G A B", "Z X C V B N M"),
-                    ("Black keys C# D# F# G# A#", "S D G H J"),
-                    ("Octave down / up", "Q / W"),
-                    ("One octave up, that note only", "Shift + key"),
-                ]);
-                ui.add_space(10.0);
-                ui.label(theme::kicker_text(pal, "EDITING"));
-                ui.add_space(4.0);
-                for tip in [
-                    "Arranger: drag empty lane space to box-select clips across tracks; drag any selected clip to move the group, or Alt-drag to copy it. Clicking an unselected clip selects it alone (clicking a selected clip keeps the group); Shift-click toggles it, double-click empty lane space places the selected pattern, clip top corners set fades, and the right edge changes loops.",
-                    "Piano roll (melodic tracks): click empty grid to draw a note, drag empty grid to box-select notes, drag any selected note to move the group, pull the right edge to resize, and right-click erases. Drag the velocity lane under the roll to shape note loudness.",
-                    "Computer keyboard: with the pattern editor open, the Z–M row plus S/D/G/H/J play the selected track — white keys C–B, black keys the sharps — on a fixed-length audition (drum tracks play their kit pieces instead). Q/W shift the octave, Shift raises it a step, and the keyboard strip under the roll shows what's held.",
-                    "Chord strip (above the roll): click a diatonic chord of the song key to stamp it at the pointer or playhead — as a block or a strum in either direction at four spacings, in any of 18 chord qualities via the Type menu. Hovering a chord auditions it; the Scale toggle tints the key's notes in the roll.",
-                    "Drum grid (drum tracks): click or drag across the kit rows — the eight built-in drums, or one row per piece for a drum-kit preset — to paint hits; Shift+click cycles accent levels; right-click erases. The Fill button adds a four-on-the-floor hit on the top row.",
-                    "Mixer: drag channel faders for volume and pan; turn the knobs for filter, reverb, delay and drive. Mute/solo per channel; the rightmost strip is the master.",
-                    "Songs save as .cadence JSON. MIDI and WAV export live in the File menu. Instrument packs are plain JSON — Import Pack… in the library adds new synth sounds with no rebuild.",
-                ] {
-                    ui.horizontal_top(|ui| {
-                        ui.label(RichText::new("•").color(pal.accent));
-                        ui.label(RichText::new(tip).small().color(pal.text_dim));
+            ui.add_space(theme::GAP_S);
+            ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.columns(2, |cols| {
+                        shortcut_table(&mut cols[0], pal, ctx, "FILE", FILE_ROWS);
+                        shortcut_table(&mut cols[0], pal, ctx, "EDIT", EDIT_ROWS);
+                        shortcut_table(&mut cols[0], pal, ctx, "TRANSPORT", TRANSPORT_ROWS);
+                        shortcut_table(&mut cols[1], pal, ctx, "VIEW", VIEW_ROWS);
+                        shortcut_table(&mut cols[1], pal, ctx, "ARRANGER & EDITOR", EDITING_ROWS);
+                        shortcut_table(&mut cols[1], pal, ctx, "COMPUTER KEYBOARD", KEYBOARD_ROWS);
                     });
-                    ui.add_space(4.0);
+                    gesture_list(ui, pal);
+                });
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Done").clicked() {
+                    closed = true;
                 }
             });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::primary_button(ui, pal, "Done").clicked() {
-                        closed = true;
-                    }
-                });
-            });
         });
+        closed |= enter_pressed(ctx);
         !closed && !resp.should_close()
     }
 
@@ -799,82 +773,150 @@ impl CadenceApp {
     fn about_dialog(&mut self, ctx: &Context) -> bool {
         let pal = self.palette();
         let mut closed = false;
-        let resp =
-            modal("cadence-about", pal).show(ctx, |ui| {
-                ui.set_min_width(430.0);
-                header(ui, pal, "CADENCE", "A native music sequencer");
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!("Version {}", crate::APP_VERSION))
-                        .small()
-                        .color(pal.text_faint),
-                );
-                ui.add_space(10.0);
-                ui.label(RichText::new(
-                    "Cadence is written entirely in Rust: an eframe/egui interface, CPAL audio \
-                     and pure-Rust synthesis and effects. It runs fully offline — no account, \
-                     no cloud, no internet connection needed.",
-                ).color(pal.text_dim));
-                ui.add_space(8.0);
-                ui.label(RichText::new(
-                    "Songs are .cadence JSON files you can keep and share. MIDI and WAV export \
-                     are in the File menu. Instrument packs add new synth presets as plain \
-                     JSON — use Import Pack… in the library; no rebuild needed.",
-                ).color(pal.text_dim));
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(
-                        "Plugin instruments (VST3, AU, CLAP) are planned but not supported yet.",
-                    )
-                    .small()
-                    .color(pal.text_faint),
-                );
-                ui.add_space(14.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::primary_button(ui, pal, "Close").clicked() {
-                            closed = true;
-                        }
-                    });
+        let resp = show_dialog(ctx, "cadence-about", pal, W_COMPACT, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = theme::GAP_M;
+                let (mark, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
+                paint_brand_mark(ui.painter(), mark, pal);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(
+                        theme::strong_text("Cadence")
+                            .size(theme::TEXT_HEADING + 4.0)
+                            .color(pal.text),
+                    );
+                    ui.label(RichText::new("A focused songwriting studio").color(pal.text_dim));
+                    theme::hint(ui, pal, &format!("Version {}", env!("CARGO_PKG_VERSION")));
                 });
             });
+            ui.add_space(theme::GAP_M);
+            ui.label(
+                RichText::new(
+                    "Write drum patterns and melodies, arrange them across instrument tracks, \
+                     mix with per-track effects and export WAV or MIDI. Everything is written \
+                     in Rust and runs fully offline — no account, no cloud, no internet connection.",
+                )
+                .color(pal.text_dim),
+            );
+            ui.add_space(theme::GAP_S);
+            ui.label(
+                RichText::new(
+                    "Songs are .cadence files you can keep and share. Instrument packs add new \
+                     synth sounds as plain JSON, with no rebuild. Plugin instruments (VST3, AU, \
+                     CLAP) are planned but not supported yet.",
+                )
+                .small()
+                .color(pal.text_faint),
+            );
+            ui.add_space(theme::GAP_M);
+            ui.label(theme::kicker_text(pal, "CREDITS"));
+            ui.add_space(theme::GAP_XS);
+            for line in [
+                "Inter — SIL Open Font License 1.1",
+                "DejaVu Sans — Bitstream Vera / DejaVu license",
+                "Built with Rust, egui and eframe, CPAL, rustysynth, midly and hound",
+            ] {
+                ui.label(RichText::new(line).small().color(pal.text_dim));
+            }
+            ui.add_space(theme::GAP_XS);
+            theme::hint(
+                ui,
+                pal,
+                "The font license texts are in the licenses folder of this download.",
+            );
+            if let Some(note) = UNSIGNED_NOTE {
+                ui.add_space(theme::GAP_S);
+                theme::hint(ui, pal, note);
+            }
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Close").clicked() {
+                    closed = true;
+                }
+            });
+        });
+        closed |= enter_pressed(ctx);
         !closed && !resp.should_close()
     }
 
     // ----- pack errors ---------------------------------------------------------
 
-    /// Lists non-fatal instrument-pack load problems.
+    /// Lists non-fatal instrument-pack load problems. Reload Packs re-reads
+    /// the folder (and comes back here if something still fails).
     fn pack_errors_dialog(&mut self, ctx: &Context, errors: &[String]) -> bool {
         let pal = self.palette();
         let mut closed = false;
+        let mut reload = false;
         let dir = crate::packs::user_packs_dir();
-        let resp = modal("cadence-pack-errors", pal).show(ctx, |ui| {
-            ui.set_min_width(520.0);
-            ui.set_max_width(560.0);
-            header(ui, pal, "INSTRUMENT PACKS", "Some packs could not be loaded");
-            ui.add_space(4.0);
-            ui.label(RichText::new("Cadence keeps working with the packs that did load. Fix or remove these files, then press Reload.").small().color(pal.text_dim));
-            ui.add_space(8.0);
-            ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
-                for err in errors {
-                    ui.label(RichText::new(err).small().color(pal.danger));
-                    ui.add_space(3.0);
-                }
-            });
-            ui.add_space(8.0);
-            ui.label(RichText::new(format!("Packs folder: {}", dir.display())).small().color(pal.text_faint));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::primary_button(ui, pal, "Close").clicked() {
-                        closed = true;
+        let resp = show_dialog(ctx, "cadence-pack-errors", pal, W_LIST, |ui| {
+            header(
+                ui,
+                pal,
+                "INSTRUMENT PACKS",
+                "Some packs could not be loaded",
+            );
+            ui.add_space(theme::GAP_XS);
+            ui.label(
+                RichText::new(
+                    "Cadence keeps working with the packs that did load. Fix or remove these \
+                     files, then reload.",
+                )
+                .small()
+                .color(pal.text_dim),
+            );
+            ui.add_space(theme::GAP_S);
+            ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for err in errors {
+                        ui.horizontal_top(|ui| {
+                            ui.label(RichText::new("•").color(pal.danger));
+                            ui.label(RichText::new(err).small().color(pal.text));
+                        });
+                        ui.add_space(theme::GAP_XS);
                     }
                 });
+            ui.add_space(theme::GAP_S);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("Packs folder: {}", dir.display()))
+                        .small()
+                        .color(pal.text_faint),
+                )
+                .truncate(),
+            );
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Close").clicked() {
+                    closed = true;
+                }
+                if theme::secondary_button(ui, "Reload Packs")
+                    .on_hover_text("Read the packs folder again")
+                    .clicked()
+                {
+                    reload = true;
+                }
             });
         });
+        closed |= enter_pressed(ctx);
+        if reload {
+            // Opens this dialog again when some file still fails to load.
+            self.reload_packs(true);
+            return false;
+        }
         !closed && !resp.should_close()
     }
 }
+
+// ----- scaffold ---------------------------------------------------------------
+
+/// Note under the credits for builds that are not distribution-signed.
+const UNSIGNED_NOTE: Option<&str> = if cfg!(target_os = "macos") {
+    Some("This build is ad-hoc signed only, not notarized: macOS may ask you to confirm the first launch.")
+} else if cfg!(target_os = "windows") {
+    Some("This build is not code-signed: Windows SmartScreen may show a warning the first time you run it.")
+} else {
+    None
+};
 
 /// Centered modal with the app's styling and a dimmed backdrop.
 fn modal(id: &str, pal: Palette) -> egui::Modal {
@@ -884,9 +926,24 @@ fn modal(id: &str, pal: Palette) -> egui::Modal {
             Frame::new()
                 .fill(pal.panel)
                 .stroke(Stroke::new(1.0f32, pal.border))
-                .corner_radius(12)
-                .inner_margin(Margin::same(18)),
+                .corner_radius(theme::RADIUS_L as u8 + 2)
+                .inner_margin(Margin::same(20)),
         )
+}
+
+/// A modal `width` px wide (never wider than the window) with `add` inside.
+fn show_dialog<T>(
+    ctx: &Context,
+    id: &str,
+    pal: Palette,
+    width: f32,
+    add: impl FnOnce(&mut Ui) -> T,
+) -> egui::ModalResponse<T> {
+    let width = width.min(ctx.content_rect().width() - 64.0).max(240.0);
+    modal(id, pal).show(ctx, |ui| {
+        ui.set_width(width);
+        add(ui)
+    })
 }
 
 /// Kicker + title header shared by all dialogs.
@@ -894,64 +951,243 @@ fn header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
     theme::section_header(ui, pal, kicker, title);
 }
 
-/// One Help row: label on the left, shortcut (or menu path) on the right.
-fn help_section(
-    ui: &mut Ui,
-    pal: Palette,
-    ctx: &Context,
-    title: &str,
-    rows: &[(&str, Option<&egui::KeyboardShortcut>)],
-) {
-    ui.add_space(8.0);
+/// The dialog's buttons, right-aligned. Add the primary action first: it
+/// ends up last (rightmost), with the secondary actions to its left.
+fn button_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.add_space(theme::GAP_L);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = theme::GAP_S;
+        add(ui);
+    });
+}
+
+/// Enter confirms a dialog unless a widget (a button reached with Tab, a
+/// combo box) has keyboard focus and will use the key itself.
+fn enter_pressed(ctx: &Context) -> bool {
+    ctx.memory(|m| m.focused().is_none())
+        && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+}
+
+/// Left cell of a form row.
+fn form_label(ui: &mut Ui, pal: Palette, text: &str) {
+    ui.label(RichText::new(text).color(pal.text_dim));
+}
+
+// ----- help content -------------------------------------------------------------
+
+/// What a Help row shows on the right.
+#[derive(Clone, Copy)]
+enum Keys {
+    /// A real shortcut, written in the platform's notation.
+    Shortcut(&'static KeyboardShortcut),
+    /// Literal keys; `" / "` separates alternatives, `+` joins a chord.
+    Text(&'static str),
+    /// Only reachable from a menu.
+    Menu(&'static str),
+}
+
+type Row = (&'static str, Keys);
+
+const FILE_ROWS: &[Row] = &[
+    ("New song…", Keys::Shortcut(&super::SC_NEW)),
+    ("Open…", Keys::Shortcut(&super::SC_OPEN)),
+    ("Save", Keys::Shortcut(&super::SC_SAVE)),
+    ("Save as…", Keys::Shortcut(&super::SC_SAVE_AS)),
+    ("Export WAV…", Keys::Shortcut(&super::SC_EXPORT_WAV)),
+    ("Import MIDI, audio, packs", Keys::Menu("File menu")),
+    ("Quit", Keys::Shortcut(&super::SC_QUIT)),
+];
+const EDIT_ROWS: &[Row] = &[
+    ("Undo", Keys::Shortcut(&super::SC_UNDO)),
+    ("Redo", Keys::Shortcut(&super::SC_REDO)),
+    ("Cut", Keys::Shortcut(&super::SC_CUT)),
+    ("Copy", Keys::Shortcut(&super::SC_COPY)),
+    ("Paste", Keys::Shortcut(&super::SC_PASTE)),
+    ("Duplicate", Keys::Shortcut(&super::SC_DUPLICATE)),
+    ("Select all", Keys::Shortcut(&super::SC_SELECT_ALL)),
+    ("Delete", Keys::Text("Del / Backspace")),
+    ("Deselect", Keys::Text("Esc")),
+    ("Arpeggiator…", Keys::Menu("Edit menu")),
+];
+const TRANSPORT_ROWS: &[Row] = &[
+    ("Play / pause", Keys::Shortcut(&super::SC_PLAY)),
+    ("Return to start", Keys::Shortcut(&super::SC_HOME)),
+    ("Loop", Keys::Shortcut(&super::SC_LOOP)),
+    ("Record", Keys::Shortcut(&super::SC_RECORD)),
+    ("Metronome", Keys::Menu("Transport menu")),
+];
+const VIEW_ROWS: &[Row] = &[
+    ("Pattern editor", Keys::Shortcut(&super::SC_EDITOR)),
+    ("Mixer", Keys::Shortcut(&super::SC_MIXER)),
+    ("Keyboard", Keys::Shortcut(&super::SC_KEYS)),
+    ("Zoom in / out", Keys::Text("= / -")),
+    ("Maximize editor", Keys::Shortcut(&super::SC_MAX_EDITOR)),
+    ("Maximize arranger", Keys::Shortcut(&super::SC_MAX_ARRANGER)),
+    ("Shortcuts & tips", Keys::Shortcut(&super::SC_HELP)),
+];
+const EDITING_ROWS: &[Row] = &[
+    ("Split clip at pointer / playhead", Keys::Text("B")),
+    ("Nudge selection", Keys::Text("← / → / ↑ / ↓")),
+    ("Nudge by an octave", Keys::Text("Shift+↑ / Shift+↓")),
+];
+const KEYBOARD_ROWS: &[Row] = &[
+    ("White keys C D E F G A B", Keys::Text("Z X C V B N M")),
+    ("Black keys C♯ D♯ F♯ G♯ A♯", Keys::Text("S D G H J")),
+    ("Octave down / up", Keys::Text("Q / W")),
+    ("One octave up, that note only", Keys::Text("Shift+key")),
+];
+
+/// Gestures and tips, `(heading, text)`, shown under the shortcut tables. Add
+/// new entries here; the dialog lays them out on its own.
+const GESTURES: &[(&str, &str)] = &[
+    (
+        "Arranger",
+        "Drag empty lane space to box-select clips across tracks; drag a selected clip to move \
+         the group, or Alt-drag to copy it. Clicking an unselected clip selects it alone \
+         (clicking a selected clip keeps the group); Shift-click toggles it. Double-click empty \
+         lane space to place the selected pattern; clip top corners set fades and the right \
+         edge changes loops.",
+    ),
+    (
+        "Piano roll",
+        "Click empty grid to draw a note, drag empty grid to box-select notes, drag any \
+         selected note to move the group, pull the right edge to resize, and right-click \
+         erases. Drag the velocity lane under the roll to shape note loudness.",
+    ),
+    (
+        "Chord strip",
+        "Click a diatonic chord of the song key to stamp it at the pointer or playhead — as a \
+         block or a strum, in any of 18 chord qualities via the Type menu. Hovering a chord \
+         auditions it; the Scale toggle tints the key's notes in the roll.",
+    ),
+    (
+        "Drum grid",
+        "Click or drag across the kit rows to paint hits; Shift+click cycles accent levels; \
+         right-click erases. The Fill button adds a four-on-the-floor hit on the top row.",
+    ),
+    (
+        "Mixer",
+        "Drag channel faders for volume and pan; turn the knobs for filter, reverb, delay and \
+         drive. Mute/solo per channel; the rightmost strip is the master.",
+    ),
+    (
+        "Panels",
+        "Drag the divider between the arranger and the editor to resize them; double-click it \
+         to maximize the arranger, and again to restore. The arrows next to the tabs favor \
+         the editor or the arranger.",
+    ),
+    (
+        "Files",
+        "Songs save as .cadence files. MIDI and WAV export live in the File menu. Instrument \
+         packs are plain JSON — Import Instrument Pack… adds new synth sounds with no rebuild.",
+    ),
+];
+
+/// A titled two-column table of what each action's keys are.
+fn shortcut_table(ui: &mut Ui, pal: Palette, ctx: &Context, title: &str, rows: &[Row]) {
     ui.label(theme::kicker_text(pal, title));
-    ui.add_space(3.0);
-    for (label, sc) in rows {
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                vec2(190.0, f32::INFINITY),
-                Layout::left_to_right(Align::Center),
-                |ui| {
-                    ui.label(RichText::new(*label).color(pal.text_dim))
-                        .on_hover_text(*label);
-                },
-            );
-            let right = match sc {
-                Some(sc) => ctx.format_shortcut(sc),
-                // Title-cased section name: "EDIT" -> "Edit menu".
-                None => {
-                    let mut chars = title.chars();
-                    let first = chars.next().map(|c| c.to_string()).unwrap_or_default();
-                    format!("{first}{} menu", chars.as_str().to_lowercase())
+    ui.add_space(theme::GAP_XS);
+    egui::Grid::new(("help-table", title))
+        .num_columns(2)
+        .spacing([theme::GAP_M, 6.0])
+        .show(ui, |ui| {
+            for (label, keys) in rows {
+                ui.label(RichText::new(*label).color(pal.text_dim));
+                match keys {
+                    Keys::Shortcut(sc) => keycaps(ui, pal, &ctx.format_shortcut(sc)),
+                    Keys::Text(text) => keycaps(ui, pal, text),
+                    Keys::Menu(menu) => {
+                        ui.label(RichText::new(*menu).small().color(pal.text_faint));
+                    }
                 }
-            };
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(right).small().color(pal.text_faint));
-            });
+                ui.end_row();
+            }
         });
+    ui.add_space(theme::GAP_M);
+}
+
+/// The tips list at the end of the Help dialog.
+fn gesture_list(ui: &mut Ui, pal: Palette) {
+    ui.label(theme::kicker_text(pal, "MOUSE & EDITING"));
+    ui.add_space(theme::GAP_XS);
+    for (heading, text) in GESTURES {
+        ui.label(
+            theme::strong_text(*heading)
+                .size(theme::TEXT_BODY)
+                .color(pal.text),
+        );
+        ui.label(RichText::new(*text).small().color(pal.text_dim));
+        ui.add_space(theme::GAP_S);
     }
 }
 
-/// Same layout as [`help_section`] but with literal right-column text — for
-/// multi-key mappings that aren't single shortcuts.
-fn help_section_text(ui: &mut Ui, pal: Palette, title: &str, rows: &[(&str, &str)]) {
-    ui.add_space(8.0);
-    ui.label(theme::kicker_text(pal, title));
-    ui.add_space(3.0);
-    for (label, right) in rows {
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                vec2(190.0, f32::INFINITY),
-                Layout::left_to_right(Align::Center),
-                |ui| {
-                    ui.label(RichText::new(*label).color(pal.text_dim))
-                        .on_hover_text(*label);
-                },
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(*right).small().color(pal.text_faint));
-            });
-        });
+/// Splits a shortcut string into its keys: `"Ctrl+Shift+S"` → Ctrl, Shift,
+/// S; macOS `"⇧⌘S"` → ⇧, ⌘, S; `"Del"` → Del. A lone `+` or `-` is a key.
+fn split_keys(combo: &str) -> Vec<&str> {
+    const MAC_MODIFIERS: [char; 4] = ['⌘', '⇧', '⌥', '⌃'];
+    if combo.chars().count() > 1 && combo.contains('+') {
+        let mut keys = Vec::new();
+        let mut rest = combo;
+        while let Some(at) = rest.find('+') {
+            if at == 0 {
+                // A literal "+" key ("Ctrl++").
+                keys.push(&rest[..1]);
+                rest = &rest[1..];
+                rest = rest.strip_prefix('+').unwrap_or(rest);
+                continue;
+            }
+            keys.push(&rest[..at]);
+            rest = &rest[at + 1..];
+        }
+        if !rest.is_empty() {
+            keys.push(rest);
+        }
+        return keys;
     }
+    if combo.starts_with(MAC_MODIFIERS) {
+        let mut keys = Vec::new();
+        let mut rest = combo;
+        while let Some(c) = rest.chars().next().filter(|c| MAC_MODIFIERS.contains(c)) {
+            keys.push(&rest[..c.len_utf8()]);
+            rest = &rest[c.len_utf8()..];
+        }
+        if !rest.is_empty() {
+            keys.push(rest);
+        }
+        return keys;
+    }
+    vec![combo]
+}
+
+/// Draws a shortcut as key caps; `" / "` separates alternatives.
+fn keycaps(ui: &mut Ui, pal: Palette, combo: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (n, alternative) in combo.split(" / ").enumerate() {
+            if n > 0 {
+                ui.label(RichText::new("or").small().color(pal.text_faint));
+            }
+            for key in split_keys(alternative) {
+                keycap(ui, pal, key);
+            }
+        }
+    });
+}
+
+fn keycap(ui: &mut Ui, pal: Palette, key: &str) {
+    let font = theme::strong_font(ui, theme::TEXT_SMALL);
+    let galley = ui.painter().layout_no_wrap(key.to_owned(), font, pal.text);
+    let width = (galley.size().x + 12.0).max(22.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+    let p = ui.painter();
+    p.rect(
+        rect,
+        theme::RADIUS_S,
+        pal.control,
+        Stroke::new(1.0f32, pal.control_border),
+        StrokeKind::Inside,
+    );
+    p.galley(rect.center() - galley.size() * 0.5, galley, pal.text);
 }
 
 #[cfg(test)]
