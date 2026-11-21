@@ -106,7 +106,8 @@ safe defaults that keep legacy presets bit-identical):
 - `lfo` — `waveform` (`sine`/`triangle`), `rate_hz` (0.05…20), `pitch_semitones`
   (0…12), `filter_octaves` (0…4), `amplitude` (0…1 tremolo depth). Starts
   deterministically at note-on. There is **no tempo sync** — rates are plain
-  Hz — and no arpeggiator anywhere in the engine.
+  Hz (the per-track arpeggiator, by contrast, is step-based; see the Track
+  inspector's PLAY section).
 - Per-oscillator `decay` (0.005…20 s, optional) lets one layer (e.g. a noise
   click) die fast while the body rings on.
 

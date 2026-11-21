@@ -18,11 +18,18 @@ Cadence songs are saved as **pretty-printed JSON** (UTF-8; a leading BOM is tole
       "id": 1234567891,
       "name": "Pocket drums",
       "color": [184, 161, 255],  // RGB bytes
-      "instrument": "drums",     // drums|piano|bass|pluck|pad|lead
+      "instrument": "drums",     // drums|piano|bass|pluck|guitar|pad|lead
       "volume": 0.75,            // 0–1
       "pan": 0,                  // -1…1
       "mute": false,
       "solo": false,
+      "bus": 1,                  // 0 = master, 1–4 = subgroup bus (absent = master)
+      "glide": 0,                // portamento seconds, 0–2 (absent = off)
+      "arp": { "enabled": true, "rate": "sixteenth", "octaves": 2, "direction": "up" },
+      "automation": null,        // or { "volume": [...], "pan": [...] } breakpoints
+      "font": null,              // or { "name": "GeneralUser", "program": 0 } (.sf2)
+      "audio": false,            // true = audio lane playing audio_clips, not patterns
+      "audio_clips": [],         // [{ "id", "file", "name", "start", "offset", "length", "loops", "fade_in", "fade_out" }]
       "effects": {
         "cutoff_hz": 18000,      // low-pass cutoff Hz, 100–20000
         "reverb": 0.06,          // 0–1
@@ -44,7 +51,11 @@ Cadence songs are saved as **pretty-printed JSON** (UTF-8; a leading BOM is tole
       ],
       "preset": null        // or an embedded instrument-pack preset object
     }
-  ]
+  ],
+  "key": { "root": 0, "mode": "minor" },   // song key (root = pitch class 0–11)
+  "markers": [ { "id": 1, "name": "Verse", "step": 0 } ],     // ≤ 64
+  "chord_events": [ { "id": 2, "root": 0, "quality": "minor", "step": 0 } ],  // ≤ 64
+  "buses": [ { "name": "Bus A", "volume": 0.8, "pan": 0, "mute": false, "solo": false } ]  // fixed ×4
 }
 ```
 
@@ -55,6 +66,11 @@ Clip `loops` is 1–32 and defaults to 1 for older projects. Its span is the pat
 ### Pack presets inside a song
 
 A track may carry `"preset"` — a full copy of a JSON instrument-pack preset (`InstrumentPreset`). When present it **replaces the built-in sound** of the track's `instrument` (which still chooses the editor: drum grid vs. piano roll). Because the whole preset is embedded in the `.cadence` file, the song plays identically on machines where the pack isn't installed. `preset` is optional (`null`/absent = built-in instrument). See [instrument-packs.md](instrument-packs.md).
+
+### SoundFonts and audio clips
+
+- `"font"` (`{"name": "<sf2 file stem>", "program": 0–127}`) makes the track play a sampled GM program from an installed `.sf2` SoundFont. If the named font isn't installed, the track falls back to its preset or built-in sound — so a font song stays portable in a degraded form.
+- An **audio lane** (`"audio": true`) holds `"audio_clips"` — imported WAV clips whose `file` is a staged name in the app's **audio store** (`<app data dir>/audio/<content-hash>.wav`, staged by **File → Import Audio File…**, ≤ 48 MB each). The `.cadence` file references the staged name only — the audio bytes are *not* embedded, so a song's audio lanes play silently on machines where the file was never imported. Imported audio is resampled and can be moved, looped and faded like pattern clips; a missing file is a silent clip, not a load error.
 
 ## Validation limits
 
@@ -67,9 +83,14 @@ Opening a project runs `Project::validate()` (`src/model.rs`), which checks stru
 | Bars per song | 128 |
 | Patterns per track | 256 |
 | Clips per track | 1,024 |
+| Audio clips per track | 256 |
 | Notes per pattern | 8,192 |
 | Total scheduled note events | 200,000 |
-| Pattern length | 1–2,048 steps (the editor offers 1, 2, 3, 4, 6, or 8-bar presets) |
+| Pattern length | 1–2,048 steps (the editor offers ½, 1, 2, 3, 4, 8, 12, or 16-bar presets) |
+| Section markers | 64 |
+| Chord events | 64 |
+| Arpeggiator octaves | 3 |
+| Clip loops | 32 |
 | Note duration | ≥ 1/16 step (0.0625) |
 | Names | ≤ 160 characters |
 | Tempo | 30–300 BPM |
@@ -103,3 +124,10 @@ New, Open, MIDI import and Quit all pass through an **unsaved-changes** dialog w
 ## MIDI files
 
 `.mid`/`.midi` files are handled separately from `.cadence` projects: **File → Import MIDI…** converts them into a new project via `import_midi` (`src/midi.rs`). See [export.md](export.md) for details and caveats.
+
+## Other files the app manages
+
+- **Packs** — user instrument packs live in `<data dir>/packs` (or `$CADENCE_PACKS_DIR`); see [instrument-packs.md](instrument-packs.md).
+- **SoundFonts** — `.sf2` files in the user font folder (`--list-instruments` prints it; `$CADENCE_FONTS_DIR` overrides).
+- **Audio store** — staged WAVs in `<data dir>/audio` as described above; not portable between installs.
+- `CADENCE_DATA_DIR` overrides the base app-data directory for recovery, packs and the audio store.
