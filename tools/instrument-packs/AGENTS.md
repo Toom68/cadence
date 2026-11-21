@@ -1,7 +1,8 @@
 # Making a new instrument pack — agent guide
 
 Turn "make an X pack" / "improve the 8-bit pack" into JSON + two CLI commands.
-No Rust edits, no rebuild, no samples.
+No Rust edits, no rebuild — sounds are pure JSON (synthesis fields, optional
+drum `kit`, optional small embedded PCM `sample`).
 
 ## Read only these three files
 
@@ -41,6 +42,10 @@ No Rust edits, no rebuild, no samples.
   preset then plays as a kit: note-on picks the piece with the nearest pitch
   (ties → lower). Array order is display order. See `packs/README.md` →
   "Drum kits" and the `kit`/`kitPiece`/`kitVoice` defs in `schema.json`.
+- **Modulation & samples:** `schema.json` also defines `pitch_envelope`,
+  `filter_envelope`, `filter_resonance` and `lfo` (the `psy-*` banks use
+  them), `hidden` (catalog-only), and `sample` (base64 16-bit mono PCM,
+  ≤2 MiB decoded — see `packs/README.md` → "Samples").
 
 ## Validate and install (built binary — never rebuild for packs)
 
@@ -52,11 +57,11 @@ cargo run --release -- --install-pack my-pack.json       # -> <data dir>/packs/m
 ```
 
 Or use `target/release/cadence` directly once built. The user then clicks
-**Reload Packs** in the app (or restarts) and adds instruments from the
-library — the bank chooser and search sit above the scrolling list. Songs
-embed the full preset, so they stay portable. Bundled examples: `8-bit/`
-plus the seven `psy-*/` banks (128 experimental presets, all with audition
-metadata).
+**Reload** in the app's library footer (or restarts) and adds instruments
+from the library — the bank chooser and search sit above the scrolling
+card list. Songs embed the full preset, so they stay portable. Bundled
+examples: `8-bit/` plus the seven `psy-*/` banks (128 experimental
+presets, all with audition metadata).
 
 ## Improving a bundled pack (e.g. "make the 8-bit pack better")
 

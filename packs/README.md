@@ -129,7 +129,7 @@ Thirteen packs ship compiled in: `8-bit/` (10 chiptune presets), seven
 plus `drum-kits/` (4 multi-voice kits), `guitar/` (12), `neon/` (16
 detailed electronic voices), `one-shots/` (12 FX) and `mallets/` (14
 struck idiophones and vintage keys plus a 12-piece mallet kit): 196
-presets, 202 sounds together with the six built-ins. The `psy-*` packs
+presets, 203 sounds together with the seven built-ins. The `psy-*` packs
 all set `audition_note`/`audition_duration` per preset so previews and
 new tracks open in a useful register.
 

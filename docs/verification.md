@@ -2,6 +2,28 @@
 
 What has actually been run and observed — and what hasn't. This file exists so claims elsewhere in the docs can be checked against evidence.
 
+## Polish program — November 22, 2026 (current tree)
+
+Since the 1.1.0 record below, a multi-worker release-polish program rebuilt the app shell (menus, transport bar, status bar with toasts, themes, arranger/editor split), the sidebar (instrument cards, bank chooser, collapsible sections, inspector), the arranger (four-strip ruler, markers, chord lane, automation lanes, audio lanes), the pattern editor (rename/overflow menu, chord-strip tabs, dedicated Keyboard tab, recording) and the mixer (live meters, dB faders, buses, clip LEDs). Each worker ran the standard gates on its own branch; UI evidence is screenshot-backed in the program's `shots/` folders (arranger, editor, sidebar, mixer, shell, design) plus a mixer performance log.
+
+Re-run on this branch's merged tree (`cargo fmt --all -- --check`, `cargo test --locked --all-targets --no-fail-fast`):
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo test --locked --all-targets --no-fail-fast` | **567 passed, 3 failed, 10 ignored** |
+| `cargo clippy --locked --all-targets -- -D warnings` | **1 error** — `clippy::assertions_on_constants` at `src/gui/transport.rs:1433` (`assert!(!MINIMAL.swing)` in a lib test; a Rust 1.100 lint against an already-committed assertion) |
+
+- All test binaries pass: main (4), cli (5), fonts (4, +2 ignored — need a real `.sf2`), midi_interop (2), packs_pipeline (5), persistence (13), psy_soundbank (6), recovery (1), render (6), stems (6).
+- **Three headless GUI unit tests fail on the merged code** (pre-existing integration fallout, not doc-related):
+  - `gui::editor::tests::chord_strip_row_toggles_and_is_melodic_only` — "chevron click closes it" (editor.rs:5283).
+  - `gui::shell::tests::editor_grid_keeps_room_at_common_sizes` — piano-roll grid is 250 px at 1360×860 vs. the ≥ 258 px the new-layout test expects (shell.rs:1556).
+  - `gui::tests::kit_drum_grid_has_one_row_per_piece_and_paints_piece_pitches` — a row click no longer paints the expected kit-piece pitch (tests.rs:1795).
+  These look like tests written against pre-polish UI semantics meeting the redesigned controls; they need a code owner, not a doc change.
+- **Packaging status is unchanged**: macOS bundles remain ad-hoc signed and Windows executables unsigned; no QA report yet shows a Windows run, so every "not run on Windows" statement in these docs still stands.
+
+## November 15, 2026 — release 1.1.0 (historical)
+
 ## Automated checks — all green
 
 Run on macOS (arm64) against Cadence 1.1.0 on November 15, 2026:

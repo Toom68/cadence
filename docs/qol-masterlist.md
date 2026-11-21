@@ -1,7 +1,9 @@
 # Cadence QoL masterlist
 
 Working list of quality-of-life features. Status: `[ ]` todo · `[~]` in progress · `[x]` done.
-All items below shipped in the overnight build (release verified, app relaunched).
+The original batch shipped in the overnight build; the release-polish program
+(shell, transport, sidebar, arranger, editor and mixer redesign) landed on top —
+wording below reflects the UI as it exists now.
 
 ## Clipboard / editing correctness
 
@@ -33,32 +35,50 @@ All items below shipped in the overnight build (release verified, app relaunched
 
 ## Sidebar / UI declutter
 
-- [x] Collapsible instrument library: slim disclosure header (▸/▾), collapsed shows "N instruments — click to expand"; session-persisted via egui temp data
-- [x] Whole-sidebar collapse: « button in the tab row shrinks the panel to a 30px rail with a » expand handle — returns real width to the arranger/editor (previously only the library text folded)
+- [x] Collapsible instrument library: slim **Library** disclosure header (▸/▾) that also shows the track count (`n / 32 tracks`); session-persisted via egui temp data
+- [x] Whole-sidebar collapse: « button in the tab row shrinks the panel to a 40px rail with a » expand handle — returns real width to the arranger/editor (previously only the library text folded)
 - [x] Fixed sidebar width ratchet: the tab row's « button overflowed the panel by a few px, which fed back into egui's stored panel width and made it grow ~4px/frame until the 380px cap — broke every geometry test; row width now reserves space for all three controls
-- [x] Quick-add "+ Track" on the Track tab: IN THIS SONG recents / BUILT-IN / PACKS groups → one-click `add_track`
+- [x] Full-width "**＋ Add track ▾**" on the Track tab (and the Track → Add Track menu): IN THIS SONG recents / BUILT-IN / PACKS / SOUNDFONT groups → one-click `add_track`
 
 ## Sounds / content
 
-- [x] New pack: mallets & keys — 14 presets (kalimba, handpan, marimba, xylophone, glockenspiel, celesta, music box, gamelan, tubular bells, rhodes, wurlitzer, clavinet, + 12-piece mallet kit); embedded; **196 presets / 202 sounds total**
+- [x] New pack: mallets & keys — 14 presets (kalimba, handpan, marimba, xylophone, glockenspiel, celesta, music box, gamelan, tubular bells, rhodes, wurlitzer, clavinet, + 12-piece mallet kit); embedded; **196 presets / 203 sounds total** (7 built-ins — the acoustic guitar joined the original six)
 
 ## Ops layer (pure functions, `src/gui/ops.rs`)
 
 - [x] `ChordSpec`, `diatonic_chords`, `chord_notes`, `chord_midi_pitches`, `chord_snaps`
 - [x] `stamp_chord` / `stamp_strum` / `strum_notes` / `StrumDirection`
-- [x] `humanize_notes` (seeded velocity+timing) / `scale_velocities` (clip gain) — ops ready, no UI wired yet (future: humanize button)
+- [x] `humanize_notes` (seeded velocity+timing) — wired: piano-roll **Humanize** button and **Edit → Humanize Notes**
+- [x] `scale_velocities` (clip gain) — wired: piano-roll **Velocity −10% / +10%** buttons
+
+## Release polish program (shipped)
+
+- [x] App shell: menu bar (File · Edit · Track · Transport · View · Help), status bar with transient toasts, theme system (Graphite / Midnight / Paper, persisted)
+- [x] Transport bar: song name, play/stop/record, position display (click swaps bars ↔ time), tempo drag/type + tap tempo, swing, master fader + stereo meters, undo/redo, dirty marker
+- [x] Arranger/editor split: draggable divider (double-click maximizes the arranger, drag again restores), corner collapse buttons, ⌘/Ctrl+Shift+↑/↓ maximize each panel; segmented Pattern Editor | Mixer | Keyboard tabs
+- [x] Sidebar redesign: instrument cards (color bar, description, badge, ghost preview, + add, drag to lanes), search + bank chooser + Reset, collapsible sticky sections, footer Import pack / Reload / folder, inspector sections TRACK · MIX · EFFECTS · PLAY · MANAGE
+- [x] Mixer v3: palette-derived strip colors, live per-track/bus/master meters with 1.2 s peak-hold and click-to-clear clip LEDs, dB faders + pan readouts, per-strip FX pedalboard, bus route selector, Compact mode + Clear peaks toolbar
+- [x] Shared wheel scheme: wheel scrolls, Shift+wheel horizontal, ⌘/Ctrl+wheel zooms at pointer, Alt+wheel row/lane heights, middle-drag pan — identical in arranger, piano roll and drum grid
+- [x] Arranger ruler: four strips (loop region, marker lane, bar numbers, chord lane) with drag-loop, double-click markers, seek scrub and key-aware chord spelling
+- [x] Pattern-editor header: combo rename (double-click), ⋯ menu (Rename / Clear notes / Delete pattern), Length ▾ (½–16 bars), Add to arrangement
+- [x] Recording: R arms record; keyboard/pad/computer-key notes are quantized to the Snap grid and written into the selected pattern (live + step modes, note-off on key release)
+- [x] Audio lanes: Import Audio File stages WAVs (≤48 MB) into the per-install audio store; clips drag/loop/fade like pattern clips
+- [x] SoundFont bank: `.sf2` files in the user font folder expose all 128 GM programs; missing fonts fall back to the preset sound
+- [x] Stems export: File → Export Stems… / `--render-stems` writes one WAV per audible track honoring mute/solo/bus gates
+- [x] Track automation: VOL/PAN breakpoint lanes under clips (header right-click → Show automation)
+- [x] MIDI recording + per-track live arpeggiator (PLAY section), glide/legato, Edit → Arpeggiator… stamped runs
+- [x] Bundled fonts: Inter 4.1 (OFL) + DejaVu Sans 2.37 (Vera license) with license texts; About dialog credits
 
 ## Follow-ups noted (not blocking)
 
-- [ ] Humanize/clip-gain ops exist but have no UI yet — add buttons (e.g. in chord strip menu or Edit menu) if wanted
 - [ ] Tap tempo creates one undo step per tap burst — could coalesce in history if spammy
-- [ ] Status-bar messages still subtle — consider a more visible confirmation (toast/flash) if missed feedback continues
-- [ ] Keyboard audition is fixed-length (~0.45s), no hold-to-sustain — engine note-off would enable it
 - [ ] Selection mutual-exclusion: editor note selection still leaves `sel.clips` populated (copy/cut now handle it via focus; a deeper cleanup could clear stale selections at selection time)
+- [ ] `SongKey::name()` still spells some roots with sharps in pickers; the arranger's chord lane is already key-aware — picker spellings are a code follow-up
+- [ ] Graphite scrollbar contrast and Paper's search-field appearance flagged in the polish program; cosmetic, deferred
 
 ## Explicitly out of scope (for now)
 
 - System-pasteboard interop (OS clipboard) — internal clipboard only
-- Audio-clip tracks / recording — largest scope, separate project
+- Audio *recording* (takes) — WAV clip import/audio lanes and MIDI recording shipped; live capture remains a separate project
 - VST/plugin hosting — not realistic offline
 - Swing/groove timing — changes render pipeline; revisit deliberately
