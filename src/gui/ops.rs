@@ -999,6 +999,12 @@ pub fn chord_event_label(ev: &ChordEvent) -> String {
     ev.label()
 }
 
+/// The key's name spelled the way its chords are: "Bb minor" rather than
+/// "A# minor", "F# major". Display only — the song stores a pitch class.
+pub fn key_label(key: SongKey) -> String {
+    format!("{} {}", key.spell(key.root), key.mode.name())
+}
+
 /// The chord a plain click on the strip writes: the key's tonic (I in a
 /// major key, i in a minor one) — the first of [`diatonic_chords`].
 pub fn tonic_chord_spec(key: SongKey) -> ChordSpec {
@@ -2023,6 +2029,12 @@ impl ChordSpec {
     /// Chord symbol like "C", "Am7" or "F#dim" — see [`ChordQuality::symbol`].
     pub fn symbol(self) -> String {
         self.quality.symbol(self.root)
+    }
+
+    /// The symbol spelled for `key` ("Ab" in C minor, "G#" in E major) —
+    /// what the UI shows. Display only.
+    pub fn symbol_in(self, key: SongKey) -> String {
+        self.quality.symbol_in(self.root, key)
     }
 
     /// The chord's pitch classes as a sorted set: intervals are taken mod 12,
@@ -3525,6 +3537,25 @@ mod tests {
     }
 
     #[test]
+    fn key_labels_spell_flat_keys_with_flats() {
+        use crate::model::KeyMode::{Major, Minor};
+        for (root, mode, label) in [
+            (0, Major, "C major"),
+            (10, Minor, "Bb minor"),
+            (10, Major, "Bb major"),
+            (1, Major, "Db major"),
+            (1, Minor, "C# minor"),
+            (6, Major, "F# major"),
+            (8, Minor, "G# minor"),
+            (8, Major, "Ab major"),
+            (3, Minor, "D# minor"),
+            (9, Minor, "A minor"),
+        ] {
+            assert_eq!(key_label(SongKey::new(root, mode)), label);
+        }
+    }
+
+    #[test]
     fn formatting_helpers() {
         assert_eq!(format_position(0.0), "  1.1.1");
         assert_eq!(format_position(21.5), "  2.2.2");
@@ -4827,6 +4858,8 @@ mod tests {
         assert_eq!(tonic_chord_spec(p.key).symbol(), "Am");
         p.key = SongKey::new(3, crate::model::KeyMode::Major);
         assert_eq!(tonic_chord_spec(p.key).symbol(), "D#");
+        // …and is shown spelled for the key.
+        assert_eq!(tonic_chord_spec(p.key).symbol_in(p.key), "Eb");
         p.validate().unwrap();
 
         // Delete removes exactly that event; unknown ids report false.

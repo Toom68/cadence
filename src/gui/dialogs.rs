@@ -19,9 +19,7 @@ use super::ops::{self, ArpDirection, ArpSpec};
 use super::theme::{self, Palette};
 use super::transport::paint_brand_mark;
 use super::{CadenceApp, StatusKind};
-use crate::model::{
-    note_name, ChordQuality, KeyMode, Project, SongKey, MAX_NAME_CHARS, NOTE_NAMES,
-};
+use crate::model::{note_name, ChordQuality, KeyMode, Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
 
 /// The currently open modal dialog, if any.
@@ -135,7 +133,8 @@ fn degree_label(key: SongKey, degree: Option<usize>) -> String {
         Some(d) => format!(
             "{} — {}",
             key.degree_numeral(d),
-            key.degree_chord_quality(d).symbol(key.degree_root(d))
+            key.degree_chord_quality(d)
+                .symbol_in(key.degree_root(d), key)
         ),
         None => "Custom…".to_owned(),
     }
@@ -153,11 +152,14 @@ fn key_picker(ui: &mut Ui, pal: Palette, key: &mut SongKey) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (pc, name) in NOTE_NAMES.iter().enumerate() {
-            let on = key.root as usize == pc;
+        for pc in 0..12u8 {
+            let on = key.root == pc;
+            // Each root spelled the way that key is written in this mode
+            // (Bb major, C# minor).
+            let name = SongKey::new(pc, key.mode).spell(pc);
             let tip = format!("Key of {name}");
             if theme::chip(ui, pal, name, on, pal.accent, vec2(30.0, 24.0), &tip).clicked() && !on {
-                key.root = pc as u8;
+                key.root = pc;
                 changed = true;
             }
         }
@@ -446,7 +448,7 @@ impl CadenceApp {
                 pal,
                 &format!(
                     "{} — the Arpeggiator offers this key's chords. You can change it later.",
-                    draft.key.name()
+                    ops::key_label(draft.key)
                 ),
             );
             button_row(ui, |ui| {
@@ -530,7 +532,7 @@ impl CadenceApp {
                 StatusKind::Success,
                 format!(
                     "Arpeggio: {} · {} · {} oct · {} note{} in \"{pattern_name}\".",
-                    spec.quality.symbol(spec.chord_root),
+                    spec.quality.symbol_in(spec.chord_root, self.project.key),
                     spec.direction.label(),
                     spec.octaves,
                     written,
@@ -545,7 +547,10 @@ impl CadenceApp {
     pub(super) fn set_song_key(&mut self, key: SongKey) {
         let key = SongKey::new(key.root, key.mode);
         if self.edit("Change key", None, |p| p.key = key) {
-            self.set_status(StatusKind::Info, format!("Song key: {}.", key.name()));
+            self.set_status(
+                StatusKind::Info,
+                format!("Song key: {}.", ops::key_label(key)),
+            );
         }
     }
 
@@ -609,16 +614,14 @@ impl CadenceApp {
                     ui.end_row();
                     if draft.degree.is_none() {
                         form_label(ui, pal, "Root");
-                        theme::combo(
-                            "arp-root",
-                            NOTE_NAMES[draft.custom_root as usize % 12],
-                            COMBO_W,
-                        )
-                        .show_ui(ui, |ui| {
-                            for (pc, name) in NOTE_NAMES.iter().enumerate() {
-                                ui.selectable_value(&mut draft.custom_root, pc as u8, *name);
-                            }
-                        });
+                        theme::combo("arp-root", key.spell(draft.custom_root), COMBO_W).show_ui(
+                            ui,
+                            |ui| {
+                                for pc in 0..12u8 {
+                                    ui.selectable_value(&mut draft.custom_root, pc, key.spell(pc));
+                                }
+                            },
+                        );
                         ui.end_row();
                     }
                     form_label(ui, pal, "Type");
@@ -704,7 +707,7 @@ impl CadenceApp {
                 pal,
                 &format!(
                     "{}: {}",
-                    spec.quality.symbol(spec.chord_root),
+                    spec.quality.symbol_in(spec.chord_root, key),
                     tones.join(" ")
                 ),
             );

@@ -141,7 +141,7 @@ impl CadenceApp {
         self.replace_project(project, None, true);
         self.set_status(
             StatusKind::Success,
-            format!("Started a new song in {}.", key.name()),
+            format!("Started a new song in {}.", ops::key_label(key)),
         );
     }
 

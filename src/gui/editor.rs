@@ -3113,10 +3113,10 @@ impl CadenceApp {
             tones = ops::with_bass(&tones, pc);
         }
         let pitches = ops::chord_midi_pitches(&tones, home);
-        let mut symbol = spec.symbol();
+        let mut symbol = spec.symbol_in(key);
         if let Some(&low) = pitches.first() {
             if low % 12 != spec.root {
-                symbol = format!("{symbol}/{}", NOTE_NAMES[low as usize % 12]);
+                symbol = format!("{symbol}/{}", key.spell(low));
             }
         }
         (!pitches.is_empty()).then_some((pitches, symbol))
@@ -3339,7 +3339,7 @@ impl CadenceApp {
         // ----- disclosure row: chevron, "Chords" and the key; open, the same
         // row carries the palette tabs and the voicing options (one toolbar
         // row instead of two, so the piano roll keeps its room).
-        let key_name = key.name();
+        let key_name = ops::key_label(key);
         let title_font = theme::strong_font(ui, theme::TEXT_BODY);
         let key_font = theme::body_font(12.0);
         let title_w = text_width(ui, "Chords", title_font.clone());
@@ -3501,7 +3501,7 @@ impl CadenceApp {
                             .on_hover_text(format!(
                                 "Slash bass on {} ({})",
                                 key.degree_numeral(degree),
-                                NOTE_NAMES[key.degree_root(degree) as usize % 12],
+                                key.spell(key.degree_root(degree)),
                             ));
                         }
                     })
@@ -3569,7 +3569,7 @@ impl CadenceApp {
                             for degree in 0..7 {
                                 let q = quality.unwrap_or_else(|| key.degree_chord_quality(degree));
                                 let spec = ops::ChordSpec::new(key.degree_root(degree), q);
-                                let symbol = spec.symbol();
+                                let symbol = spec.symbol_in(key);
                                 let resp = chord_chip(
                                     ui,
                                     pal,
@@ -3613,7 +3613,7 @@ impl CadenceApp {
                             for preset in &ops::PROGRESSIONS {
                                 let symbols = ops::progression_specs(key, preset, quality)
                                     .iter()
-                                    .map(|s| s.symbol())
+                                    .map(|s| s.symbol_in(key))
                                     .collect::<Vec<_>>()
                                     .join(" – ");
                                 let resp =
