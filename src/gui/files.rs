@@ -12,18 +12,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use egui::Context;
 
 use super::dialogs::{Dialog, NewSongDraft};
 use super::ops;
 use super::{CadenceApp, StatusKind};
 use crate::model::{Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
-
-/// How often the user pack folder is re-scanned for dropped-in packs.
-const PACK_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The open song file plus the history state it was last saved at.
 ///
@@ -783,45 +777,6 @@ impl CadenceApp {
                 self.set_status(StatusKind::Error, format!("Could not install pack: {err}"))
             }
         }
-    }
-
-    /// Re-reads the user pack folder about every [`PACK_SCAN_INTERVAL`] so
-    /// packs dropped into it appear without pressing Reload. Driven from
-    /// [`CadenceApp::dialogs`]; the timestamp lives in egui temp data so no
-    /// extra app field is needed.
-    pub(super) fn poll_pack_dir(&mut self, ctx: &Context) {
-        if !self.io_enabled {
-            return;
-        }
-        let id = egui::Id::new("cadence-pack-dir-scan");
-        let now = Instant::now();
-        let last = ctx.data_mut(|d| d.get_temp::<Instant>(id));
-        if last.is_some_and(|t| now.saturating_duration_since(t) < PACK_SCAN_INTERVAL) {
-            return;
-        }
-        ctx.data_mut(|d| d.insert_temp(id, now));
-        ctx.request_repaint_after(PACK_SCAN_INTERVAL);
-        self.reload_packs(false);
-    }
-
-    /// Re-reads the user font folder on the same cadence as packs so `.sf2`
-    /// files dropped into it appear without a restart. Parsing only happens
-    /// inside [`CadenceApp::reload_fonts`] when the folder actually changed.
-    /// Driven from [`CadenceApp::dialogs`]; the timestamp lives in egui temp
-    /// data like the pack scan.
-    pub(super) fn poll_font_dir(&mut self, ctx: &Context) {
-        if !self.io_enabled {
-            return;
-        }
-        let id = egui::Id::new("cadence-font-dir-scan");
-        let now = Instant::now();
-        let last = ctx.data_mut(|d| d.get_temp::<Instant>(id));
-        if last.is_some_and(|t| now.saturating_duration_since(t) < PACK_SCAN_INTERVAL) {
-            return;
-        }
-        ctx.data_mut(|d| d.insert_temp(id, now));
-        ctx.request_repaint_after(PACK_SCAN_INTERVAL);
-        self.reload_fonts();
     }
 
     // ----- helpers ---------------------------------------------------------

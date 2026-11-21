@@ -54,6 +54,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -1153,11 +1154,18 @@ pub fn load_catalog_from(dir: &Path) -> PackCatalog {
     let mut catalog = PackCatalog::default();
     let mut origins: HashMap<String, String> = HashMap::new();
 
-    // Embedded packs ship inside the binary. Parse defensively: a broken
-    // embedded pack is reported but never fatal.
-    let mut embedded: Vec<(String, InstrumentPack)> = Vec::new();
-    for (label, json) in EMBEDDED_PACKS {
-        match parse_pack(json) {
+    // The embedded bytes never change during the process. User files still
+    // reload normally, including valid overrides of these built-ins.
+    static PARSED: OnceLock<Vec<Result<InstrumentPack, String>>> = OnceLock::new();
+    let parsed = PARSED.get_or_init(|| {
+        EMBEDDED_PACKS
+            .iter()
+            .map(|(_, json)| parse_pack(json))
+            .collect()
+    });
+    let mut embedded = Vec::new();
+    for ((label, _), result) in EMBEDDED_PACKS.iter().zip(parsed) {
+        match result {
             Ok(pack) => embedded.push((format!("embedded pack '{label}'"), pack)),
             Err(err) => catalog
                 .errors

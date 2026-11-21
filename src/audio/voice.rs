@@ -3,7 +3,7 @@
 //! allocates.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use super::dsp::{
     advance, flush, poly_blep, saw, sine, soft_clip, square, t60_coef, time_coef, OnePole, Rng,
@@ -59,11 +59,9 @@ pub struct PresetParams {
     pub hold: u32,
     pub gain: f32,
     pub mono: bool,
-    /// Content key into [`SAMPLE_BANK`] for the preset's embedded clip
-    /// (`sample` block); [`NO_SAMPLE_KEY`] = no clip, so the voice runs the
-    /// ordinary oscillator path. Only the key travels on a note-on — the
-    /// frames stay shared in the bank.
-    pub sample_key: u64,
+    /// Published slot for the embedded clip, or `NO_SAMPLE_SLOT` for the
+    /// ordinary oscillator path. Only the slot travels on a note-on.
+    pub sample_slot: usize,
     /// The clip's declared sample rate in Hz (0 when there is no clip).
     pub sample_rate: f32,
     /// MIDI note that plays the clip at unity speed (0..=127).
@@ -110,7 +108,7 @@ impl PresetParams {
         hold: 1,
         gain: 0.9,
         mono: false,
-        sample_key: NO_SAMPLE_KEY,
+        sample_slot: NO_SAMPLE_SLOT,
         sample_rate: 0.0,
         sample_root: 60,
         sample_loop: false,
@@ -188,16 +186,12 @@ impl PresetParams {
             gain: finite(p.gain, 0.9).clamp(0.0, 1.0),
             mono: p.monophonic,
             // Register the clip off the audio thread (decoding allocates);
-            // a missing or undecodable clip quietly keeps the key at
-            // NO_SAMPLE_KEY so the voice plays its oscillator fallback.
-            sample_key: p.sample.as_ref().map_or(NO_SAMPLE_KEY, |spec| {
-                let key = spec.key();
-                if key != NO_SAMPLE_KEY && ensure_sample(key, spec) {
-                    key
-                } else {
-                    NO_SAMPLE_KEY
-                }
-            }),
+            // a missing or undecodable clip uses the oscillator fallback.
+            sample_slot: p
+                .sample
+                .as_ref()
+                .and_then(register_sample)
+                .unwrap_or(NO_SAMPLE_SLOT),
             sample_rate: p.sample.as_ref().map_or(0.0, |s| s.sample_rate as f32),
             sample_root: p.sample.as_ref().map_or(60, |s| s.root_pitch.min(127)),
             sample_loop: p.sample.as_ref().is_some_and(|s| s.looped),
@@ -292,71 +286,55 @@ pub struct FontKey {
     pub program: u8,
 }
 
-/// `PresetParams::sample_key` value meaning "no clip": the preset runs its
-/// ordinary oscillator path. Also the result when a clip fails to register —
-/// a hand-built key that misses the bank can never panic.
-pub const NO_SAMPLE_KEY: u64 = 0;
-
-/// Decoded clips shared by every audio voice. `Sound`/`PresetParams` stay
-/// `Copy` for the audio thread, so only a content-addressed key travels on a
-/// note-on; the frames live here, one `Arc<Vec<f32>>` per unique clip. This
-/// plays the same registry role the font bank does for `Sound::Font`, and is
-/// global for the same reason: the renderer owns no per-song sample state.
-///
-/// Append-only for the process lifetime: entries are never evicted, so a
-/// `PresetParams` that found its clip keeps working across song loads, and
-/// dropping a voice's `Arc` never frees the buffer on the audio thread.
-/// Bounded by [`MAX_SAMPLE_BANK_ENTRIES`].
-static SAMPLE_BANK: OnceLock<Mutex<HashMap<u64, Arc<Vec<f32>>>>> = OnceLock::new();
-
-/// Distinct clips the bank holds at most; past this, new registrations are
-/// dropped and those presets fall back to their oscillator path. Each clip is
-/// bounded by `packs::MAX_SAMPLE_BYTES` decoded.
+const NO_SAMPLE_SLOT: usize = usize::MAX;
 const MAX_SAMPLE_BANK_ENTRIES: usize = 512;
 
-fn bank() -> std::sync::MutexGuard<'static, HashMap<u64, Arc<Vec<f32>>>> {
+// Published slots never move or expire. Registering deduplicates clips by
+// content off the audio thread; note-on needs neither a lock nor a refcount.
+static SAMPLE_BANK: OnceLock<Mutex<HashMap<u64, usize>>> = OnceLock::new();
+static SAMPLE_FRAMES: [OnceLock<Box<[f32]>>; MAX_SAMPLE_BANK_ENTRIES] =
+    [const { OnceLock::new() }; MAX_SAMPLE_BANK_ENTRIES];
+
+fn bank() -> std::sync::MutexGuard<'static, HashMap<u64, usize>> {
     SAMPLE_BANK
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The clip for `key`, or `None` when it isn't registered. This is the note-on
-/// lookup: a brief lock, a hash hit and an `Arc` refcount bump — no allocation.
-fn sample_clip(key: u64) -> Option<Arc<Vec<f32>>> {
-    if key == NO_SAMPLE_KEY {
-        return None;
-    }
-    bank().get(&key).cloned()
+fn sample_clip(slot: usize) -> Option<&'static [f32]> {
+    SAMPLE_FRAMES.get(slot)?.get().map(Box::as_ref)
 }
 
-/// Registers `spec`'s decoded clip under `key` when absent — decodes only on a
-/// miss, so rebuilding a `Sound` graph for the same song is a `contains_key`.
-/// Called while `PresetParams` is built (GUI/export thread; allocation is
-/// allowed there). Returns whether the clip is usable; `false` means "run the
-/// oscillator path instead".
-fn ensure_sample(key: u64, spec: &SampleSpec) -> bool {
+fn register_sample(spec: &SampleSpec) -> Option<usize> {
+    let key = spec.key();
+    if key == 0 {
+        return None;
+    }
     {
         let bank = bank();
-        if bank.contains_key(&key) {
-            return true;
+        if let Some(&slot) = bank.get(&key) {
+            return Some(slot);
         }
         if bank.len() >= MAX_SAMPLE_BANK_ENTRIES {
-            return false;
+            return None;
         }
     }
-    let Ok(frames) = spec.decode() else {
-        return false;
-    };
+    let frames = spec.decode().ok()?;
     if frames.is_empty() {
-        return false;
+        return None;
     }
     let mut bank = bank();
-    if bank.len() >= MAX_SAMPLE_BANK_ENTRIES && !bank.contains_key(&key) {
-        return false;
+    if let Some(&slot) = bank.get(&key) {
+        return Some(slot);
     }
-    bank.insert(key, Arc::new(frames));
-    true
+    let slot = bank.len();
+    SAMPLE_FRAMES
+        .get(slot)?
+        .set(frames.into_boxed_slice())
+        .ok()?;
+    bank.insert(key, slot);
+    Some(slot)
 }
 
 /// What a track sounds like: one of the six built-in algorithms, a pack
@@ -370,7 +348,7 @@ fn ensure_sample(key: u64, spec: &SampleSpec) -> bool {
 pub enum Sound {
     Builtin(Instrument),
     /// A data-driven preset — oscillator synthesis, or PCM playback via
-    /// `PresetParams::sample_key` when the preset carries a `sample` clip.
+    /// `PresetParams::sample_slot` when the preset carries a `sample` clip.
     Preset(PresetParams),
     /// A data-driven drum kit ([`crate::packs::KitSpec`]): one-shot voices
     /// picked by pitch at note-on.
@@ -612,9 +590,8 @@ pub struct Voice {
     hold_left: u32,
     hold_value: f32,
     noise_value: [f32; MAX_PRESET_OSCILLATORS],
-    /// Decoded clip for `Kind::Sample`, looked up from [`SAMPLE_BANK`] at
-    /// note-on (`None` → the voice plays nothing and ends).
-    sample_buf: Option<Arc<Vec<f32>>>,
+    /// Decoded clip for `Kind::Sample`, resolved from its published slot.
+    sample_buf: Option<&'static [f32]>,
     /// Read position in clip frames (fractional; linear interp uses the rest).
     sample_pos: f64,
     /// Clip frames advanced per output Hz: `clip_rate / pitch_hz(root)`.
@@ -1139,14 +1116,12 @@ impl Voice {
         // root pitch set the resample step so `self.freq` — the played note —
         // yields `2^((pitch - root)/12)` times the declared rate. The
         // oscillator path stays armed as the fallback for a bank miss.
-        if p.sample_key != NO_SAMPLE_KEY {
-            if let Some(clip) = sample_clip(p.sample_key) {
-                self.kind = Kind::Sample;
-                self.sample_buf = Some(clip);
-                self.sample_pos = 0.0;
-                let rate = finite(p.sample_rate, 44_100.0).clamp(4_000.0, 384_000.0);
-                self.sample_ratio = rate / pitch_hz(f32::from(p.sample_root.min(127))).max(1.0);
-            }
+        if let Some(clip) = sample_clip(p.sample_slot) {
+            self.kind = Kind::Sample;
+            self.sample_buf = Some(clip);
+            self.sample_pos = 0.0;
+            let rate = finite(p.sample_rate, 44_100.0).clamp(4_000.0, 384_000.0);
+            self.sample_ratio = rate / pitch_hz(f32::from(p.sample_root.min(127))).max(1.0);
         }
     }
 
@@ -1522,7 +1497,12 @@ impl Voice {
 
         let lfo = self.next_preset_lfo(p);
         let pitch = (self.pitch_env + lfo * finite(p.lfo_pitch, 0.0)).clamp(-60.0, 60.0);
-        let freq = (self.freq * 2f32.powf(pitch / 12.0)).clamp(1.0, self.sr * 0.45);
+        let ratio = if pitch == 0.0 {
+            1.0
+        } else {
+            2f32.powf(pitch / 12.0)
+        };
+        let freq = (self.freq * ratio).clamp(1.0, self.sr * 0.45);
         self.pitch_env *= self.pitch_env_coef;
 
         if self.ctl == 0 {
@@ -1637,12 +1617,17 @@ impl Voice {
         };
         self.pitch_env *= self.pitch_env_coef;
         let pitch = (self.pitch_env + lfo * finite(p.lfo_pitch, 0.0)).clamp(-60.0, 60.0);
-        let freq = (self.freq * 2f32.powf(pitch / 12.0)).clamp(1.0, self.sr * 0.45);
+        let ratio = if pitch == 0.0 {
+            1.0
+        } else {
+            2f32.powf(pitch / 12.0)
+        };
+        let freq = (self.freq * ratio).clamp(1.0, self.sr * 0.45);
         // Frames of clip per output sample: played rate = freq * ratio Hz.
         // +512× per output sample is far past any usable transposition.
         let inc = (freq * self.sample_ratio * self.inv_sr).clamp(0.0, 512.0) as f64;
 
-        let raw = match self.sample_buf.as_ref() {
+        let raw = match self.sample_buf {
             Some(buf) if !buf.is_empty() => {
                 let len = buf.len();
                 let pos = self.sample_pos;
@@ -2629,23 +2614,21 @@ mod tests {
     #[test]
     fn sample_preset_params_and_bank_registration() {
         let p = PresetParams::from_preset(&sample_preset(false));
-        assert_ne!(p.sample_key, NO_SAMPLE_KEY);
+        assert_ne!(p.sample_slot, NO_SAMPLE_SLOT);
         assert_eq!(p.sample_rate, 22_050.0);
         assert_eq!(p.sample_root, 60);
         assert!(!p.sample_loop);
         // Rebuilding the params for the same clip is a bank hit, not a re-decode.
-        let before = bank().len();
         let p2 = PresetParams::from_preset(&sample_preset(false));
-        assert_eq!(p2.sample_key, p.sample_key);
-        assert_eq!(bank().len(), before, "same clip registered twice");
+        assert_eq!(p2.sample_slot, p.sample_slot, "same clip registered twice");
         // The clip itself is shared, decoded, bounded.
-        let clip = sample_clip(p.sample_key).unwrap();
+        let clip = sample_clip(p.sample_slot).unwrap();
         assert_eq!(clip.len(), 22_050 / 4);
         assert!(clip.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
         // A preset without a clip stays key-less.
         assert_eq!(
-            PresetParams::from_preset(&chip_preset()).sample_key,
-            NO_SAMPLE_KEY
+            PresetParams::from_preset(&chip_preset()).sample_slot,
+            NO_SAMPLE_SLOT
         );
         // A hand-built key that misses the bank resolves to None, not a panic.
         assert!(sample_clip(0xDEAD_BEEF).is_none());
@@ -2702,7 +2685,7 @@ mod tests {
         // hand-built key that misses the bank) keeps the armed oscillator
         // path — bounded, finite audio, never a panic.
         let mut params = PresetParams::from_preset(&sample_preset(false));
-        params.sample_key = 0xDEAD_BEEF;
+        params.sample_slot = 0xDEAD_BEEF;
         let x = render(Sound::Preset(params), 60, 0.4, 0.3);
         assert!(x.iter().all(|s| s.is_finite() && s.abs() < 1.5));
         // And a clip-free preset ignores the sample fields entirely.

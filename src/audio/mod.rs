@@ -17,6 +17,7 @@ mod dsp;
 mod engine;
 mod export;
 mod font;
+mod meter;
 mod renderer;
 mod song;
 mod voice;
@@ -26,4 +27,5 @@ pub use export::{
     export_stems, export_wav, render_project, stem_skip_reason, RenderedAudio, EXPORT_SAMPLE_RATE,
     MAX_TAIL_SECONDS,
 };
+pub use meter::{MixerPeaks, TrackPeak};
 pub use renderer::MAX_VOICES;

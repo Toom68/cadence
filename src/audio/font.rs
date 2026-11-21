@@ -8,10 +8,8 @@
 //!
 //! Real-time notes: `rustysynth` preallocates its voice pool inside
 //! `Synthesizer::new`, so `note_on`/`note_off`/`render` do not allocate.
-//! Synthesizers themselves are created lazily on the audio thread the first
-//! time a font track plays (a bounded, one-time cost per track/font, like a
-//! `Voice::set_sample_rate` reallocation); everything else — note gates,
-//! program changes, mixing — allocates nothing.
+//! The live engine prepares synths before handing them to the callback;
+//! offline rendering can prepare them lazily at note-on.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -21,7 +19,7 @@ use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 use super::renderer::{MAX_BLOCK, PREVIEW_STRIP, STRIPS};
 use super::song::TrackParams;
-use super::voice::FontKey;
+use super::voice::{FontKey, Sound};
 use crate::font::FontLibrary;
 
 /// MIDI channel every font synth uses. Channel 9 is GM percussion; melodic
@@ -32,8 +30,8 @@ const FONT_CHANNEL: i32 = 0;
 const FONT_MASTER_VOLUME: f32 = 0.9;
 /// rustysynth polyphony per synth instance.
 const FONT_POLYPHONY: usize = 64;
-/// Initial capacity of the held-note list (notes are `Copy`, gate-scheduled).
-const NOTE_CAPACITY: usize = 32;
+/// Same-pitch retriggers replace the old gate; only 128 pitches can be held.
+const NOTE_CAPACITY: usize = 128;
 
 /// One held font note awaiting its gate end. Mirrors `Voice::gate`: the count
 /// decrements per rendered sample and `note_off` fires when it reaches zero,
@@ -112,11 +110,21 @@ impl FontSynth {
                 Ok(fresh) => *self = fresh,
                 Err(_) => return false,
             }
-        } else if self.program != program {
+        } else {
+            self.set_program(program);
+        }
+        true
+    }
+
+    fn matches(&self, key: u64, font: &Arc<SoundFont>) -> bool {
+        self.font_key == key && Arc::ptr_eq(&self.font, font)
+    }
+
+    fn set_program(&mut self, program: u8) {
+        if self.program != program {
             select_program(&mut self.synth, program);
             self.program = program;
         }
-        true
     }
 
     /// Starts a note. A same-pitch retrigger releases the held entry first —
@@ -219,6 +227,7 @@ fn select_program(synth: &mut Synthesizer, program: u8) {
 pub(crate) struct FontBank {
     library: Arc<FontLibrary>,
     sample_rate: f32,
+    prepared: bool,
     /// Song-track synths keyed by `TrackParams::id`.
     synths: HashMap<u64, Box<FontSynth>>,
     /// Synth for the editor preview strip.
@@ -230,6 +239,7 @@ impl FontBank {
         FontBank {
             library,
             sample_rate,
+            prepared: false,
             synths: HashMap::new(),
             preview: None,
         }
@@ -237,6 +247,61 @@ impl FontBank {
 
     pub(crate) fn library(&self) -> &Arc<FontLibrary> {
         &self.library
+    }
+
+    pub(crate) fn is_prepared(&self) -> bool {
+        self.prepared
+    }
+
+    /// Constructed on the caller/stream owner's thread, never by a callback.
+    pub(crate) fn prepare(
+        sample_rate: f32,
+        library: Arc<FontLibrary>,
+        bindings: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Self {
+        let mut bank = Self::new(sample_rate, library);
+        bank.prepared = true;
+        for (id, key) in bindings {
+            if let Some(synth) = Self::prepare_synth(&bank.library, sample_rate, key) {
+                bank.synths.insert(id, synth);
+            }
+        }
+        bank
+    }
+
+    pub(crate) fn prepare_synth(
+        library: &FontLibrary,
+        sample_rate: f32,
+        key: u64,
+    ) -> Option<Box<FontSynth>> {
+        FontSynth::new(library.get(key)?, key, sample_rate, 0)
+            .ok()
+            .map(Box::new)
+    }
+
+    pub(crate) fn track_bindings(tracks: &[TrackParams]) -> impl Iterator<Item = (u64, u64)> + '_ {
+        tracks.iter().filter_map(|track| match track.sound {
+            Sound::Font(key) => Some((track.id, key.font_key)),
+            _ => None,
+        })
+    }
+
+    /// Keep the live instances (and their tails) when a track still uses the
+    /// same file. All unused instances go back to the caller for retirement.
+    pub(crate) fn swap_prepared(&mut self, mut bank: Self) -> Self {
+        for (id, synth) in &mut bank.synths {
+            if let Some(old) = self.synths.get_mut(id) {
+                if old.matches(synth.font_key, &synth.font) {
+                    std::mem::swap(old, synth);
+                }
+            }
+        }
+        bank.preview = self.preview.take();
+        std::mem::replace(self, bank)
+    }
+
+    pub(crate) fn swap_preview(&mut self, synth: Box<FontSynth>) -> Option<Box<FontSynth>> {
+        self.preview.replace(synth)
     }
 
     /// Swaps the font catalog. Existing synths keep their `Arc<SoundFont>`
@@ -260,6 +325,22 @@ impl FontBank {
         gate: u64,
         from_song: bool,
     ) -> bool {
+        if self.prepared {
+            let Some(font) = self.library.get(key.font_key) else {
+                return false;
+            };
+            let slot = if preview {
+                self.preview.as_mut()
+            } else {
+                self.synths.get_mut(&track_id)
+            };
+            let Some(synth) = slot.filter(|s| s.matches(key.font_key, font)) else {
+                return false;
+            };
+            synth.set_program(key.program);
+            synth.note_on(pitch, velocity, gate, from_song);
+            return true;
+        }
         let Some(font) = self.library.get(key.font_key).cloned() else {
             return false;
         };
@@ -371,8 +452,10 @@ impl FontBank {
     /// the font counterpart of the voice cleanup in `Renderer::load`. Id-keyed
     /// synths need no remap when tracks are reordered.
     pub(crate) fn retain_tracks(&mut self, tracks: &[TrackParams]) {
-        self.synths
-            .retain(|id, _| tracks.iter().any(|t| t.id == *id));
+        if !self.prepared {
+            self.synths
+                .retain(|id, _| tracks.iter().any(|t| t.id == *id));
+        }
     }
 
     /// Whether the preview-strip synth may still be producing audio — used by

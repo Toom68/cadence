@@ -254,8 +254,11 @@ impl SongData {
                 track: e.track_index,
             })
             .collect();
-        // Swing is monotonic so the order is preserved; sort anyway to be robust.
-        events.sort_by(|a, b| a.clock.total_cmp(&b.clock));
+        // Flattened events are already sorted and swing preserves that order
+        // on valid projects. Avoid scratch allocation for the usual case.
+        if !events.is_sorted_by(|a, b| a.clock.total_cmp(&b.clock).is_le()) {
+            events.sort_by(|a, b| a.clock.total_cmp(&b.clock));
+        }
         // Imported-WAV clips: resolve each staged file name to decoded audio
         // (deduped — several clips may share one file), skipping anything
         // missing or unreadable so a lost file can never break playback.

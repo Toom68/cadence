@@ -7,6 +7,9 @@
 //! no audio device, no native dialogs, no recovery/autosave writes, and the
 //! pack poller stays off, so tests never touch the real user data dir.
 
+#[path = "../../examples/support/perf_ui.rs"]
+mod perf_ui;
+
 use std::collections::BTreeSet;
 
 use eframe::Storage as _;

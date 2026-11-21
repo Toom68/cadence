@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -407,8 +408,9 @@ fn load_font_file(path: &Path) -> Result<(String, Arc<SoundFont>), String> {
             MAX_FONT_BYTES / (1024 * 1024)
         ));
     }
-    let mut file = File::open(path).map_err(|e| format!("could not open: {e}"))?;
-    let font = SoundFont::new(&mut file).map_err(|e| format!("not a readable SoundFont: {e}"))?;
+    let file = File::open(path).map_err(|e| format!("could not open: {e}"))?;
+    let font = SoundFont::new(&mut BufReader::new(file))
+        .map_err(|e| format!("not a readable SoundFont: {e}"))?;
     let name = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
