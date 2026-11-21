@@ -719,6 +719,37 @@ impl Drop for AudioEngine {
 }
 
 #[cfg(test)]
+impl AudioEngine {
+    pub(crate) fn for_frame_benchmark() -> (Self, impl Fn(f64, bool)) {
+        let (commands, rx) = bounded(COMMAND_CAPACITY);
+        let (garbage_tx, garbage) = bounded(GARBAGE_CAPACITY);
+        let (control, control_rx) = bounded(16);
+        let shared = Arc::new(Shared::default());
+        shared.sample_rate.store(48_000, Ordering::Relaxed);
+        shared.connected.store(true, Ordering::Relaxed);
+        let engine = Self {
+            commands,
+            garbage,
+            preparation: Arc::new(Mutex::new(Preparation::new(48_000.0))),
+            shared: Arc::clone(&shared),
+            control,
+            thread: None,
+            device_name: "Benchmark".into(),
+        };
+        (engine, move |step: f64, playing| {
+            let _keep_channels_connected = (&garbage_tx, &control_rx);
+            while rx.try_recv().is_ok() {}
+            shared.step.store(step.to_bits(), Ordering::Relaxed);
+            shared.playing.store(playing, Ordering::Relaxed);
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "perf_bench.rs"]
+mod perf_bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

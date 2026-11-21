@@ -181,6 +181,7 @@ pub struct CadenceApp {
     fonts: crate::font::FontLibrary,
     /// Fingerprint of the fonts dir at the last catalog refresh.
     font_stamp: u64,
+    catalog_watch: Option<CatalogWatch>,
     window_title: String,
     style_applied: bool,
     /// Selected UI theme (appearance only — never part of the song).
@@ -224,6 +225,7 @@ impl CadenceApp {
         // still picked up by the next dir poll instead of being fingerprinted
         // but never loaded.
         let font_stamp = if io_enabled { font_fingerprint() } else { 0 };
+        let pack_stamp = if io_enabled { pack_fingerprint() } else { 0 };
         let fonts = if io_enabled {
             crate::font::load_library()
         } else {
@@ -268,9 +270,10 @@ impl CadenceApp {
             } else {
                 crate::packs::PackCatalog::default()
             },
-            pack_stamp: if io_enabled { pack_fingerprint() } else { 0 },
+            pack_stamp,
             fonts,
             font_stamp,
+            catalog_watch: None,
             window_title: String::new(),
             style_applied: false,
             theme: ThemeChoice::default(),
@@ -305,12 +308,9 @@ impl CadenceApp {
     /// Applies an edit. Records undo only when the project actually changed.
     /// Edits sharing a `group` key coalesce into one undo step per gesture.
     fn edit(&mut self, label: &str, group: Option<&str>, f: impl FnOnce(&mut Project)) -> bool {
-        let before = self.project.clone();
-        f(&mut self.project);
-        if self.project == before {
+        if !self.history.edit(&mut self.project, label, group, f) {
             return false;
         }
-        self.history.record(before, label, group);
         self.project_changed();
         true
     }
@@ -1080,6 +1080,33 @@ impl CadenceApp {
 
     // ----- instrument packs ------------------------------------------------
 
+    fn poll_pack_dir(&mut self, ctx: &Context) {
+        if !self.io_enabled {
+            return;
+        }
+        if self.catalog_watch.is_none() {
+            self.catalog_watch = CatalogWatch::start(ctx.clone(), self.pack_stamp, self.font_stamp);
+        }
+        if self
+            .catalog_watch
+            .as_ref()
+            .is_none_or(|watch| watch.consume(CatalogWatch::PACKS))
+        {
+            self.reload_packs(false);
+        }
+    }
+
+    fn poll_font_dir(&mut self, _ctx: &Context) {
+        if self.io_enabled
+            && self
+                .catalog_watch
+                .as_ref()
+                .is_none_or(|watch| watch.consume(CatalogWatch::FONTS))
+        {
+            self.reload_fonts();
+        }
+    }
+
     /// Re-reads the embedded + installed pack catalog. Files.rs calls this
     /// after installing a pack; the 2s poller calls it on directory changes.
     fn refresh_pack_catalog(&mut self) {
@@ -1105,8 +1132,7 @@ impl CadenceApp {
     }
 
     /// Reloads the pack catalog. When `announce` is false this is a cheap
-    /// no-op unless the packs directory actually changed (the 2s poll in
-    /// files.rs relies on that so it can run unconditionally).
+    /// no-op unless the packs directory actually changed.
     fn reload_packs(&mut self, announce: bool) {
         let stamp = pack_fingerprint();
         if !announce && stamp == self.pack_stamp {
@@ -2075,11 +2101,65 @@ impl CadenceApp {
     }
 }
 
-/// Fingerprint of the files with extension `ext` in `dir` (names + sizes +
-/// mtimes), used by the periodic rescan polls. Cheap: only directory
-/// metadata is read.
+struct CatalogWatch {
+    // Dropping the app disconnects the worker, even while the window is idle.
+    _stop: crossbeam_channel::Sender<()>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl CatalogWatch {
+    const PACKS: u8 = 1;
+    const FONTS: u8 = 2;
+    const INTERVAL: Duration = Duration::from_secs(2);
+
+    fn start(ctx: Context, mut packs: u64, mut fonts: u64) -> Option<Self> {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+
+        let (stop, stopped) = crossbeam_channel::bounded(0);
+        let pending = Arc::new(AtomicU8::new(0));
+        let notify = Arc::clone(&pending);
+        std::thread::Builder::new()
+            .name("cadence-library-watch".into())
+            .spawn(move || {
+                while stopped.recv_timeout(Self::INTERVAL)
+                    == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+                {
+                    let mut changes = 0;
+                    let next_packs = pack_fingerprint();
+                    if next_packs != packs {
+                        changes |= Self::PACKS;
+                        packs = next_packs;
+                    }
+                    let next_fonts = font_fingerprint();
+                    if next_fonts != fonts {
+                        changes |= Self::FONTS;
+                        fonts = next_fonts;
+                    }
+                    if changes != 0 {
+                        notify.fetch_or(changes, Ordering::Release);
+                        ctx.request_repaint();
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            _stop: stop,
+            pending,
+        })
+    }
+
+    fn consume(&self, bit: u8) -> bool {
+        use std::sync::atomic::Ordering;
+        self.pending.load(Ordering::Acquire) & bit != 0
+            && self.pending.fetch_and(!bit, Ordering::AcqRel) & bit != 0
+    }
+}
+
+/// Fingerprint of the directory metadata, not the file contents.
 fn dir_fingerprint(dir: &std::path::Path, ext: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    const SEED: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut folder = SEED;
     let mix = |v: u64, h: &mut u64| {
         *h ^= v;
         *h = h.wrapping_mul(0x0000_0100_0000_01b3);
@@ -2094,6 +2174,7 @@ fn dir_fingerprint(dir: &std::path::Path, ext: &str) -> u64 {
             {
                 continue;
             }
+            let mut h = SEED;
             for b in p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned().into_bytes())
@@ -2104,17 +2185,17 @@ fn dir_fingerprint(dir: &std::path::Path, ext: &str) -> u64 {
             if let Ok(m) = e.metadata() {
                 mix(m.len(), &mut h);
                 if let Ok(t) = m.modified() {
-                    mix(
-                        t.duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0),
-                        &mut h,
-                    );
+                    if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                        mix(d.as_secs(), &mut h);
+                        mix(d.subsec_nanos().into(), &mut h);
+                    }
                 }
             }
+            // Directory iterators need not enumerate files in a stable order.
+            folder = folder.wrapping_add(h);
         }
     }
-    h
+    folder
 }
 
 /// Fingerprint of the user pack folder (see [`dir_fingerprint`]).

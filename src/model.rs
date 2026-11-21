@@ -220,7 +220,23 @@ impl Note {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+// Reuse Vec/String buffers when refreshing the undo gesture scratch copy.
+// The exhaustive clone constructor makes new model fields explicit here.
+macro_rules! snapshot_clone {
+    ($ty:ident { $($field:ident),+ $(,)? }) => {
+        impl Clone for $ty {
+            fn clone(&self) -> Self {
+                Self { $($field: Clone::clone(&self.$field)),+ }
+            }
+
+            fn clone_from(&mut self, source: &Self) {
+                $(self.$field.clone_from(&source.$field);)+
+            }
+        }
+    };
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pattern {
     pub id: u64,
     pub name: String,
@@ -228,6 +244,13 @@ pub struct Pattern {
     pub length: u32,
     pub notes: Vec<Note>,
 }
+
+snapshot_clone!(Pattern {
+    id,
+    name,
+    length,
+    notes
+});
 
 impl Pattern {
     /// Changes the length, removing notes that would start past the end and shortening notes
@@ -874,7 +897,7 @@ impl Default for ArpSettings {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     pub id: u64,
     pub name: String,
@@ -946,6 +969,28 @@ pub struct Track {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_clips: Vec<AudioClip>,
 }
+
+snapshot_clone!(Track {
+    id,
+    name,
+    color,
+    instrument,
+    volume,
+    pan,
+    mute,
+    solo,
+    effects,
+    patterns,
+    clips,
+    preset,
+    font,
+    glide,
+    automation,
+    arp,
+    bus,
+    audio,
+    audio_clips,
+});
 
 impl Track {
     /// Name of the sound this track plays: for font tracks the GM program
@@ -1093,7 +1138,7 @@ impl ChordEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub version: u32,
     pub id: u64,
@@ -1131,6 +1176,21 @@ pub struct Project {
     #[serde(default = "default_buses", skip_serializing_if = "buses_are_default")]
     pub buses: [Bus; NUM_BUSES],
 }
+
+snapshot_clone!(Project {
+    version,
+    id,
+    name,
+    bpm,
+    swing,
+    bars,
+    master_volume,
+    tracks,
+    key,
+    markers,
+    chord_events,
+    buses,
+});
 
 /// Pitch-class names with ASCII sharps, indexed by `pitch % 12` (C = 0).
 pub const NOTE_NAMES: [&str; 12] = [

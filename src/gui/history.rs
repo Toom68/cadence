@@ -20,6 +20,7 @@ pub struct History {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     group: Option<String>,
+    edit_scratch: Option<Project>,
     state: u64,
     next_state: u64,
 }
@@ -36,6 +37,7 @@ impl History {
             undo: Vec::new(),
             redo: Vec::new(),
             group: None,
+            edit_scratch: None,
             state: 1,
             next_state: 2,
         }
@@ -51,6 +53,7 @@ impl History {
         self.undo.clear();
         self.redo.clear();
         self.group = None;
+        self.edit_scratch = None;
         self.bump();
     }
 
@@ -65,8 +68,7 @@ impl History {
     /// gesture, typing in a field) collapse into a single undo step until
     /// [`History::seal`] is called or a different edit happens.
     pub fn record(&mut self, before: Project, label: &str, group: Option<&str>) {
-        let coalesce = group.is_some() && self.group.as_deref() == group && !self.undo.is_empty();
-        if !coalesce {
+        if !self.coalesces(group) {
             self.undo.push(Snapshot {
                 project: before,
                 state: self.state,
@@ -75,10 +77,44 @@ impl History {
             if self.undo.len() > LIMIT {
                 self.undo.remove(0);
             }
+            self.group = group.map(str::to_owned);
         }
         self.redo.clear();
-        self.group = group.map(str::to_owned);
         self.bump();
+    }
+
+    fn coalesces(&self, group: Option<&str>) -> bool {
+        group.is_some() && self.group.as_deref() == group && !self.undo.is_empty()
+    }
+
+    pub(super) fn edit(
+        &mut self,
+        project: &mut Project,
+        label: &str,
+        group: Option<&str>,
+        apply: impl FnOnce(&mut Project),
+    ) -> bool {
+        if self.coalesces(group) {
+            // The first edit already owns the undo snapshot. Reuse memory
+            // for exact no-op detection on subsequent frames of the gesture.
+            match &mut self.edit_scratch {
+                Some(before) => before.clone_from(project),
+                scratch @ None => *scratch = Some(project.clone()),
+            }
+            apply(project);
+            let changed = self.edit_scratch.as_ref() != Some(project);
+            if changed {
+                self.bump();
+            }
+            return changed;
+        }
+        let before = project.clone();
+        apply(project);
+        if *project == before {
+            return false;
+        }
+        self.record(before, label, group);
+        true
     }
 
     /// Ends the current coalescing gesture so the next edit is a new step.
@@ -182,6 +218,25 @@ mod tests {
         h.undo(&mut p);
         assert_eq!(p.bpm, Project::empty().bpm);
         assert!(!h.can_undo());
+    }
+
+    #[test]
+    fn coalesced_no_ops_preserve_state_and_the_original_snapshot() {
+        let mut h = History::new();
+        let mut p = Project::demo();
+        let original = p.clone();
+        assert!(h.edit(&mut p, "Tempo", Some("bpm"), |p| p.bpm = 120.0));
+        let intermediate = h.state();
+        assert!(!h.edit(&mut p, "Tempo", Some("bpm"), |p| p.bpm = 120.0));
+        assert_eq!(h.state(), intermediate);
+        assert!(h.edit(&mut p, "Tempo", Some("bpm"), |p| p.bpm = 128.0));
+        assert_ne!(h.state(), intermediate);
+        let final_song = p.clone();
+        assert_eq!(h.undo(&mut p).as_deref(), Some("Tempo"));
+        assert_eq!(p, original);
+        assert!(!h.can_undo());
+        h.redo(&mut p);
+        assert_eq!(p, final_song);
     }
 
     #[test]
