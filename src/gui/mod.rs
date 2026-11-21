@@ -193,6 +193,8 @@ impl CadenceApp {
     /// given, and a recovery offer when a valid autosave exists.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let theme = ThemeChoice::from_storage(cc.storage);
+        // Styles the very first frame; `frame()` finishes the job (bundled
+        // fonts, focus options) once the fonts are live.
         theme::apply(&cc.egui_ctx, theme);
         let (engine, audio_error) = match AudioEngine::new() {
             Ok(engine) => (Some(engine), None),
@@ -200,7 +202,6 @@ impl CadenceApp {
         };
         let mut app = Self::build(Project::demo(), engine, true);
         app.theme = theme;
-        app.style_applied = true;
         if let Some(err) = audio_error {
             app.set_status(
                 StatusKind::Warning,
