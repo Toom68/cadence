@@ -1,44 +1,58 @@
 //! Multi-track clip arranger: custom-painted timeline with its own
 //! horizontal zoom/scroll, track headers, ruler seeking and clip editing.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use egui::{
-    pos2, vec2, Align2, Color32, CursorIcon, FontId, Painter, PointerButton, Pos2, Rect, RichText,
-    Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder,
+    pos2, vec2, Align2, Color32, CursorIcon, FontId, Key, KeyboardShortcut, Modifiers, Painter,
+    PointerButton, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder,
 };
 
-use super::theme::{self, Palette};
-use super::{ops, sidebar, CadenceApp, Focus, StatusKind, Tab};
+use super::theme::{self, Icon, Palette};
+use super::{ops, sidebar, CadenceApp, Clipboard, Focus, StatusKind, Tab};
 use crate::model::{
     next_id, AudioClip, Automation, AutomationLane, ChordEvent, ChordQuality, Clip, Marker,
-    Pattern, Project, Track, NOTE_NAMES,
+    Pattern, Project, SongKey, Track,
 };
 
 pub(super) const HEADER_W: f32 = 200.0;
-/// The ruler is three horizontal strips: the loop lane on top, the bar
-/// numbers and section-marker flags in the middle, and the chord lane
-/// along the bottom.
-pub(super) const RULER_H: f32 = 40.0;
+/// The ruler is four horizontal strips, top to bottom: the loop lane, the
+/// section-marker lane, the bar numbers and the chord lane.
+pub(super) const RULER_H: f32 = 54.0;
 /// Thin strip at the top of the ruler where dragging defines the loop
 /// region; the rest of the ruler keeps its click/drag-to-seek behavior.
 pub(super) const LOOP_LANE_H: f32 = 10.0;
-/// The middle strip of the ruler — bar numbers, marker flags and the
-/// playhead tip. Sized so its bottom edge is exactly where the ruler's
-/// bottom was before the chord lane existed.
-const NUMBER_STRIP_H: f32 = 16.0;
-/// Height of a section-marker flag chip, painted just under the loop lane.
-const MARKER_CHIP_H: f32 = 12.5;
+/// The section-marker lane under the loop lane: marker flags live here, so
+/// they never cover a bar number.
+const MARKER_LANE_H: f32 = 15.0;
+/// The bar-number strip (seek surface) under the marker lane.
+const NUMBER_STRIP_H: f32 = 14.0;
+/// Height of a section-marker flag chip inside the marker lane.
+const MARKER_CHIP_H: f32 = 13.0;
 /// Height of a chord chip pill on the chord lane.
-const CHORD_CHIP_H: f32 = 11.5;
-pub(super) const LANE_H: f32 = 52.0;
+const CHORD_CHIP_H: f32 = 13.0;
+/// Default clip-lane height. The view's `lane_h` zooms between
+/// [`MIN_LANE_H`] and [`MAX_LANE_H`] (Alt+wheel or the header menu).
+pub(super) const LANE_H: f32 = 44.0;
+pub(super) const MIN_LANE_H: f32 = 36.0;
+pub(super) const MAX_LANE_H: f32 = 96.0;
+/// Vertical inset of a clip body inside its lane.
+const CLIP_INSET: f32 = 4.0;
+/// Height of a clip's colored name strip — the zone of the corner fade
+/// handles.
+const CLIP_BAND_H: f32 = 15.0;
 /// Height of the automation strip a track gains below its clip lane while
 /// its "Show automation" toggle is on.
 const AUTO_LANE_H: f32 = 28.0;
 const SCROLLBAR: f32 = 10.0;
+/// Room under the last lane for the "Add track" button.
+const ADD_ROW_H: f32 = 44.0;
 const MIN_PPS: f32 = 0.5;
 const MAX_PPS: f32 = 24.0;
+/// Rect budget for one clip's mini piano roll (all repetitions together).
+const THUMB_NOTE_BUDGET: usize = 3000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Snap {
@@ -96,9 +110,39 @@ fn snap_ceil(step: f64, grid: f64) -> f64 {
 /// Track-list index a library drag-and-drop would insert at: the lane the
 /// pointer is over (its track shifts down), clamped to `0..=track_count` —
 /// one past the last lane is a plain append, above the first lane inserts
-/// at 0.
-fn drop_lane_index(y: f32, lanes_top: f32, scroll_y: f32, track_count: usize) -> usize {
-    (((y - lanes_top + scroll_y) / LANE_H).floor() as i64).clamp(0, track_count as i64) as usize
+/// at 0. `lane_h` is the current (uniform) lane height.
+fn drop_lane_index(
+    y: f32,
+    lanes_top: f32,
+    scroll_y: f32,
+    lane_h: f32,
+    track_count: usize,
+) -> usize {
+    (((y - lanes_top + scroll_y) / lane_h.max(1.0)).floor() as i64).clamp(0, track_count as i64)
+        as usize
+}
+
+/// The platform name of the Command modifier for tooltips: "⌘" on macOS,
+/// "Ctrl" elsewhere (matches `ctx.format_shortcut`).
+fn cmd_name(ctx: &egui::Context) -> &'static str {
+    if ctx.os() == egui::os::OperatingSystem::Mac {
+        "⌘"
+    } else {
+        "Ctrl"
+    }
+}
+
+/// Tooltip text with a single-key shortcut, formatted for the platform.
+fn key_tip(ctx: &egui::Context, text: &str, key: Key) -> String {
+    theme::shortcut_tip(ctx, text, &KeyboardShortcut::new(Modifiers::NONE, key))
+}
+
+/// Single-line galley cut with an ellipsis at `max_w` (painter flavour of
+/// `theme::elide`, which needs a `Ui`).
+fn elided(p: &Painter, text: &str, font: FontId, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
+    p.layout_job(job)
 }
 
 /// Loop region from a ruler-lane drag: the touched span snaps outward to
@@ -123,15 +167,11 @@ fn loop_clear_rect(band: Rect) -> Rect {
     Rect::from_center_size(pos2(band.right() - 7.0, band.center().y), vec2(s, s))
 }
 
-/// Subtle tints cycled across the section bands between markers: four hues
-/// at ~4% alpha, translucent enough to read as a wash on both themes.
-fn section_band_tints() -> [Color32; 4] {
-    [
-        Color32::from_rgba_unmultiplied(255, 196, 90, 10), // amber
-        Color32::from_rgba_unmultiplied(110, 185, 255, 10), // blue
-        Color32::from_rgba_unmultiplied(140, 235, 160, 10), // green
-        Color32::from_rgba_unmultiplied(228, 140, 235, 10), // violet
-    ]
+/// Subtle tints cycled across the section bands between markers: four
+/// palette hues at ~4% alpha, translucent enough to read as a wash in every
+/// theme.
+fn section_band_tints(pal: Palette) -> [Color32; 4] {
+    [pal.warn, pal.link, pal.accent, pal.danger].map(|c| c.gamma_multiply(0.045))
 }
 
 /// Step ranges of the section bands painted between consecutive markers:
@@ -350,15 +390,153 @@ enum ContextTarget {
     },
 }
 
+/// One pattern's mini piano roll, normalized once per edit: every note as
+/// `(start, duration, row)` in pattern steps, sorted by start, with `row`
+/// 0 (top) ..= 1 (bottom). Painting only has to scale and range-query it.
+#[derive(Debug, Default)]
+struct Thumb {
+    notes: Vec<(f32, f32, f32)>,
+    /// Longest note, so a visible-window query can start early enough to
+    /// catch notes that begin left of the window but reach into it.
+    max_dur: f32,
+}
+
+impl Thumb {
+    fn build(track: &Track, pat: &Pattern) -> Self {
+        let drums = track.shows_drum_grid();
+        let mut notes: Vec<(f32, f32, f32)> = if drums {
+            let rows = track.drum_rows();
+            let last = rows.len().saturating_sub(1);
+            pat.notes
+                .iter()
+                .map(|n| {
+                    // Stray pitches park on the third row (clamped for small kits).
+                    let i = rows
+                        .iter()
+                        .position(|(d, _)| *d == n.pitch)
+                        .unwrap_or(2.min(last));
+                    let row = if last == 0 {
+                        0.5
+                    } else {
+                        i as f32 / last as f32
+                    };
+                    (n.start as f32, n.duration as f32, row)
+                })
+                .collect()
+        } else {
+            let lo = pat.notes.iter().map(|n| n.pitch).min().unwrap_or(60) as f32;
+            let hi = pat.notes.iter().map(|n| n.pitch).max().unwrap_or(60) as f32;
+            let mid = (lo + hi) * 0.5;
+            let span = (hi - lo).max(12.0);
+            let lo = mid - span * 0.5;
+            pat.notes
+                .iter()
+                .map(|n| {
+                    let t = (n.pitch as f32 - lo) / span;
+                    (n.start as f32, n.duration as f32, 1.0 - t)
+                })
+                .collect()
+        };
+        notes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let max_dur = notes.iter().map(|n| n.1).fold(0.0, f32::max);
+        Self { notes, max_dur }
+    }
+}
+
+/// What a cached [`Thumb`] was built from: the history state plus a cheap
+/// fingerprint of the pattern (so edits that bypass the history — tests,
+/// live tweaks — still invalidate it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThumbStamp {
+    notes_ptr: usize,
+    notes_len: usize,
+    drums: bool,
+    kit_rows: usize,
+}
+
+impl ThumbStamp {
+    fn of(track: &Track, pat: &Pattern) -> Self {
+        let drums = track.shows_drum_grid();
+        Self {
+            notes_ptr: pat.notes.as_ptr() as usize,
+            notes_len: pat.notes.len(),
+            drums,
+            kit_rows: if drums {
+                track
+                    .preset
+                    .as_ref()
+                    .and_then(|p| p.kit.as_ref())
+                    .map_or(0, |k| k.pieces.len())
+            } else {
+                0
+            },
+        }
+    }
+}
+
+/// Per-pattern thumbnails keyed by `(track id, pattern id)`, dropped
+/// wholesale whenever the history state changes.
+#[derive(Debug, Default)]
+struct ThumbCache {
+    state: u64,
+    map: HashMap<(u64, u64), (ThumbStamp, Arc<Thumb>)>,
+}
+
+impl ThumbCache {
+    fn get(&mut self, state: u64, track: &Track, pat: &Pattern) -> Arc<Thumb> {
+        if self.state != state {
+            self.state = state;
+            self.map.clear();
+        }
+        let stamp = ThumbStamp::of(track, pat);
+        match self.map.get(&(track.id, pat.id)) {
+            Some((s, thumb)) if *s == stamp => thumb.clone(),
+            _ => {
+                let thumb = Arc::new(Thumb::build(track, pat));
+                self.map.insert((track.id, pat.id), (stamp, thumb.clone()));
+                thumb
+            }
+        }
+    }
+}
+
+/// What the pointer is over on the grid this frame (painting only: hover
+/// highlights, handle grips, the empty-lane hint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverPart {
+    Body,
+    FadeIn,
+    FadeOut,
+    Loop,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct GridHover {
+    clip: Option<(u64, HoverPart)>,
+    /// An empty track's lane row is hovered (no clips at all).
+    empty_lane: Option<usize>,
+}
+
 #[derive(Debug)]
 pub(super) struct ArrangerView {
     pub px_per_step: f32,
     pub scroll_x: f32,
     pub scroll_y: f32,
+    /// Clip-lane height in points ([`MIN_LANE_H`]..=[`MAX_LANE_H`]).
+    pub lane_h: f32,
     pub snap: Snap,
     pub follow: bool,
     pub fit_request: bool,
     pub reveal_track: Option<u64>,
+    /// A middle-button pan owns the grid (suppresses follow-playhead).
+    pan: bool,
+    hover: GridHover,
+    thumbs: RefCell<ThumbCache>,
+    /// Last frame's toolbar row and item rects (layout tests).
+    pub(super) toolbar_row: Rect,
+    pub(super) toolbar_items: Vec<Rect>,
+    /// Items the toolbar moved into its overflow menu last frame.
+    pub(super) toolbar_overflow: usize,
     drag: Option<ArrangerDrag>,
     marquee: Option<ArrangerMarquee>,
     last_seek: Option<f64>,
@@ -382,10 +560,17 @@ impl Default for ArrangerView {
             px_per_step: 4.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
+            lane_h: LANE_H,
             snap: Snap::Bar,
             follow: true,
             fit_request: true,
             reveal_track: None,
+            pan: false,
+            hover: GridHover::default(),
+            thumbs: RefCell::default(),
+            toolbar_row: Rect::NOTHING,
+            toolbar_items: Vec::new(),
+            toolbar_overflow: 0,
             drag: None,
             marquee: None,
             last_seek: None,
@@ -408,11 +593,30 @@ impl ArrangerView {
         self.scroll_x = (step_at * self.px_per_step - anchor).max(0.0);
     }
 
+    /// Changes the lane height by `factor`, keeping the content under
+    /// `anchor_y` (grid-relative y) in place.
+    pub fn zoom_lanes(&mut self, factor: f32, anchor_y: Option<f32>) {
+        self.set_lane_height(self.lane_h * factor, anchor_y.unwrap_or(0.0));
+    }
+
+    /// Sets the lane height directly (clamped), keeping the content under
+    /// grid-relative `anchor_y` in place.
+    pub fn set_lane_height(&mut self, h: f32, anchor_y: f32) {
+        let old = self.lane_h.max(1.0);
+        let new = h.clamp(MIN_LANE_H, MAX_LANE_H);
+        if (new - old).abs() < f32::EPSILON {
+            return;
+        }
+        self.scroll_y = ((self.scroll_y + anchor_y) * new / old - anchor_y).max(0.0);
+        self.lane_h = new;
+    }
+
     pub fn end_gesture(&mut self) {
         self.drag = None;
         self.marquee = None;
         self.last_seek = None;
         self.region_press = None;
+        self.pan = false;
     }
 
     /// Drops gesture and context state without touching zoom/scroll — used
@@ -482,12 +686,22 @@ impl CadenceApp {
         self.arranger_toolbar(ui);
         let full = ui.available_rect_before_wrap();
         ui.allocate_rect(full, Sense::hover());
-        if full.width() < 300.0 || full.height() < 60.0 {
+        if full.width() < 300.0 || full.height() < RULER_H + 40.0 {
             return;
         }
+        let n = self.project.tracks.len();
+        // Scrollbars get their own gutters so they never cover a lane: the
+        // horizontal one is always there (the timeline runs past the song
+        // end), the vertical one only while the lanes overflow.
+        let lanes_h = full.height() - RULER_H - SCROLLBAR;
+        let content_h = self.lane_top(n) + ADD_ROW_H;
+        let show_vbar = content_h > lanes_h + 0.5;
         let grid = Rect::from_min_max(
             pos2(full.left() + HEADER_W, full.top() + RULER_H),
-            pos2(full.right() - SCROLLBAR, full.bottom() - SCROLLBAR),
+            pos2(
+                full.right() - if show_vbar { SCROLLBAR } else { 0.0 },
+                full.bottom() - SCROLLBAR,
+            ),
         );
         let ruler = Rect::from_min_max(
             pos2(grid.left(), full.top()),
@@ -517,24 +731,38 @@ impl CadenceApp {
                 ((grid.width() - 24.0) / song_steps.max(16.0) as f32).clamp(MIN_PPS, MAX_PPS);
             self.arranger.scroll_x = 0.0;
         }
-        let n = self.project.tracks.len();
-        let content_w = content_steps as f32 * self.arranger.px_per_step;
-        let content_h = self.lane_top(n) + 44.0;
 
-        // Wheel: scroll lanes vertically, Shift/trackpad horizontally, Cmd/Ctrl zooms.
+        // Wheel: scroll lanes vertically, Shift+wheel (and trackpad x)
+        // horizontally, Cmd/Ctrl+wheel zooms time at the pointer, Alt+wheel
+        // zooms the lane height around the pointer.
         if ui.rect_contains_pointer(full) {
-            let (scroll, zoom, hover) =
-                ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+            let (scroll, zoom, hover, alt) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta,
+                    i.zoom_delta(),
+                    i.pointer.hover_pos(),
+                    i.modifiers.alt,
+                )
+            });
             if zoom != 1.0 {
                 let anchor = hover.map(|h| (h.x - grid.left()).max(0.0));
                 self.arranger.zoom_by(zoom, anchor);
             }
             if scroll != egui::Vec2::ZERO {
-                self.arranger.scroll_x -= scroll.x;
-                self.arranger.scroll_y -= scroll.y;
+                if alt {
+                    let anchor = hover.map(|h| (h.y - grid.top()).max(0.0));
+                    self.arranger
+                        .zoom_lanes(((scroll.x + scroll.y) / 300.0).exp(), anchor);
+                } else {
+                    self.arranger.scroll_x -= scroll.x;
+                    self.arranger.scroll_y -= scroll.y;
+                }
                 ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             }
         }
+        let content_w = content_steps as f32 * self.arranger.px_per_step;
+        // Lane zoom may have changed the stack height this frame.
+        let content_h = self.lane_top(n) + ADD_ROW_H;
         if let Some(id) = self.arranger.reveal_track.take() {
             if let Some(i) = ops::track_index(&self.project, id) {
                 let top = self.lane_top(i);
@@ -566,6 +794,7 @@ impl CadenceApp {
         );
         self.arranger_grid_input(ui, &grid_resp, grid, tl);
         self.arranger_ruler_input(ui, &ruler_resp, ruler, tl, song_steps);
+        self.update_grid_hover(ui, &grid_resp, grid, tl);
 
         // Drag-and-drop from the instrument library: the lanes, headers and
         // scrollbars (everything under the ruler) accept a dragged sound.
@@ -582,11 +811,19 @@ impl CadenceApp {
         self.paint_section_bands(&painter, grid, tl);
         self.paint_clips(&painter, grid, tl);
         self.paint_automation(&painter, grid, tl);
+        self.paint_empty_lane_hint(&painter, grid);
         self.paint_arranger_marquee(&painter);
         self.paint_loop_region(&painter, grid, tl);
         self.paint_marker_guides(&painter, grid, tl);
         let px = tl.x(self.transport.position);
         if px >= grid.left() - 1.0 && px <= grid.right() + 1.0 {
+            // A thin halo in the canvas color keeps the playhead readable
+            // over bright clip bodies in every theme.
+            painter.vline(
+                px,
+                grid.y_range(),
+                Stroke::new(4.0_f32, pal.canvas.gamma_multiply(0.6)),
+            );
             painter.vline(px, grid.y_range(), Stroke::new(2.0_f32, pal.accent));
         }
         // Borrowed, not cloned: the drag carries Vec<(u64, Clip)>-sized
@@ -641,12 +878,11 @@ impl CadenceApp {
             }
             .unzip();
             if let (Some(start), Some(label)) = (start, label) {
-                painter.text(
-                    pos2(tl.x(start) + 4.0, grid.top() + 4.0),
-                    Align2::LEFT_TOP,
-                    label,
-                    FontId::proportional(11.0),
-                    pal.text,
+                paint_tag(
+                    &painter,
+                    pal,
+                    pos2(tl.x(start).max(grid.left()) + 4.0, grid.top() + 4.0),
+                    &label,
                 );
             }
         }
@@ -657,11 +893,27 @@ impl CadenceApp {
             self.paint_library_drop(ui.painter(), drop_area, *index, sound);
         }
 
+        // Scrollbar gutters: panel-colored so the bars read as chrome, not
+        // as part of the last lane, with a hairline against the grid.
+        let p = ui.painter();
+        p.rect_filled(
+            Rect::from_min_max(pos2(full.left(), grid.bottom()), full.max),
+            0.0,
+            pal.panel,
+        );
+        if show_vbar {
+            p.rect_filled(vbar, 0.0, pal.panel);
+        }
+        p.hline(
+            full.x_range(),
+            grid.bottom(),
+            Stroke::new(1.0_f32, pal.border_soft),
+        );
         let mut sx = self.arranger.scroll_x;
         theme::scrollbar(
             ui,
             pal,
-            hbar.shrink2(vec2(0.0, 1.0)),
+            hbar.shrink2(vec2(2.0, 2.0)),
             ui.id().with("arr_hbar"),
             false,
             content_w,
@@ -669,33 +921,37 @@ impl CadenceApp {
             &mut sx,
         );
         self.arranger.scroll_x = sx;
-        let mut sy = self.arranger.scroll_y;
-        theme::scrollbar(
-            ui,
-            pal,
-            vbar.shrink2(vec2(1.0, 0.0)),
-            ui.id().with("arr_vbar"),
-            true,
-            content_h,
-            grid.height(),
-            &mut sy,
-        );
-        self.arranger.scroll_y = sy;
-        ui.painter().rect_filled(
-            Rect::from_min_max(pos2(full.left(), full.top()), pos2(grid.left(), grid.top())),
-            0.0,
-            pal.panel,
-        );
-        ui.painter().text(
-            pos2(full.left() + 14.0, full.top() + RULER_H * 0.5),
+        if show_vbar {
+            ui.painter().vline(
+                grid.right(),
+                grid.y_range(),
+                Stroke::new(1.0_f32, pal.border_soft),
+            );
+            let mut sy = self.arranger.scroll_y;
+            theme::scrollbar(
+                ui,
+                pal,
+                vbar.shrink2(vec2(2.0, 2.0)),
+                ui.id().with("arr_vbar"),
+                true,
+                content_h,
+                grid.height(),
+                &mut sy,
+            );
+            self.arranger.scroll_y = sy;
+        }
+        let p = ui.painter();
+        let corner = Rect::from_min_max(full.min, pos2(grid.left(), grid.top()));
+        p.rect_filled(corner, 0.0, pal.panel);
+        p.text(
+            pos2(full.left() + theme::GAP_M + 2.0, corner.center().y),
             Align2::LEFT_CENTER,
             "TRACKS",
-            FontId::proportional(10.0),
+            theme::strong_font(ui, theme::TEXT_KICKER),
             pal.text_faint,
         );
-        ui.painter()
-            .hline(full.x_range(), grid.top(), Stroke::new(1.0_f32, pal.border));
-        ui.painter().vline(
+        p.hline(full.x_range(), grid.top(), Stroke::new(1.0_f32, pal.border));
+        p.vline(
             grid.left(),
             full.y_range(),
             Stroke::new(1.0_f32, pal.border),
@@ -711,6 +967,7 @@ impl CadenceApp {
             || self.arranger.drag.is_some()
             || self.arranger.marquee.is_some()
             || self.arranger.region_press.is_some()
+            || self.arranger.pan
         {
             return;
         }
@@ -724,136 +981,237 @@ impl CadenceApp {
 
     fn arranger_toolbar(&mut self, ui: &mut Ui) {
         let pal = self.palette();
-        egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 6 }).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                theme::section_header(ui, pal, "ARRANGEMENT", "Song timeline");
-                ui.add_space(14.0);
-                ui.label(RichText::new("Length").small().color(pal.text_dim));
-                let mut bars = self.project.bars;
-                let resp = ui.add_sized(vec2(80.0, 24.0), egui::DragValue::new(&mut bars).range(ops::MIN_BARS..=ops::MAX_BARS).speed(0.2).suffix(" bars"));
-                if resp.changed() {
-                    self.edit("Song length", Some("bars"), |p| p.bars = bars.clamp(ops::MIN_BARS, ops::MAX_BARS));
-                }
-                resp.on_hover_text(format!("Song length in bars (1–{}). Placing clips past the end grows the song automatically.", ops::MAX_BARS));
-                // Quick-adjust steppers next to the drag value, clamped to
-                // the model's bar limits like the drag value itself.
-                if theme::icon_button(
-                    ui,
-                    pal,
-                    theme::Icon::Minus,
-                    24.0,
-                    false,
-                    pal.accent,
-                    "One bar shorter",
-                )
-                .clicked()
-                {
-                    let bars = self.project.bars.saturating_sub(1).max(ops::MIN_BARS);
-                    self.edit("Song length", Some("bars"), |p| p.bars = bars);
-                }
-                if theme::icon_button(
-                    ui,
-                    pal,
-                    theme::Icon::Plus,
-                    24.0,
-                    false,
-                    pal.accent,
-                    "One bar longer",
-                )
-                .clicked()
-                {
-                    let bars = self.project.bars.saturating_add(1).min(ops::MAX_BARS);
-                    self.edit("Song length", Some("bars"), |p| p.bars = bars);
-                }
-                ui.add_space(6.0);
-                ui.label(RichText::new("Snap").small().color(pal.text_dim));
-                egui::ComboBox::from_id_salt("arr_snap").width(64.0).selected_text(self.arranger.snap.label()).show_ui(ui, |ui| {
-                    for s in [Snap::Bar, Snap::Beat, Snap::Step] {
-                        ui.selectable_value(&mut self.arranger.snap, s, s.label());
-                    }
-                });
-                ui.add_space(6.0);
-                if theme::icon_button(ui, pal, theme::Icon::Minus, 26.0, false, pal.accent, "Zoom out (−, or Cmd/Ctrl + scroll)").clicked() {
-                    self.arranger.zoom_by(0.8, None);
-                }
-                if theme::icon_button(ui, pal, theme::Icon::Plus, 26.0, false, pal.accent, "Zoom in (=, or Cmd/Ctrl + scroll)").clicked() {
-                    self.arranger.zoom_by(1.25, None);
-                }
-                if theme::icon_button(ui, pal, theme::Icon::Fit, 26.0, false, pal.accent, "Fit the whole song").clicked() {
-                    self.arranger.fit_request = true;
-                }
-                ui.checkbox(&mut self.arranger.follow, RichText::new("Follow").small()).on_hover_text("Scroll to keep the playhead visible during playback");
-                ui.add_space(6.0);
-                let loop_tip = match self.transport.loop_region {
-                    Some((a, b)) => format!(
-                        "Loop bars {}–{} on repeat (L) · drag the ruler's top strip to move it, ✕ on the band clears it",
-                        bar_number(a),
-                        bar_number(b),
-                    ),
-                    None => "Loop the whole song (L) · drag the ruler's top strip to loop a section instead".to_string(),
-                };
-                if theme::chip(
-                    ui,
-                    pal,
-                    "LOOP",
-                    self.transport.looping,
-                    pal.accent,
-                    vec2(48.0, 24.0),
-                    &loop_tip,
-                )
-                .clicked()
-                {
-                    self.toggle_loop();
-                }
-                if let Some((a, b)) = self.transport.loop_region {
-                    ui.label(
-                        RichText::new(format!("{}–{}", bar_number(a), bar_number(b)))
-                            .small()
-                            .color(if self.transport.looping {
-                                pal.accent
-                            } else {
-                                pal.text_faint
-                            }),
-                    );
-                }
-                ui.add_space(6.0);
-                if theme::chip(
-                    ui,
-                    pal,
-                    "+ MARKER",
-                    false,
-                    pal.warn,
-                    vec2(74.0, 24.0),
-                    "Add a section marker at the playhead (or double-click the ruler)",
-                )
-                .clicked()
-                {
-                    self.add_marker_at(self.transport.position);
-                }
-                let selected_clips = self.selected_clip_ids().len();
-                if selected_clips > 1 {
-                    ui.label(RichText::new(format!("{selected_clips} clips selected")).small().color(pal.accent));
-                }
-                let can_split = self.split_clip_target(ui.ctx()).is_some();
-                if ui
-                    .add_enabled(can_split, egui::Button::new("Split").small())
-                    .on_hover_text("Split the clip under the pointer at the pointer, else the selected clip at the playhead (B)")
-                    .on_disabled_hover_text("Hover a clip, or select one the playhead crosses")
-                    .clicked()
-                {
-                    self.split_clip_at_playhead(ui.ctx());
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    theme::hint(ui, pal, "Drag empty lanes to box-select clips · drag selected clips as a group · Alt-drag copies · corners fade · right edge loops");
-                });
-            });
+        let ctx = ui.ctx().clone();
+        let title_font = theme::strong_font(ui, theme::TEXT_TITLE);
+        let measure = |text: &str, font: FontId| {
+            ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, pal.text))
+                .size()
+                .x
+                .ceil()
+        };
+        let title_w = measure("Arrangement", title_font.clone());
+        // Computed once, before the toolbar closure (which may run twice).
+        let can_split = self.split_clip_target(&ctx).is_some();
+        let selected = self.selected_clip_ids().len();
+        let looping = self.transport.looping;
+        let cmd = cmd_name(&ctx);
+        let zoom_out_tip = format!(
+            "{} · {cmd}+wheel zooms at the pointer, Alt+wheel changes track height",
+            key_tip(&ctx, "Zoom out", Key::Minus)
+        );
+        let zoom_in_tip = format!(
+            "{} · {cmd}+wheel zooms at the pointer, Alt+wheel changes track height",
+            key_tip(&ctx, "Zoom in", Key::Equals)
+        );
+        let split_tip = format!(
+            "{} — cuts the clip under the pointer, else the selected clip at the playhead",
+            key_tip(&ctx, "Split clip", Key::B)
+        );
+        let length_tip = format!(
+            "Song length in bars (1–{}). Placing clips past the end grows the song.",
+            ops::MAX_BARS
+        );
+        let region_text = self.transport.loop_region.map(|(a, b)| {
+            let (a, b) = (bar_number(a), bar_number_end(b));
+            if a == b {
+                format!("Bar {a}")
+            } else {
+                format!("Bars {a}–{b}")
+            }
         });
+        let region_w = region_text.as_deref().map_or(0.0, |t| {
+            measure(t, theme::body_font(12.0)) + theme::ICON_S + theme::GAP_XS
+        });
+        let selection_text = format!("{selected} clips selected");
+        let selection_w = measure(&selection_text, theme::body_font(12.0));
+        let row = egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: theme::GAP_M as i8,
+                right: theme::GAP_M as i8,
+                top: 0,
+                bottom: 0,
+            })
+            .show(ui, |ui| {
+                theme::toolbar(ui, pal, "arranger", |tb| {
+                    tb.item(title_w, |ui| {
+                        ui.label(
+                            RichText::new("Arrangement")
+                                .font(title_font.clone())
+                                .color(pal.text),
+                        );
+                    });
+                    tb.separator();
+                    tb.labeled("Length", 76.0, |ui| {
+                        let mut bars = self.project.bars;
+                        let resp = ui.add_sized(
+                            vec2(ui.available_width(), theme::CONTROL_M),
+                            egui::DragValue::new(&mut bars)
+                                .range(ops::MIN_BARS..=ops::MAX_BARS)
+                                .speed(0.2)
+                                .suffix(" bars"),
+                        );
+                        if resp.changed() {
+                            self.edit("Song length", Some("bars"), |p| {
+                                p.bars = bars.clamp(ops::MIN_BARS, ops::MAX_BARS)
+                            });
+                        }
+                        resp.on_hover_text(&length_tip);
+                    });
+                    // Quick-adjust steppers, clamped to the model's limits
+                    // like the drag value itself.
+                    tb.enabled(self.project.bars > ops::MIN_BARS);
+                    if tb
+                        .icon_button(Icon::Minus, "One bar shorter", "One bar shorter")
+                        .clicked()
+                    {
+                        let bars = self.project.bars.saturating_sub(1).max(ops::MIN_BARS);
+                        self.edit("Song length", Some("bars"), |p| p.bars = bars);
+                    }
+                    tb.enabled(self.project.bars < ops::MAX_BARS);
+                    if tb
+                        .icon_button(Icon::Plus, "One bar longer", "One bar longer")
+                        .clicked()
+                    {
+                        let bars = self.project.bars.saturating_add(1).min(ops::MAX_BARS);
+                        self.edit("Song length", Some("bars"), |p| p.bars = bars);
+                    }
+                    tb.separator();
+                    tb.labeled("Snap", 72.0, |ui| {
+                        theme::combo("arr_snap", self.arranger.snap.label(), 64.0)
+                            .show_ui(ui, |ui| {
+                                for s in [Snap::Bar, Snap::Beat, Snap::Step] {
+                                    ui.selectable_value(&mut self.arranger.snap, s, s.label());
+                                }
+                            })
+                            .response
+                            .on_hover_text("Grid for moving, placing and cutting clips");
+                    });
+                    tb.separator();
+                    if tb
+                        .icon_button(Icon::ZoomOut, "Zoom out", &zoom_out_tip)
+                        .clicked()
+                    {
+                        self.arranger.zoom_by(0.8, None);
+                    }
+                    if tb
+                        .icon_button(Icon::ZoomIn, "Zoom in", &zoom_in_tip)
+                        .clicked()
+                    {
+                        self.arranger.zoom_by(1.25, None);
+                    }
+                    if tb
+                        .icon_button(Icon::Fit, "Fit song", "Fit the whole song in view")
+                        .clicked()
+                    {
+                        self.arranger.fit_request = true;
+                    }
+                    if tb
+                        .toggle(
+                            Some(Icon::Follow),
+                            "Follow",
+                            self.arranger.follow,
+                            "Follow the playhead during playback",
+                        )
+                        .clicked()
+                    {
+                        self.arranger.follow = !self.arranger.follow;
+                    }
+                    tb.separator();
+                    if let Some(text) = region_text.as_deref() {
+                        tb.item(region_w, |ui| {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                vec2(region_w, theme::CONTROL_M),
+                                Sense::hover(),
+                            );
+                            let ink = if looping { pal.accent } else { pal.text_dim };
+                            theme::paint_icon(
+                                ui.painter(),
+                                Rect::from_center_size(
+                                    pos2(rect.left() + theme::ICON_S * 0.5, rect.center().y),
+                                    vec2(theme::ICON_S, theme::ICON_S),
+                                ),
+                                Icon::Loop,
+                                ink,
+                            );
+                            ui.painter().text(
+                                pos2(
+                                    rect.left() + theme::ICON_S + theme::GAP_XS,
+                                    rect.center().y,
+                                ),
+                                Align2::LEFT_CENTER,
+                                text,
+                                theme::body_font(12.0),
+                                ink,
+                            );
+                            resp.on_hover_text(if looping {
+                                "Loop region: playback repeats these bars. Drag the ruler's top strip to change it."
+                            } else {
+                                "Loop region (looping is off: press L or the transport's Loop button). Drag the ruler's top strip to change it."
+                            });
+                        });
+                        if tb
+                            .icon_button(Icon::Close, "Clear loop region", "Clear the loop region")
+                            .clicked()
+                        {
+                            self.clear_loop_region();
+                        }
+                    }
+                    if tb
+                        .button(
+                            Some(Icon::Marker),
+                            "Marker",
+                            "Add a section marker at the playhead · double-click the ruler to add one anywhere",
+                        )
+                        .clicked()
+                    {
+                        self.add_marker_at(self.transport.position);
+                    }
+                    tb.enabled(can_split);
+                    if tb.button(Some(Icon::Split), "Split", &split_tip).clicked() {
+                        self.split_clip_at_playhead(&ctx);
+                    }
+                    if selected > 1 {
+                        tb.spacer();
+                        tb.item(selection_w, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&selection_text)
+                                        .font(theme::body_font(12.0))
+                                        .color(pal.accent),
+                                )
+                                .sense(Sense::hover()),
+                            )
+                            .on_hover_text(
+                                "Drag any selected clip to move the group · Alt-drag copies · Del deletes · Shift-click adds or removes a clip",
+                            );
+                        });
+                    }
+                })
+            });
+        let out = row.inner;
+        self.arranger.toolbar_row = out.rect;
+        self.arranger.toolbar_items = out.placed;
+        self.arranger.toolbar_overflow = out.overflowed;
+        ui.painter().hline(
+            row.response.rect.x_range(),
+            row.response.rect.bottom(),
+            Stroke::new(1.0_f32, pal.border_soft),
+        );
+    }
+
+    /// Drops the loop region (the song loops whole again), live in the
+    /// engine too.
+    fn clear_loop_region(&mut self) {
+        self.transport.loop_region = None;
+        if let Some(engine) = &self.engine {
+            engine.set_loop_region(None);
+        }
     }
 
     /// Height of a track's whole arranger row: the clip lane plus the
     /// automation strip while the track's "Show automation" toggle is on.
     fn track_row_height(&self, track_id: u64) -> f32 {
-        LANE_H
+        self.arranger.lane_h
             + if self.arranger.auto_lanes.contains_key(&track_id) {
                 AUTO_LANE_H
             } else {
@@ -865,6 +1223,9 @@ impl CadenceApp {
     /// Rows are variable-height (`track_row_height`), so a plain
     /// `row * LANE_H` no longer works.
     fn lane_top(&self, row: usize) -> f32 {
+        if self.arranger.auto_lanes.is_empty() {
+            return row.min(self.project.tracks.len()) as f32 * self.arranger.lane_h;
+        }
         self.project
             .tracks
             .iter()
@@ -898,7 +1259,7 @@ impl CadenceApp {
         for (i, t) in self.project.tracks.iter().enumerate() {
             let h = self.track_row_height(t.id);
             if y < edge + h {
-                return Some((i, y - edge >= LANE_H));
+                return Some((i, y - edge >= self.arranger.lane_h));
             }
             edge += h;
         }
@@ -916,7 +1277,7 @@ impl CadenceApp {
 
     /// The automation-strip rect of lane `row` inside `grid` (screen space).
     fn auto_lane_rect(&self, grid: Rect, row: usize) -> Rect {
-        let top = grid.top() + self.lane_top(row) + LANE_H - self.arranger.scroll_y;
+        let top = grid.top() + self.lane_top(row) + self.arranger.lane_h - self.arranger.scroll_y;
         Rect::from_min_max(
             pos2(grid.left(), top),
             pos2(grid.right(), top + AUTO_LANE_H),
@@ -1008,7 +1369,8 @@ impl CadenceApp {
         let x0 = tl.x(cstart);
         let x1 = tl.x(cstart + len);
         let lane_top = grid.top() + self.lane_top(lane) - self.arranger.scroll_y;
-        let in_band = (lane_top + 4.0..=lane_top + 19.0).contains(&pos.y);
+        let band_top = lane_top + CLIP_INSET;
+        let in_band = (band_top..=band_top + CLIP_BAND_H).contains(&pos.y);
         if in_band {
             // On clips narrower than ~28 px the zones overlap; left wins.
             if pos.x - x0 <= 14.0 {
@@ -1078,6 +1440,14 @@ impl CadenceApp {
                     Hit::Lane { .. } | Hit::None => {}
                 }
             }
+        }
+        // Middle-button drag pans both axes, like the piano roll.
+        self.arranger.pan = resp.dragged_by(PointerButton::Middle);
+        if self.arranger.pan {
+            let d = ui.input(|i| i.pointer.delta());
+            self.arranger.scroll_x = (self.arranger.scroll_x - d.x).max(0.0);
+            self.arranger.scroll_y = (self.arranger.scroll_y - d.y).max(0.0);
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         }
         if pressed && resp.is_pointer_button_down_on() {
             if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
@@ -1390,6 +1760,88 @@ impl CadenceApp {
         resp.context_menu(|ui| self.arranger_context_menu(ui));
     }
 
+    /// Records what the pointer is over for this frame's paint (hovered
+    /// clip and handle, empty-lane hint) and explains the clip handles —
+    /// fade corners and the loop edge — in short tooltips.
+    fn update_grid_hover(&mut self, ui: &Ui, resp: &egui::Response, grid: Rect, tl: Timeline) {
+        let mut hover = GridHover::default();
+        let busy = self.arranger.drag.is_some()
+            || self.arranger.marquee.is_some()
+            || self.arranger.pan
+            || egui::DragAndDrop::has_any_payload(ui.ctx());
+        if let Some(pos) = resp.hover_pos().filter(|_| !busy) {
+            match self.hit_test(pos, grid, tl) {
+                Hit::Clip { clip, .. } => hover.clip = Some((clip, HoverPart::Body)),
+                Hit::ClipFade { clip, edge, .. } => {
+                    let part = match edge {
+                        FadeEdge::In => HoverPart::FadeIn,
+                        FadeEdge::Out => HoverPart::FadeOut,
+                    };
+                    hover.clip = Some((clip, part));
+                }
+                Hit::ClipLoop { clip, .. } => hover.clip = Some((clip, HoverPart::Loop)),
+                Hit::Lane { track, .. } => {
+                    hover.empty_lane = ops::track_index(&self.project, track).filter(|&i| {
+                        let t = &self.project.tracks[i];
+                        t.clips.is_empty() && t.audio_clips.is_empty()
+                    });
+                }
+                Hit::Automation { .. } | Hit::None => {}
+            }
+        }
+        let tip = match hover.clip.map(|(_, part)| part) {
+            Some(HoverPart::FadeIn) => Some("Fade in: drag right to lengthen"),
+            Some(HoverPart::FadeOut) => Some("Fade out: drag left to lengthen"),
+            Some(HoverPart::Loop) => {
+                Some("Loop: drag right to repeat the pattern, left to undo repeats")
+            }
+            Some(HoverPart::Body) | None => None,
+        };
+        if let Some(tip) = tip {
+            let _ = resp.clone().on_hover_text_at_pointer(tip);
+        }
+        self.arranger.hover = hover;
+    }
+
+    /// The ghost hint on a hovered empty track — the only time the lane
+    /// explains its gestures, so the canvas stays clean otherwise.
+    fn paint_empty_lane_hint(&self, p: &Painter, grid: Rect) {
+        let Some(i) = self.arranger.hover.empty_lane else {
+            return;
+        };
+        let Some(track) = self.project.tracks.get(i) else {
+            return;
+        };
+        let pal = self.palette();
+        let text = if track.audio {
+            "Right-click to import an audio file here".to_owned()
+        } else {
+            match self
+                .current_pattern_id(track)
+                .and_then(|pid| ops::pattern(track, pid))
+            {
+                Some(pat) => format!(
+                    "Double-click to place \u{201c}{}\u{201d} · right-click for more",
+                    pat.name
+                ),
+                None => "Right-click for options".to_owned(),
+            }
+        };
+        let y = grid.top() + self.lane_top(i) - self.arranger.scroll_y;
+        let lane = Rect::from_min_size(
+            pos2(grid.left(), y),
+            vec2(grid.width(), self.arranger.lane_h),
+        );
+        let g = elided(
+            p,
+            &text,
+            theme::body_font(12.0),
+            pal.text_faint,
+            lane.width() - 24.0,
+        );
+        p.galley(lane.center() - g.size() * 0.5, g, pal.text_faint);
+    }
+
     fn drag_clip_group(&mut self, cd: &mut ClipDrag, x: f32, tl: Timeline) {
         let g = self.arranger.snap.steps();
         let target = snap_round(tl.step(x) - cd.grab, g);
@@ -1493,15 +1945,15 @@ impl CadenceApp {
             if y > grid.bottom() || y > rect.bottom() {
                 break;
             }
-            let lane = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + LANE_H));
+            let lane_h = self.arranger.lane_h;
+            let lane = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + lane_h));
             if !lane.intersects(rect) {
                 continue;
             }
             for clip in &track.clips {
                 let x0 = tl.x(clip.start);
                 let x1 = tl.x(clip.start + ops::clip_len(track, clip));
-                let r =
-                    Rect::from_min_max(pos2(x0 + 1.0, y + 4.0), pos2(x1 - 1.0, y + LANE_H - 4.0));
+                let r = clip_rect(x0, x1, y, lane_h);
                 if r.is_positive() && r.intersects(rect) {
                     ids.insert(clip.id);
                 }
@@ -1509,8 +1961,7 @@ impl CadenceApp {
             for clip in &track.audio_clips {
                 let x0 = tl.x(clip.start);
                 let x1 = tl.x(clip.start + clip.span());
-                let r =
-                    Rect::from_min_max(pos2(x0 + 1.0, y + 4.0), pos2(x1 - 1.0, y + LANE_H - 4.0));
+                let r = clip_rect(x0, x1, y, lane_h);
                 if r.is_positive() && r.intersects(rect) {
                     ids.insert(clip.id);
                 }
@@ -1738,15 +2189,24 @@ impl CadenceApp {
                 audio,
             }) => {
                 if !audio {
-                    if ui.button("Edit pattern").clicked() {
+                    if ui
+                        .add(egui::Button::new("Open in editor").shortcut_text("Double-click"))
+                        .clicked()
+                    {
                         self.tab = Tab::Editor;
                         self.focus = Focus::Editor;
                     }
                     let cut = [snap_round(step, self.arranger.snap.steps()), step]
                         .into_iter()
                         .find(|at| ops::can_split_clip(&self.project, track, clip, *at));
+                    let split_key = ui
+                        .ctx()
+                        .format_shortcut(&KeyboardShortcut::new(Modifiers::NONE, Key::B));
                     if ui
-                        .add_enabled(cut.is_some(), egui::Button::new("Split here"))
+                        .add_enabled(
+                            cut.is_some(),
+                            egui::Button::new("Split here").shortcut_text(split_key),
+                        )
                         .on_disabled_hover_text("The pointer sits on the clip's edge")
                         .clicked()
                     {
@@ -1792,6 +2252,16 @@ impl CadenceApp {
                     .clicked()
                 {
                     repeat(self, 1, "Duplicate clip");
+                }
+                if ui
+                    .add(
+                        egui::Button::new("Copy")
+                            .shortcut_text(ui.ctx().format_shortcut(&super::SC_COPY)),
+                    )
+                    .clicked()
+                {
+                    self.focus = Focus::Arranger;
+                    self.copy_selection();
                 }
                 if ui.button("Repeat 3 more times").clicked() {
                     repeat(self, 3, "Repeat clip");
@@ -1897,6 +2367,22 @@ impl CadenceApp {
                 if is_audio_lane && ui.button("Import audio file here…").clicked() {
                     self.import_audio_clip_dialog_at(track, step);
                 }
+                let clips_copied = matches!(&self.clipboard, Clipboard::Clips(..));
+                if ui
+                    .add_enabled(
+                        clips_copied,
+                        egui::Button::new("Paste clips here")
+                            .shortcut_text(ui.ctx().format_shortcut(&super::SC_PASTE)),
+                    )
+                    .on_hover_text("Pastes the copied clips on their own tracks, starting here")
+                    .on_disabled_hover_text(format!(
+                        "Copy clips first ({} on a selection)",
+                        ui.ctx().format_shortcut(&super::SC_COPY)
+                    ))
+                    .clicked()
+                {
+                    self.paste_clips_at(step);
+                }
                 let patterns: Vec<(u64, String)> = ops::track(&self.project, track)
                     .map(|t| t.patterns.iter().map(|p| (p.id, p.name.clone())).collect())
                     .unwrap_or_default();
@@ -1925,6 +2411,9 @@ impl CadenceApp {
                     }
                 }
                 ui.separator();
+                if ui.button("Add marker here").clicked() {
+                    self.add_marker_at(step);
+                }
                 self.structure_menu(ui, step);
             }
             Some(ContextTarget::AutoStrip { track, param }) => {
@@ -1976,6 +2465,56 @@ impl CadenceApp {
                 ui.separator();
                 self.structure_menu(ui, self.transport.position);
             }
+        }
+    }
+
+    /// "Paste clips here": the copied clips land back on their own tracks
+    /// with the group's left edge at `step` (where the lane menu opened),
+    /// like the playhead paste in `paste_clips`. One undo step; the copies
+    /// become the selection.
+    fn paste_clips_at(&mut self, step: f64) {
+        let Clipboard::Clips(originals, audio) = &self.clipboard else {
+            return;
+        };
+        let (originals, audio) = (originals.clone(), audio.clone());
+        if originals.is_empty() && audio.is_empty() {
+            return;
+        }
+        let gone = originals
+            .iter()
+            .map(|(t, _)| *t)
+            .chain(audio.iter().map(|(t, _)| *t))
+            .any(|t| ops::track(&self.project, t).is_none());
+        if gone {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not paste clips — a track they were copied from is gone.",
+            );
+            return;
+        }
+        let min_start = originals
+            .iter()
+            .map(|(_, c)| c.start)
+            .chain(audio.iter().map(|(_, c)| c.start))
+            .fold(f64::INFINITY, f64::min);
+        let delta = step - min_start;
+        let mut new = None;
+        self.edit("Paste clips", None, |p| {
+            new = ops::copy_mixed_clip_group(p, &originals, &audio, delta);
+        });
+        match new {
+            Some(ids) => {
+                let primary = ids.first().copied();
+                self.set_clip_selection(ids.into_iter().collect(), primary);
+                self.focus = Focus::Arranger;
+            }
+            None => self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Could not paste clips (tracks hold up to {} clips).",
+                    ops::MAX_CLIPS_PER_TRACK
+                ),
+            ),
         }
     }
 
@@ -2285,9 +2824,24 @@ impl CadenceApp {
         } else if matches!(self.arranger.context, Some(ContextTarget::Ruler { .. })) {
             resp.context_menu(|ui| self.arranger_context_menu(ui));
         }
-        let _ = resp.clone().on_hover_text(
-            "Click or drag to move the playhead (snaps to beats; hold Shift for 1/16)\nDrag the thin top strip to set a loop region\nDouble-click to add a section marker · flags: drag to move, double-click to rename, right-click to delete\nRight-click the ruler for the Structure menu (markers, song end)\nChord strip (bottom): click adds the key's chord, chip click cycles the quality, Shift-click the root, drag moves, right-click deletes",
-        );
+        // One short tip per strip; marker flags and the loop band's ✕
+        // explain themselves, so the ruler stays quiet over them.
+        if let Some(pos) = resp.hover_pos() {
+            let over_own_tip = self.marker_at(ui.ctx(), pos, ruler, tl).is_some()
+                || self.transport.loop_region.is_some_and(|(a, b)| {
+                    loop_clear_rect(loop_band_rect(lane, tl, a, b)).contains(pos)
+                });
+            let tip = if lane.contains(pos) {
+                "Loop strip: drag to set the loop region"
+            } else if chords.contains(pos) {
+                "Chords: click to add the key's chord · click a chord to change it (Shift: root) · drag to move · right-click for more"
+            } else {
+                "Click or drag to move the playhead (Shift: exact) · double-click adds a marker · right-click for song structure"
+            };
+            if !over_own_tip {
+                let _ = resp.clone().on_hover_text(tip);
+            }
+        }
     }
 
     /// The chord strip's right-click menu on an empty spot: the seven
@@ -2309,7 +2863,7 @@ impl CadenceApp {
             if ui
                 .button(format!(
                     "{} — {}",
-                    dc.spec.symbol(),
+                    dc.spec.quality.symbol_in(dc.spec.root, key),
                     key.degree_numeral(dc.degree)
                 ))
                 .clicked()
@@ -2322,7 +2876,7 @@ impl CadenceApp {
         // the existing quality (or the key's tonic quality when adding).
         ui.menu_button("Root…", |ui| {
             for root in 0..12u8 {
-                if ui.button(NOTE_NAMES[root as usize]).clicked() {
+                if ui.button(key.spell(root)).clicked() {
                     let quality = ops::chord_event_at_step(&self.project, step)
                         .and_then(|id| self.project.chord_events.iter().find(|e| e.id == id))
                         .map_or(ops::tonic_chord_spec(key).quality, |e| e.quality);
@@ -2333,7 +2887,7 @@ impl CadenceApp {
         ui.menu_button("Quality…", |ui| {
             for q in ChordQuality::ALL {
                 if ui
-                    .button(format!("{} ({})", q.label(), q.symbol(key.root)))
+                    .button(format!("{} ({})", q.label(), q.symbol_in(key.root, key)))
                     .clicked()
                 {
                     let root = ops::chord_event_at_step(&self.project, step)
@@ -2398,7 +2952,7 @@ impl CadenceApp {
             return None;
         }
         ctx.set_cursor_icon(CursorIcon::Copy);
-        // Fast path: uniform LANE_H rows whenever no automation strip is
+        // Fast path: uniform lane-height rows whenever no automation strip is
         // open; otherwise walk the cumulative (variable) row heights so the
         // insertion slot still lands under the pointer.
         let index = if self.arranger.auto_lanes.is_empty() {
@@ -2406,6 +2960,7 @@ impl CadenceApp {
                 pos.y,
                 drop_area.top(),
                 self.arranger.scroll_y,
+                self.arranger.lane_h,
                 self.project.tracks.len(),
             )
         } else {
@@ -2447,7 +3002,7 @@ impl CadenceApp {
         let top = drop_area.top() + self.lane_top(index) - self.arranger.scroll_y;
         let lane = Rect::from_min_max(
             pos2(drop_area.left(), top),
-            pos2(drop_area.right(), top + LANE_H),
+            pos2(drop_area.right(), top + self.arranger.lane_h),
         );
         let clip = lane.intersect(drop_area);
         if clip.is_positive() {
@@ -2469,12 +3024,17 @@ impl CadenceApp {
     /// their painted rects so the bare ruler strip between them keeps its
     /// seek behavior and clip/lane input is never disturbed.
     fn marker_at(&self, ctx: &egui::Context, pos: Pos2, ruler: Rect, tl: Timeline) -> Option<u64> {
-        self.project
-            .markers
-            .iter()
+        if !marker_lane_rect(ruler).contains(pos) {
+            return None;
+        }
+        let markers = &self.project.markers;
+        (0..markers.len())
             .rev()
-            .find(|m| marker_chip(ctx, m, ruler, tl).is_some_and(|r| r.contains(pos)))
-            .map(|m| m.id)
+            .find(|&i| {
+                let next = markers.get(i + 1).map(|n| n.step);
+                marker_chip(ctx, &markers[i], next, ruler, tl).is_some_and(|r| r.contains(pos))
+            })
+            .map(|i| markers[i].id)
     }
 
     /// The chord chip `pos` is over, if any. Like [`marker_at`], chips are
@@ -2487,12 +3047,18 @@ impl CadenceApp {
         ruler: Rect,
         tl: Timeline,
     ) -> Option<u64> {
-        self.project
-            .chord_events
-            .iter()
+        if !chord_lane_rect(ruler).contains(pos) {
+            return None;
+        }
+        let events = &self.project.chord_events;
+        let key = self.project.key;
+        (0..events.len())
             .rev()
-            .find(|ev| chord_chip(ctx, ev, ruler, tl).is_some_and(|r| r.contains(pos)))
-            .map(|ev| ev.id)
+            .find(|&i| {
+                let next = events.get(i + 1).map(|n| n.step);
+                chord_chip(ctx, &events[i], next, key, ruler, tl).is_some_and(|r| r.contains(pos))
+            })
+            .map(|i| events[i].id)
     }
 
     /// Adds a section marker at `step` (snapped to the arranger grid) through
@@ -2585,10 +3151,7 @@ impl CadenceApp {
             if let Some((a, b)) = self.transport.loop_region {
                 let band = loop_band_rect(lane, tl, a, b);
                 if band.width() >= 16.0 && loop_clear_rect(band).contains(origin) {
-                    self.transport.loop_region = None;
-                    if let Some(engine) = &self.engine {
-                        engine.set_loop_region(None);
-                    }
+                    self.clear_loop_region();
                 }
             }
             self.arranger.region_press = Some(tl.step(origin.x).max(0.0));
@@ -2611,15 +3174,17 @@ impl CadenceApp {
         let pal = self.palette();
         p.rect_filled(grid, 0.0, pal.canvas);
         let first = self.first_visible_lane();
+        let lane_h = self.arranger.lane_h;
+        let mut y = grid.top() + self.lane_top(first) - self.arranger.scroll_y;
         for (i, track) in self.project.tracks.iter().enumerate().skip(first) {
-            let y = grid.top() + self.lane_top(i) - self.arranger.scroll_y;
             if y > grid.bottom() {
                 break;
             }
-            let r = Rect::from_min_size(pos2(grid.left(), y), vec2(grid.width(), LANE_H));
+            let r = Rect::from_min_size(pos2(grid.left(), y), vec2(grid.width(), lane_h));
+            y += self.track_row_height(track.id);
             let selected = self.sel.track == Some(track.id);
             let fill = if selected {
-                theme::mix(pal.canvas_alt, theme::rgb(track.color), 0.06)
+                theme::mix(pal.canvas_alt, theme::rgb(track.color), 0.07)
             } else if i % 2 == 1 {
                 pal.canvas_alt
             } else {
@@ -2628,17 +3193,19 @@ impl CadenceApp {
             p.rect_filled(r, 0.0, fill);
             p.hline(
                 grid.x_range(),
-                r.bottom(),
+                r.bottom() - 0.5,
                 Stroke::new(1.0_f32, pal.border_soft),
             );
         }
         self.paint_bar_lines(p, grid, tl);
+        // Past the song end the timeline fades toward the app background
+        // (darker in dark themes, paler in Paper); clips there still show.
         let end = tl.x(song_steps);
         if end < grid.right() {
             p.rect_filled(
                 Rect::from_min_max(pos2(end.max(grid.left()), grid.top()), grid.max),
                 0.0,
-                Color32::from_black_alpha(80),
+                pal.bg.gamma_multiply(0.55),
             );
             p.vline(
                 end,
@@ -2667,7 +3234,9 @@ impl CadenceApp {
         if ranges.is_empty() {
             return;
         }
-        let tints = section_band_tints();
+        let tints = section_band_tints(self.palette());
+        let rows_end =
+            grid.top() + self.lane_top(self.project.tracks.len()) - self.arranger.scroll_y;
         for (i, (a, b)) in ranges.iter().enumerate() {
             let x0 = tl.x(*a).max(grid.left());
             let x1 = tl.x(*b).min(grid.right());
@@ -2675,7 +3244,7 @@ impl CadenceApp {
                 continue;
             }
             p.rect_filled(
-                Rect::from_min_max(pos2(x0, grid.top()), pos2(x1, grid.bottom())),
+                Rect::from_min_max(pos2(x0, grid.top()), pos2(x1, rows_end.min(grid.bottom()))),
                 0.0,
                 tints[i % tints.len()],
             );
@@ -2710,44 +3279,53 @@ impl CadenceApp {
     fn paint_clips(&self, p: &Painter, grid: Rect, tl: Timeline) {
         let pal = self.palette();
         let first = self.first_visible_lane();
+        let lane_h = self.arranger.lane_h;
+        // Once per frame, not per clip: the selection set (it used to be
+        // rebuilt for every clip).
+        let selected = self.selected_clip_ids();
+        let state = self.history.state();
+        let mut thumbs = self.arranger.thumbs.borrow_mut();
+        let hover = self.arranger.hover.clip;
+        let mut y = grid.top() + self.lane_top(first) - self.arranger.scroll_y;
         for (i, track) in self.project.tracks.iter().enumerate().skip(first) {
-            let y = grid.top() + self.lane_top(i) - self.arranger.scroll_y;
             if y > grid.bottom() {
                 break;
+            }
+            let lane_y = y;
+            y += self.track_row_height(track.id);
+            if lane_y + lane_h < grid.top() {
+                continue;
             }
             let audible = self.project.is_track_audible(i);
             // Inaudible tracks paint at reduced opacity so the arrangement
             // still shows *what* is there without implying it is heard.
             let color = theme::rgb(track.color);
             let color = if audible { color } else { dimmed(color, 0.45) };
-            // One id→pattern map per track per frame, so the clip loop does
-            // not re-run the linear pattern find for every clip.
-            let patterns: HashMap<u64, &Pattern> =
-                track.patterns.iter().map(|p| (p.id, p)).collect();
             for clip in &track.clips {
-                // Inline clip length from the map (same math as
-                // `ops::clip_len`, without a second linear find).
-                let pat_len = patterns
-                    .get(&clip.pattern_id)
-                    .map_or(ops::STEPS_PER_BAR as f64, |p| p.length.max(1) as f64);
+                let pattern = ops::pattern(track, clip.pattern_id);
+                let pat_len = pattern.map_or(ops::STEPS_PER_BAR as f64, |p| p.length.max(1) as f64);
                 let len = pat_len * clip.loop_count() as f64;
                 let (x0, x1) = (tl.x(clip.start), tl.x(clip.start + len));
                 if x1 < grid.left() || x0 > grid.right() {
                     continue;
                 }
-                let r =
-                    Rect::from_min_max(pos2(x0 + 1.0, y + 4.0), pos2(x1 - 1.0, y + LANE_H - 4.0));
-                let selected = self.selected_clip_ids().contains(&clip.id);
+                let thumb = pattern
+                    .filter(|p| !p.notes.is_empty())
+                    .map(|p| thumbs.get(state, track, p));
+                let style = ClipStyle {
+                    color,
+                    selected: selected.contains(&clip.id),
+                    audible,
+                    hover: hover.filter(|(id, _)| *id == clip.id).map(|(_, part)| part),
+                };
                 paint_clip(
                     p,
                     pal,
-                    r,
-                    track,
+                    clip_rect(x0, x1, lane_y, lane_h),
                     clip,
-                    patterns.get(&clip.pattern_id).copied(),
-                    color,
-                    selected,
-                    audible,
+                    pattern,
+                    thumb.as_deref(),
+                    style,
                     tl.pps,
                 );
             }
@@ -2760,10 +3338,20 @@ impl CadenceApp {
                 if x1 < grid.left() || x0 > grid.right() {
                     continue;
                 }
-                let r =
-                    Rect::from_min_max(pos2(x0 + 1.0, y + 4.0), pos2(x1 - 1.0, y + LANE_H - 4.0));
-                let selected = self.selected_clip_ids().contains(&clip.id);
-                paint_audio_clip(p, pal, r, clip, color, selected, audible, tl.pps);
+                let style = ClipStyle {
+                    color,
+                    selected: selected.contains(&clip.id),
+                    audible,
+                    hover: hover.filter(|(id, _)| *id == clip.id).map(|(_, part)| part),
+                };
+                paint_audio_clip(
+                    p,
+                    pal,
+                    clip_rect(x0, x1, lane_y, lane_h),
+                    clip,
+                    style,
+                    tl.pps,
+                );
             }
         }
     }
@@ -2783,7 +3371,7 @@ impl CadenceApp {
             let Some(param) = self.arranger.auto_lanes.get(&track.id).copied() else {
                 continue;
             };
-            let y = grid.top() + self.lane_top(i) + LANE_H - self.arranger.scroll_y;
+            let y = grid.top() + self.lane_top(i) + self.arranger.lane_h - self.arranger.scroll_y;
             if y > grid.bottom() {
                 break;
             }
@@ -2912,9 +3500,6 @@ impl CadenceApp {
         // while the rest of the ruler stays the seek surface.
         let lane = Rect::from_min_max(ruler.min, pos2(ruler.right(), ruler.top() + LOOP_LANE_H));
         p.rect_filled(lane, 0.0, theme::mix(pal.panel, pal.canvas, 0.55));
-        // The middle strip keeps the pre-chord-lane ruler geometry — bar
-        // numbers, marker flags and the playhead tip anchor to it — and
-        // the bottom strip is the chord lane, painted slightly sunken.
         let strip = number_strip_rect(ruler);
         let chords = chord_lane_rect(ruler);
         p.rect_filled(chords, 0.0, theme::mix(pal.panel, pal.canvas, 0.65));
@@ -2928,24 +3513,19 @@ impl CadenceApp {
                 };
                 p.rect_filled(band, 2.0, c.gamma_multiply(0.5));
                 p.rect_stroke(band, 2.0, Stroke::new(1.0_f32, c), StrokeKind::Inside);
+                let ink = theme::ink_on(theme::mix(pal.panel, c, 0.5));
                 if band.width() > 40.0 {
                     p.text(
                         pos2(band.left() + 4.0, band.center().y),
                         Align2::LEFT_CENTER,
                         format!("{}–{}", bar_number(a), bar_number_end(b)),
-                        FontId::proportional(9.0),
-                        pal.text,
+                        theme::body_font(9.0),
+                        ink,
                     );
                 }
                 if band.width() >= 16.0 {
                     let clear = loop_clear_rect(band);
-                    p.text(
-                        clear.center(),
-                        Align2::CENTER_CENTER,
-                        "✕",
-                        FontId::proportional(9.0),
-                        pal.text,
-                    );
+                    theme::paint_icon(&p, clear.shrink(1.0), Icon::Close, ink);
                     // Hover-only interact: the ruler's click handler owns
                     // the actual clearing in `loop_lane_drag`.
                     ui.interact(
@@ -2953,21 +3533,21 @@ impl CadenceApp {
                         ui.id().with(("loop_clear", a.to_bits(), b.to_bits())),
                         Sense::hover(),
                     )
-                    .on_hover_text("Clear loop region");
+                    .on_hover_text("Clear the loop region");
                 }
             }
         }
-        p.hline(
-            lane.x_range(),
-            lane.bottom(),
-            Stroke::new(1.0_f32, pal.border_soft),
-        );
-        // The seam between the number strip and the chord lane.
-        p.hline(
-            ruler.x_range(),
-            chords.top(),
-            Stroke::new(1.0_f32, pal.border_soft),
-        );
+        for y in [lane.bottom(), chords.top()] {
+            p.hline(ruler.x_range(), y, Stroke::new(1.0_f32, pal.border_soft));
+        }
+        // "END" sits right of the song-end line in the number strip; bar
+        // labels that would touch it are skipped so the two never collide.
+        let end = tl.x(song_steps);
+        let end_font = theme::strong_font(ui, 9.0);
+        let end_galley = p.layout_no_wrap("END".to_owned(), end_font, pal.danger);
+        let end_rect =
+            Align2::LEFT_CENTER.anchor_size(pos2(end + 4.0, strip.center().y), end_galley.size());
+        let label_font = theme::body_font(theme::TEXT_SMALL);
         let every = bar_label_every(tl.pps) as i64;
         let b0 = (tl.step(ruler.left()).max(0.0) / 16.0).floor() as i64;
         let b1 = (tl.step(ruler.right()) / 16.0).ceil() as i64;
@@ -2976,20 +3556,20 @@ impl CadenceApp {
             if b % every == 0 {
                 p.vline(
                     x,
-                    strip.bottom() - 9.0..=strip.bottom(),
+                    strip.bottom() - 6.0..=strip.bottom(),
                     Stroke::new(1.0_f32, pal.text_faint),
                 );
-                p.text(
-                    pos2(x + 4.0, strip.center().y - 2.0),
-                    Align2::LEFT_CENTER,
-                    format!("{}", b + 1),
-                    FontId::proportional(11.0),
-                    if (b as f64) * 16.0 < song_steps {
-                        pal.text_dim
-                    } else {
-                        pal.text_faint
-                    },
-                );
+                let color = if (b as f64) * 16.0 < song_steps {
+                    pal.text_dim
+                } else {
+                    pal.text_faint
+                };
+                let g = p.layout_no_wrap(format!("{}", b + 1), label_font.clone(), color);
+                let r = Align2::LEFT_CENTER
+                    .anchor_size(pos2(x + 4.0, strip.center().y - 1.0), g.size());
+                if !r.expand(2.0).intersects(end_rect) {
+                    p.galley(r.min, g, color);
+                }
                 // A matching tick in the chord lane marks the bar line the
                 // chips snap to.
                 p.vline(
@@ -3000,25 +3580,25 @@ impl CadenceApp {
             } else {
                 p.vline(
                     x,
-                    strip.bottom() - 5.0..=strip.bottom(),
+                    strip.bottom() - 3.0..=strip.bottom(),
                     Stroke::new(1.0_f32, pal.border),
                 );
             }
         }
-        let end = tl.x(song_steps);
-        p.text(
-            pos2(end + 4.0, strip.bottom() - 3.0),
-            Align2::LEFT_BOTTOM,
-            "END",
-            FontId::proportional(9.0),
-            pal.danger,
-        );
+        if end >= ruler.left() - 2.0 && end <= ruler.right() {
+            p.vline(
+                end,
+                strip.top()..=ruler.bottom(),
+                Stroke::new(1.5_f32, pal.danger.gamma_multiply(0.7)),
+            );
+            p.galley(end_rect.min, end_galley, pal.danger);
+        }
         let marker = tl.x(self.transport.start_marker);
         if (self.transport.start_marker - self.transport.position).abs() > 0.01 {
             p.add(Shape::convex_polygon(
                 vec![
-                    pos2(marker - 4.0, strip.bottom() - 7.0),
-                    pos2(marker + 4.0, strip.bottom() - 7.0),
+                    pos2(marker - 4.0, strip.bottom() - 6.0),
+                    pos2(marker + 4.0, strip.bottom() - 6.0),
                     pos2(marker, strip.bottom()),
                 ],
                 pal.link,
@@ -3027,21 +3607,25 @@ impl CadenceApp {
         }
         self.paint_marker_chips(ui, &p, ruler, tl);
         self.paint_chord_chips(ui, &p, ruler, tl);
+        // The playhead: a hairline through every strip (meeting the line
+        // the lanes draw below) with a head in the loop lane.
         let x = tl.x(self.transport.position);
+        p.vline(
+            x,
+            ruler.top()..=ruler.bottom(),
+            Stroke::new(1.5_f32, pal.accent),
+        );
         p.add(Shape::convex_polygon(
             vec![
-                pos2(x - 6.0, ruler.top() + 3.0),
-                pos2(x + 6.0, ruler.top() + 3.0),
-                pos2(x + 6.0, strip.bottom() - 9.0),
-                pos2(x, strip.bottom()),
-                pos2(x - 6.0, strip.bottom() - 9.0),
+                pos2(x - 6.0, ruler.top() + 1.0),
+                pos2(x + 6.0, ruler.top() + 1.0),
+                pos2(x + 6.0, lane.bottom() - 2.0),
+                pos2(x, lane.bottom() + 4.0),
+                pos2(x - 6.0, lane.bottom() - 2.0),
             ],
             pal.accent,
-            Stroke::NONE,
+            Stroke::new(1.0_f32, pal.panel),
         ));
-        // A hairline continues the playhead across the chord lane, meeting
-        // the playhead line the lanes draw below the ruler.
-        p.vline(x, chords.y_range(), Stroke::new(1.5_f32, pal.accent));
         p.hline(
             ruler.x_range(),
             ruler.bottom() - 0.5,
@@ -3049,10 +3633,11 @@ impl CadenceApp {
         );
     }
 
-    /// Small colored flag chips naming each section marker, hung just under
-    /// the loop lane. Painted after the bar numbers so an opaque chip can
-    /// sit on a labeled bar, and before the playhead triangle so the
-    /// playhead still wins the overlap. The hovered flag brightens.
+    /// Colored flag pills naming each section marker in the ruler's marker
+    /// lane, with a pole dropping to the ruler's bottom edge. Painted after
+    /// the bar numbers and before the playhead so the playhead still wins
+    /// the overlap. The hovered (or dragged) flag brightens; a name cut by
+    /// its neighbour ends in an ellipsis and reads in full on hover.
     fn paint_marker_chips(&self, ui: &Ui, p: &Painter, ruler: Rect, tl: Timeline) {
         if self.project.markers.is_empty() {
             return;
@@ -3062,53 +3647,40 @@ impl CadenceApp {
         let hovered = ui
             .input(|i| i.pointer.hover_pos())
             .and_then(|pos| self.marker_at(ui.ctx(), pos, ruler, tl));
-        for m in &self.project.markers {
-            let Some(chip) = marker_chip(ui.ctx(), m, ruler, tl) else {
+        let markers = &self.project.markers;
+        for (i, m) in markers.iter().enumerate() {
+            let next = markers.get(i + 1).map(|n| n.step);
+            let Some(chip) = marker_chip(ui.ctx(), m, next, ruler, tl) else {
                 continue;
             };
             let lit = hovered == Some(m.id)
                 || matches!(&self.arranger.drag, Some(ArrangerDrag::Marker { id, .. }) if *id == m.id);
-            let fill = if lit {
-                theme::mix(pal.panel, col, 0.72)
-            } else {
-                theme::mix(pal.panel, col, 0.5)
-            };
+            let fill = theme::mix(pal.panel, col, if lit { 0.72 } else { 0.5 });
             let ink = theme::ink_on(fill);
             let x = tl.x(m.step);
-            // Flag pole under the pennant, then the rounded name pill.
             p.vline(
                 x,
-                chip.top() - 1.0..=ruler.bottom() - 1.0,
-                Stroke::new(1.0_f32, col),
+                chip.bottom()..=ruler.bottom() - 1.0,
+                Stroke::new(1.0_f32, col.gamma_multiply(0.8)),
             );
-            p.add(Shape::convex_polygon(
-                vec![
-                    pos2(x, chip.top() - 1.0),
-                    pos2(x + 7.0, chip.top() + 2.0),
-                    pos2(x, chip.top() + 5.0),
-                ],
-                col,
-                Stroke::NONE,
-            ));
-            p.rect_filled(chip, 3.0, fill);
+            p.rect_filled(chip, theme::RADIUS_S, fill);
             p.rect_stroke(
                 chip,
-                3.0,
+                theme::RADIUS_S,
                 Stroke::new(1.0_f32, col.gamma_multiply(0.85)),
                 StrokeKind::Inside,
             );
-            p.text(
-                pos2(chip.left() + 9.0, chip.center().y + 0.5),
-                Align2::LEFT_CENTER,
-                &m.name,
-                FontId::proportional(9.5),
+            let g = elided(p, &m.name, chip_font(), ink, chip.width() - 10.0);
+            p.galley(
+                pos2(chip.left() + 6.0, chip.center().y - g.size().y * 0.5),
+                g,
                 ink,
             );
             // Hover-only interact so the chip explains itself; clicks stay
             // with the ruler's input handler.
             ui.interact(chip, ui.id().with(("marker_chip", m.id)), Sense::hover())
                 .on_hover_text(format!(
-                    "{} — drag to move · double-click to rename · right-click to delete",
+                    "{}: drag to move · double-click to rename · right-click to delete",
                     m.name
                 ));
         }
@@ -3116,30 +3688,29 @@ impl CadenceApp {
 
     /// Small pills naming each chord event on the ruler's bottom strip —
     /// the same chip idiom as marker flags but tinted `link` instead of
-    /// `warn`, with a stubby stem tying the pill to its bar line. Painted
-    /// before the playhead hairline so the playhead still wins overlaps;
-    /// the hovered or dragged chip brightens. Sparse: bars without a
-    /// chord event paint nothing.
+    /// `warn`, with a stubby stem tying the pill to its bar line, and the
+    /// chord spelled in the song key (flats in flat keys). The hovered or
+    /// dragged chip brightens. Sparse: bars without a chord event paint
+    /// nothing.
     fn paint_chord_chips(&self, ui: &Ui, p: &Painter, ruler: Rect, tl: Timeline) {
         if self.project.chord_events.is_empty() {
             return;
         }
         let pal = self.palette();
         let col = pal.link;
+        let key = self.project.key;
         let hovered = ui
             .input(|i| i.pointer.hover_pos())
             .and_then(|pos| self.chord_event_at(ui.ctx(), pos, ruler, tl));
-        for ev in &self.project.chord_events {
-            let Some(chip) = chord_chip(ui.ctx(), ev, ruler, tl) else {
+        let events = &self.project.chord_events;
+        for (i, ev) in events.iter().enumerate() {
+            let next = events.get(i + 1).map(|n| n.step);
+            let Some(chip) = chord_chip(ui.ctx(), ev, next, key, ruler, tl) else {
                 continue;
             };
             let lit = hovered == Some(ev.id)
                 || matches!(&self.arranger.drag, Some(ArrangerDrag::Chord { id, .. }) if *id == ev.id);
-            let fill = if lit {
-                theme::mix(pal.panel, col, 0.72)
-            } else {
-                theme::mix(pal.panel, col, 0.5)
-            };
+            let fill = theme::mix(pal.panel, col, if lit { 0.72 } else { 0.5 });
             let ink = theme::ink_on(fill);
             p.rect_filled(
                 Rect::from_min_max(
@@ -3149,18 +3720,17 @@ impl CadenceApp {
                 1.0,
                 col,
             );
-            p.rect_filled(chip, 3.0, fill);
+            p.rect_filled(chip, theme::RADIUS_S, fill);
             p.rect_stroke(
                 chip,
-                3.0,
+                theme::RADIUS_S,
                 Stroke::new(1.0_f32, col.gamma_multiply(0.85)),
                 StrokeKind::Inside,
             );
-            p.text(
-                pos2(chip.left() + 6.0, chip.center().y + 0.5),
-                Align2::LEFT_CENTER,
-                ops::chord_event_label(ev),
-                FontId::proportional(10.0),
+            let g = elided(p, &ev.label_in(key), chip_font(), ink, chip.width() - 10.0);
+            p.galley(
+                pos2(chip.left() + 6.0, chip.center().y - g.size().y * 0.5),
+                g,
                 ink,
             );
         }
@@ -3172,20 +3742,22 @@ impl CadenceApp {
         hui.set_clip_rect(header.intersect(ui.clip_rect()));
         hui.painter().rect_filled(header, 0.0, pal.panel);
         let first = self.first_visible_lane();
-        let ids: Vec<u64> = self.project.tracks.iter().map(|t| t.id).collect();
+        let lane_h = self.arranger.lane_h;
+        let name_font = theme::strong_font(&hui, theme::TEXT_BODY);
+        let sub_font = theme::body_font(theme::TEXT_SMALL);
         let mut action: Option<(u64, &str)> = None;
-        for (i, id) in ids.iter().copied().enumerate().skip(first) {
-            let y = grid.top() + self.lane_top(i) - self.arranger.scroll_y;
+        let mut new_height: Option<f32> = None;
+        let mut y = grid.top() + self.lane_top(first) - self.arranger.scroll_y;
+        for i in first..self.project.tracks.len() {
             if y > header.bottom() {
                 break;
             }
-            let Some(track) = ops::track(&self.project, id) else {
-                continue;
-            };
-            let r = Rect::from_min_size(
-                pos2(header.left(), y),
-                vec2(HEADER_W, self.track_row_height(id)),
-            );
+            let track = &self.project.tracks[i];
+            let id = track.id;
+            let row_h = self.track_row_height(id);
+            let r = Rect::from_min_size(pos2(header.left(), y), vec2(HEADER_W, row_h));
+            y += row_h;
+            let lane = Rect::from_min_size(r.min, vec2(HEADER_W, lane_h));
             let resp = hui.interact(r, hui.id().with(("lane_header", id)), Sense::click());
             let selected = self.sel.track == Some(id);
             let color = theme::rgb(track.color);
@@ -3195,17 +3767,24 @@ impl CadenceApp {
                 r,
                 0.0,
                 if selected {
-                    pal.raised
+                    pal.selection_bg
                 } else if resp.hovered() {
-                    theme::mix(pal.panel, pal.raised, 0.5)
+                    theme::mix(pal.panel, pal.raised, 0.6)
                 } else {
                     pal.panel
                 },
             );
+            if selected {
+                p.rect_filled(
+                    Rect::from_min_size(r.min, vec2(2.0, lane_h)),
+                    0.0,
+                    pal.accent,
+                );
+            }
             p.rect_filled(
-                Rect::from_min_size(
-                    r.min + vec2(0.0, 6.0),
-                    vec2(if selected { 4.0 } else { 3.0 }, LANE_H - 12.0),
+                Rect::from_min_max(
+                    pos2(lane.left() + 7.0, lane.top() + 6.0),
+                    pos2(lane.left() + 11.0, lane.bottom() - 6.0),
                 ),
                 2.0,
                 if audible {
@@ -3216,27 +3795,16 @@ impl CadenceApp {
             );
             p.hline(
                 r.x_range(),
-                r.bottom(),
+                r.bottom() - 0.5,
                 Stroke::new(1.0_f32, pal.border_soft),
             );
-            let text_clip = Rect::from_min_max(r.min, pos2(r.right() - 64.0, r.bottom()));
-            let pc = p.with_clip_rect(text_clip.intersect(hui.clip_rect()));
-            pc.text(
-                pos2(r.left() + 14.0, r.top() + 9.0),
-                Align2::LEFT_TOP,
-                &track.name,
-                FontId::proportional(13.5),
-                if audible { pal.text } else { pal.text_faint },
+            // Mute / Solo: the mixer's chips (same size, colors, tooltips).
+            let chip = vec2(theme::CONTROL_S, theme::CONTROL_S);
+            let s = Rect::from_min_size(
+                pos2(lane.right() - 8.0 - chip.x, lane.center().y - chip.y * 0.5),
+                chip,
             );
-            pc.text(
-                pos2(r.left() + 14.0, r.top() + 29.0),
-                Align2::LEFT_TOP,
-                ops::instrument_label(track),
-                FontId::proportional(10.5),
-                pal.text_faint,
-            );
-            let m = Rect::from_min_size(pos2(r.right() - 58.0, r.top() + 15.0), vec2(24.0, 22.0));
-            let s = Rect::from_min_size(pos2(r.right() - 30.0, r.top() + 15.0), vec2(24.0, 22.0));
+            let m = s.translate(vec2(-(chip.x + theme::GAP_XS), 0.0));
             let mresp = hui.interact(m, hui.id().with(("mute", id)), Sense::click());
             let sresp = hui.interact(s, hui.id().with(("solo", id)), Sense::click());
             theme::paint_chip(&hui, pal, m, &mresp, "M", track.mute, pal.danger);
@@ -3247,21 +3815,42 @@ impl CadenceApp {
             if sresp.on_hover_text("Solo").clicked() {
                 action = Some((id, "solo"));
             }
+            // Name (and instrument subtitle when the lane has room), cut
+            // with an ellipsis before the chips; the tooltip has it in full.
+            let text_left = lane.left() + 18.0;
+            let text_w = (m.left() - theme::GAP_S - text_left).max(0.0);
+            let p = hui.painter();
+            let name_ink = if audible { pal.text } else { pal.text_faint };
+            let name = elided(p, &track.name, name_font.clone(), name_ink, text_w);
+            let instrument = ops::instrument_label(track);
+            if lane_h >= 40.0 {
+                let sub = elided(p, &instrument, sub_font.clone(), pal.text_faint, text_w);
+                let block = name.size().y + 1.0 + sub.size().y;
+                let top = lane.center().y - block * 0.5;
+                let sub_top = top + name.size().y + 1.0;
+                p.galley(pos2(text_left, top), name, name_ink);
+                p.galley(pos2(text_left, sub_top), sub, pal.text_faint);
+            } else {
+                let top = lane.center().y - name.size().y * 0.5;
+                p.galley(pos2(text_left, top), name, name_ink);
+            }
             // The automation strip's bottom band of the header carries the
             // lane picker (VOL/PAN chips) and a close button — it is only
             // painted while the track's strip is open.
             if let Some(param) = self.arranger.auto_lanes.get(&id).copied() {
-                let strip = Rect::from_min_max(
-                    pos2(r.left(), r.top() + LANE_H),
-                    pos2(r.right(), r.bottom()),
-                );
+                let strip = Rect::from_min_max(pos2(r.left(), lane.bottom()), r.max);
                 p.rect_filled(strip, 0.0, theme::mix(pal.panel, pal.canvas, 0.5));
                 p.text(
-                    pos2(strip.left() + 14.0, strip.center().y),
+                    pos2(strip.left() + 18.0, strip.center().y),
                     Align2::LEFT_CENTER,
-                    "AUTO",
-                    FontId::proportional(8.5),
+                    "AUTOMATION",
+                    theme::strong_font(&hui, theme::TEXT_KICKER),
                     pal.text_faint,
+                );
+                let chip = vec2(32.0, 18.0);
+                let close = Rect::from_min_size(
+                    pos2(strip.right() - 8.0 - 18.0, strip.center().y - 9.0),
+                    vec2(18.0, 18.0),
                 );
                 for (chip_i, (kind, label)) in [
                     (AutomationLane::Volume, "VOL"),
@@ -3272,10 +3861,13 @@ impl CadenceApp {
                 {
                     let cr = Rect::from_min_size(
                         pos2(
-                            strip.right() - 96.0 + chip_i as f32 * 34.0,
-                            strip.top() + 6.0,
+                            close.left()
+                                - theme::GAP_S
+                                - (2 - chip_i) as f32 * (chip.x + theme::GAP_XS)
+                                + theme::GAP_XS,
+                            strip.center().y - chip.y * 0.5,
                         ),
-                        vec2(30.0, 16.0),
+                        chip,
                     );
                     let cresp = hui.interact(
                         cr,
@@ -3284,7 +3876,7 @@ impl CadenceApp {
                     );
                     theme::paint_chip(&hui, pal, cr, &cresp, label, param == kind, pal.accent);
                     if cresp
-                        .on_hover_text(format!("Edit {label} automation on the strip below"))
+                        .on_hover_text(format!("Edit {label} automation on the strip"))
                         .clicked()
                     {
                         action = Some((
@@ -3297,20 +3889,24 @@ impl CadenceApp {
                         ));
                     }
                 }
-                let x = Rect::from_min_size(
-                    pos2(strip.right() - 26.0, strip.top() + 6.0),
-                    vec2(16.0, 16.0),
-                );
-                let xresp = hui.interact(x, hui.id().with(("auto_hide", id)), Sense::click());
-                theme::paint_chip(&hui, pal, x, &xresp, "✕", false, pal.text_faint);
+                let xresp = hui.interact(close, hui.id().with(("auto_hide", id)), Sense::click());
+                let ink = if xresp.hovered() {
+                    pal.text
+                } else {
+                    pal.text_dim
+                };
+                if xresp.hovered() {
+                    hui.painter()
+                        .rect_filled(close, theme::RADIUS_S, pal.control_hover);
+                }
+                theme::paint_icon(hui.painter(), close.shrink(3.0), Icon::Close, ink);
                 if xresp.on_hover_text("Hide automation lane").clicked() {
                     action = Some((id, "auto-hide"));
                 }
             }
             let tip = format!(
-                "{} · {}\nClick to select · right-click for track options",
-                track.name,
-                ops::instrument_label(track)
+                "{}\n{}\nDouble-click for track settings · right-click for more",
+                track.name, instrument
             );
             let resp = resp.on_hover_text(tip);
             if resp.clicked() {
@@ -3337,6 +3933,29 @@ impl CadenceApp {
                 {
                     action = Some((id, "auto-toggle"));
                 }
+                ui.menu_button("Track height", |ui| {
+                    for (label, h) in [
+                        ("Small", MIN_LANE_H),
+                        ("Medium", LANE_H),
+                        ("Large", 64.0),
+                        ("Extra large", MAX_LANE_H),
+                    ] {
+                        if ui
+                            .selectable_label((lane_h - h).abs() < 0.5, label)
+                            .clicked()
+                        {
+                            new_height = Some(h);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Alt+wheel over the lanes zooms freely")
+                            .small()
+                            .color(pal.text_faint),
+                    );
+                });
+                ui.separator();
                 if ui.button("Move up").clicked() {
                     action = Some((id, "up"));
                 }
@@ -3352,35 +3971,43 @@ impl CadenceApp {
                 }
             });
         }
-        let add_y = grid.top() + self.lane_top(ids.len()) - self.arranger.scroll_y + 8.0;
+        let add_y = y + 8.0;
         if add_y < header.bottom() - 10.0 {
             let r = Rect::from_min_size(
-                pos2(header.left() + 10.0, add_y),
-                vec2(HEADER_W - 20.0, 28.0),
+                pos2(header.left() + theme::GAP_M, add_y),
+                vec2(HEADER_W - 2.0 * theme::GAP_M, theme::CONTROL_M),
             );
             let full = self.project.tracks.len() >= ops::MAX_TRACKS;
-            let b = egui::Button::new(
-                RichText::new(if full {
-                    "Track limit reached"
-                } else {
-                    "+  Add track"
+            let clicked = hui
+                .scope_builder(UiBuilder::new().max_rect(r), |ui| {
+                    ui.add_enabled_ui(!full, |ui| {
+                        theme::icon_label_button(
+                            ui,
+                            pal,
+                            Icon::Plus,
+                            if full {
+                                "Track limit reached"
+                            } else {
+                                "Add track"
+                            },
+                            theme::CONTROL_M,
+                            "Pick an instrument from the library (or drag one onto the lanes)",
+                        )
+                        .clicked()
+                    })
+                    .inner
                 })
-                .color(if full { pal.text_faint } else { pal.text_dim }),
-            )
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::new(1.0_f32, pal.border));
-            if hui
-                .put(r, b)
-                .on_hover_text("Pick an instrument from the library")
-                .clicked()
-                && !full
-            {
+                .inner;
+            if clicked && !full {
                 self.side_tab = sidebar::SideTab::Library;
                 self.set_status(
                     StatusKind::Info,
                     "Pick an instrument in the library on the left: + adds it, ▶ previews it.",
                 );
             }
+        }
+        if let Some(h) = new_height {
+            self.arranger.set_lane_height(h, 0.0);
         }
         if let Some((id, what)) = action {
             self.focus = Focus::Arranger;
@@ -3462,70 +4089,133 @@ fn loop_band_rect(lane: Rect, tl: Timeline, a: f64, b: f64) -> Rect {
     )
 }
 
-/// The ruler's middle strip: bar numbers, section-marker flags and the
-/// playhead tip live here. Its bottom edge is the pre-chord-lane
-/// `ruler.bottom()`, so everything anchored to it keeps its old position.
-fn number_strip_rect(ruler: Rect) -> Rect {
+/// The ruler's section-marker lane, under the loop lane: marker flags live
+/// here so they never sit on a bar number.
+fn marker_lane_rect(ruler: Rect) -> Rect {
     Rect::from_min_max(
         pos2(ruler.left(), ruler.top() + LOOP_LANE_H),
-        pos2(ruler.right(), ruler.top() + LOOP_LANE_H + NUMBER_STRIP_H),
+        pos2(ruler.right(), ruler.top() + LOOP_LANE_H + MARKER_LANE_H),
+    )
+}
+
+/// The ruler's bar-number strip — bar labels, ticks, the song-end tag and
+/// the start-marker triangle.
+fn number_strip_rect(ruler: Rect) -> Rect {
+    let top = ruler.top() + LOOP_LANE_H + MARKER_LANE_H;
+    Rect::from_min_max(
+        pos2(ruler.left(), top),
+        pos2(ruler.right(), top + NUMBER_STRIP_H),
     )
 }
 
 /// The ruler's bottom strip — the chord lane the per-bar chips ride on.
 fn chord_lane_rect(ruler: Rect) -> Rect {
     Rect::from_min_max(
-        pos2(ruler.left(), ruler.top() + LOOP_LANE_H + NUMBER_STRIP_H),
+        pos2(
+            ruler.left(),
+            ruler.top() + LOOP_LANE_H + MARKER_LANE_H + NUMBER_STRIP_H,
+        ),
         pos2(ruler.right(), ruler.bottom()),
     )
 }
 
-/// The rounded flag chip painted for a marker on the ruler (flag pole plus
-/// the name pill under the loop lane). `None` when the marker's step is
-/// outside the visible ruler span — the pill extends right of the pole, so
-/// near-edge markers still get a hit rect while partially visible.
-fn marker_chip(ctx: &egui::Context, m: &Marker, ruler: Rect, tl: Timeline) -> Option<Rect> {
+/// Font of the marker and chord pill labels.
+fn chip_font() -> FontId {
+    theme::body_font(theme::TEXT_KICKER)
+}
+
+/// Width of `text` in the pill font.
+fn chip_text_w(ctx: &egui::Context, text: String) -> f32 {
+    ctx.fonts_mut(|f| f.layout_no_wrap(text, chip_font(), Color32::WHITE))
+        .size()
+        .x
+}
+
+/// Widest a pill starting at `x` may grow: up to just before the next
+/// pill's anchor (`next_x`), so neighbours never overlap — their labels
+/// elide instead.
+fn chip_room(x: f32, next_x: Option<f32>) -> f32 {
+    next_x.map_or(f32::INFINITY, |n| (n - x - 3.0).max(16.0))
+}
+
+/// The rounded flag pill painted for a marker in the ruler's marker lane,
+/// starting at its step and sized to its name (capped so it stops short of
+/// the `next` marker). `None` when the marker's step is outside the
+/// visible ruler span.
+fn marker_chip(
+    ctx: &egui::Context,
+    m: &Marker,
+    next: Option<f64>,
+    ruler: Rect,
+    tl: Timeline,
+) -> Option<Rect> {
     let x = tl.x(m.step);
     if x < ruler.left() - 2.0 || x > ruler.right() + 2.0 {
         return None;
     }
-    let name_w = ctx
-        .fonts_mut(|f| f.layout_no_wrap(m.name.clone(), FontId::proportional(9.5), Color32::WHITE))
-        .size()
-        .x;
-    let w = (9.0 + name_w + 5.0).max(16.0);
+    let lane = marker_lane_rect(ruler);
+    let w = (chip_text_w(ctx, m.name.clone()) + 12.0)
+        .max(16.0)
+        .min(chip_room(x, next.map(|s| tl.x(s))));
     Some(Rect::from_min_size(
-        pos2(x - 1.0, ruler.top() + LOOP_LANE_H + 1.0),
+        pos2(x - 1.0, lane.top() + (lane.height() - MARKER_CHIP_H) * 0.5),
         vec2(w, MARKER_CHIP_H),
     ))
 }
 
 /// The rounded pill painted for a chord event on the chord lane: it hangs
-/// just right of the event's bar line, sized to the chord symbol (a 2 px
-/// stem on the left ties it to the line). `None` when the event's step is
-/// outside the visible ruler span — same edge convention as
-/// [`marker_chip`].
-fn chord_chip(ctx: &egui::Context, ev: &ChordEvent, ruler: Rect, tl: Timeline) -> Option<Rect> {
+/// just right of the event's bar line, sized to the chord symbol spelled
+/// in `key` (a 2 px stem on the left ties it to the line) and capped short
+/// of the `next` chord. `None` when the event's step is outside the
+/// visible ruler span — same edge convention as [`marker_chip`].
+fn chord_chip(
+    ctx: &egui::Context,
+    ev: &ChordEvent,
+    next: Option<f64>,
+    key: SongKey,
+    ruler: Rect,
+    tl: Timeline,
+) -> Option<Rect> {
     let x = tl.x(ev.step);
     if x < ruler.left() - 2.0 || x > ruler.right() + 2.0 {
         return None;
     }
     let lane = chord_lane_rect(ruler);
-    let name_w = ctx
-        .fonts_mut(|f| {
-            f.layout_no_wrap(
-                ops::chord_event_label(ev),
-                FontId::proportional(10.0),
-                Color32::WHITE,
-            )
-        })
-        .size()
-        .x;
-    let w = (name_w + 12.0).max(20.0);
+    let w = (chip_text_w(ctx, ev.label_in(key)) + 12.0)
+        .max(20.0)
+        .min(chip_room(x + 2.0, next.map(|s| tl.x(s))));
     Some(Rect::from_min_size(
         pos2(x + 2.0, lane.top() + (lane.height() - CHORD_CHIP_H) * 0.5),
         vec2(w, CHORD_CHIP_H),
     ))
+}
+
+/// A clip body's rect inside a lane whose top edge is `y`.
+fn clip_rect(x0: f32, x1: f32, y: f32, lane_h: f32) -> Rect {
+    Rect::from_min_max(
+        pos2(x0 + 1.0, y + CLIP_INSET),
+        pos2(x1 - 1.0, y + lane_h - CLIP_INSET),
+    )
+}
+
+/// A small floating label with a panel-colored backing (drag readouts),
+/// readable over clips in every theme.
+fn paint_tag(p: &Painter, pal: Palette, pos: Pos2, text: &str) {
+    let g = p.layout_no_wrap(
+        text.to_owned(),
+        theme::body_font(theme::TEXT_SMALL),
+        pal.text,
+    );
+    let r = Rect::from_min_size(pos, g.size()).expand2(vec2(5.0, 2.0));
+    let r = r.translate(vec2(5.0, 2.0));
+    p.rect(
+        r,
+        theme::RADIUS_S,
+        pal.raised,
+        Stroke::new(1.0_f32, pal.border),
+        StrokeKind::Inside,
+    );
+    p.galley(r.min + vec2(5.0, 2.0), g, pal.text);
 }
 
 /// Bars between labelled bar lines so labels stay at least ~40 px apart.
@@ -3536,399 +4226,348 @@ fn bar_label_every(pps: f32) -> u32 {
         .unwrap_or(32)
 }
 
+/// How a clip paints this frame: its track color (already dimmed for an
+/// inaudible track), selection, audibility and which part is hovered.
+#[derive(Clone, Copy)]
+struct ClipStyle {
+    color: Color32,
+    selected: bool,
+    audible: bool,
+    hover: Option<HoverPart>,
+}
+
+/// The clip frame both clip kinds share: rounded body, colored name strip.
+/// Returns a painter clipped to the visible part of the clip, the strip
+/// rect, the content rect under it and the ink for text on the strip.
+fn paint_clip_body(
+    p: &Painter,
+    pal: Palette,
+    r: Rect,
+    s: ClipStyle,
+) -> (Painter, Rect, Rect, Color32) {
+    let lift = if s.hover.is_some() { 0.05 } else { 0.0 };
+    let body = theme::mix(
+        pal.canvas,
+        s.color,
+        if s.selected { 0.34 } else { 0.22 } + lift,
+    );
+    let radius = theme::RADIUS_S;
+    p.rect_filled(r, radius, body);
+    let band = Rect::from_min_max(
+        r.min,
+        pos2(r.right(), (r.top() + CLIP_BAND_H).min(r.bottom())),
+    );
+    let band_fill = if s.audible {
+        s.color
+    } else {
+        s.color.gamma_multiply(0.5)
+    };
+    p.rect_filled(
+        band,
+        egui::CornerRadius {
+            nw: radius as u8,
+            ne: radius as u8,
+            sw: 0,
+            se: 0,
+        },
+        band_fill,
+    );
+    let clip_painter = p.with_clip_rect(r.intersect(p.clip_rect()));
+    let inner = Rect::from_min_max(
+        pos2(r.left() + 2.0, band.bottom() + 3.0),
+        pos2(r.right() - 2.0, r.bottom() - 3.0),
+    );
+    (clip_painter, band, inner, theme::ink_on(s.color))
+}
+
+/// Everything painted over a clip's content, for both clip kinds: loop
+/// seams, fade wedges, the name (pinned to the visible left edge so it
+/// stays readable while scrolled), the loop badge, the hover-only handle
+/// grips and the outline (accent when selected).
+#[allow(clippy::too_many_arguments)]
+fn paint_clip_overlay(
+    p: &Painter,
+    cp: &Painter,
+    pal: Palette,
+    r: Rect,
+    band: Rect,
+    inner: Rect,
+    ink: Color32,
+    s: ClipStyle,
+    name: &str,
+    loops: u32,
+    rep_px: f32,
+    fades_px: (f32, f32),
+) {
+    let vis = cp.clip_rect();
+    // Faint seams at each loop boundary, only for the visible repetitions.
+    if loops > 1 && rep_px > 0.5 {
+        let seam = pal.text_faint.gamma_multiply(0.45);
+        let first = (((vis.left() - r.left()) / rep_px).floor() as i64).max(1);
+        let last = (((vis.right() - r.left()) / rep_px).ceil() as i64).min(loops as i64 - 1);
+        for rep in first..=last {
+            let x = r.left() + rep as f32 * rep_px;
+            if x > r.left() && x < r.right() {
+                cp.vline(x, band.bottom()..=r.bottom(), Stroke::new(1.0_f32, seam));
+            }
+        }
+    }
+    // Soundtrap-style fades: a translucent wedge over the content plus a
+    // thin bright guide along its slope, anchored at the clip's corners.
+    let fade_fill = pal.text.gamma_multiply(0.28);
+    let fade_guide = Stroke::new(1.0_f32, pal.text);
+    let (top, bottom) = (inner.top(), inner.bottom());
+    for (fx, left) in [(fades_px.0, true), (fades_px.1, false)] {
+        let fx = fx.clamp(0.0, inner.width());
+        if fx <= 0.5 {
+            continue;
+        }
+        let edge = if left { r.left() } else { r.right() };
+        let inward = if left { fx } else { -fx };
+        let (a, b, c) = (
+            pos2(edge, bottom),
+            pos2(edge + inward, bottom),
+            pos2(edge + inward, top),
+        );
+        cp.add(Shape::convex_polygon(
+            vec![a, b, c],
+            fade_fill,
+            Stroke::NONE,
+        ));
+        cp.line_segment([a, c], fade_guide);
+    }
+    // Loop badge in the strip, clear of the right fade corner.
+    let font = theme::body_font(theme::TEXT_KICKER);
+    let mut badge_w = 0.0;
+    if loops > 1 && r.width() > 56.0 {
+        let label = format!("×{loops}");
+        let galley = cp.layout_no_wrap(label, font.clone(), ink);
+        let icon = 10.0;
+        let end = r.right() - 16.0;
+        let x = end - galley.size().x - icon - 3.0;
+        badge_w = end - x + 6.0;
+        theme::paint_icon(
+            cp,
+            Rect::from_center_size(pos2(x + icon * 0.5, band.center().y), vec2(icon, icon)),
+            Icon::Loop,
+            ink,
+        );
+        cp.galley(
+            pos2(x + icon + 3.0, band.center().y - galley.size().y * 0.5),
+            galley,
+            ink,
+        );
+    }
+    let name_x = r.left().max(vis.left()) + 5.0;
+    let room = r.right().min(vis.right()) - name_x - badge_w - 4.0;
+    if room > 8.0 {
+        let g = elided(cp, name, font, ink, room);
+        cp.galley(pos2(name_x, band.center().y - g.size().y * 0.5), g, ink);
+    }
+    // Handles show only while the clip is hovered: corner ticks for the
+    // fades, a grip on the right edge for the loop count.
+    if let Some(part) = s.hover {
+        if r.width() > 20.0 {
+            for (left, lit) in [
+                (true, part == HoverPart::FadeIn),
+                (false, part == HoverPart::FadeOut),
+            ] {
+                let k = if lit { 10.0 } else { 7.0 };
+                let tick = ink.gamma_multiply(if lit { 1.0 } else { 0.7 });
+                let (x, d) = if left {
+                    (r.left() + 1.0, k)
+                } else {
+                    (r.right() - 1.0, -k)
+                };
+                cp.add(Shape::convex_polygon(
+                    vec![
+                        pos2(x, r.top() + 1.0),
+                        pos2(x + d, r.top() + 1.0),
+                        pos2(x, r.top() + 1.0 + k),
+                    ],
+                    tick,
+                    Stroke::NONE,
+                ));
+            }
+        }
+        if r.width() >= 46.0 && inner.height() > 4.0 {
+            let lit = part == HoverPart::Loop;
+            let grip = if lit {
+                pal.text
+            } else {
+                pal.text.gamma_multiply(0.55)
+            };
+            let span = inner.y_range();
+            for dx in [3.0, 6.0] {
+                cp.vline(r.right() - dx, span, Stroke::new(1.0_f32, grip));
+            }
+        }
+    }
+    let stroke = if s.selected {
+        Stroke::new(2.0_f32, pal.accent)
+    } else {
+        Stroke::new(1.0_f32, s.color.gamma_multiply(0.55))
+    };
+    p.rect_stroke(r, theme::RADIUS_S, stroke, StrokeKind::Inside);
+}
+
+/// Paints a pattern clip: the shared frame plus a mini piano roll built
+/// from the cached [`Thumb`]. Only the repetitions and notes inside the
+/// visible span are emitted, as one mesh per clip.
 #[allow(clippy::too_many_arguments)]
 fn paint_clip(
     p: &Painter,
     pal: Palette,
     r: Rect,
-    track: &Track,
     clip: &Clip,
     pattern: Option<&Pattern>,
-    color: Color32,
-    selected: bool,
-    audible: bool,
+    thumb: Option<&Thumb>,
+    s: ClipStyle,
     pps: f32,
 ) {
     if r.width() < 1.0 {
         return;
     }
-    // Text/icons sit on the pastel track-color band: pick ink by luminance.
-    let ink = theme::ink_on(color);
-    let body = theme::mix(pal.canvas, color, if selected { 0.36 } else { 0.24 });
-    p.rect_filled(r, 5.0, body);
-    let band = Rect::from_min_max(r.min, pos2(r.right(), r.top() + 15.0));
-    p.rect_filled(
-        band,
-        egui::CornerRadius {
-            nw: 5,
-            ne: 5,
-            sw: 0,
-            se: 0,
-        },
-        if audible {
-            color
-        } else {
-            color.gamma_multiply(0.5)
-        },
-    );
-    let clip_painter = p.with_clip_rect(r.intersect(p.clip_rect()));
+    let (cp, band, inner, ink) = paint_clip_body(p, pal, r, s);
     let loops = clip.loop_count();
-    // One pattern's length in steps; looped repetitions tile across the clip.
     let pat_len = pattern.map_or(ops::STEPS_PER_BAR as f32, |p| p.length.max(1) as f32);
-    let inner = Rect::from_min_max(
-        pos2(r.left() + 2.0, band.bottom() + 3.0),
-        pos2(r.right() - 2.0, r.bottom() - 3.0),
-    );
-    if let Some(pat) = pattern {
-        if r.width() > 18.0 {
-            clip_painter.text(
-                pos2(r.left() + 5.0, band.center().y),
-                Align2::LEFT_CENTER,
-                &pat.name,
-                FontId::proportional(10.5),
-                ink,
-            );
-        }
-        if pat.notes.is_empty() {
-            if r.width() > 60.0 {
-                clip_painter.text(
-                    inner.center(),
-                    Align2::CENTER_CENTER,
-                    "empty",
-                    FontId::proportional(10.0),
-                    pal.text_faint,
-                );
-            }
-        } else if inner.width() > 4.0 {
-            let drums = track.shows_drum_grid();
-            let rows = track.drum_rows();
-            let (lo, hi) = if drums {
-                (0.0, rows.len() as f32 - 1.0)
-            } else {
-                let lo = pat.notes.iter().map(|n| n.pitch).min().unwrap_or(60) as f32;
-                let hi = pat.notes.iter().map(|n| n.pitch).max().unwrap_or(60) as f32;
-                let mid = (lo + hi) * 0.5;
-                let span = (hi - lo).max(12.0);
-                (mid - span * 0.5, mid + span * 0.5)
-            };
-            let row = |pitch: u8| -> f32 {
-                let v = if drums {
-                    // Stray pitches park on the third row (clamped for small kits).
-                    rows.iter()
-                        .position(|(d, _)| *d == pitch)
-                        .unwrap_or(2.min(rows.len().saturating_sub(1))) as f32
-                } else {
-                    pitch as f32
-                };
-                let t = if hi > lo { (v - lo) / (hi - lo) } else { 0.5 };
-                if drums {
-                    inner.top() + t * inner.height()
-                } else {
-                    inner.bottom() - t * inner.height()
-                }
-            };
-            let note_color = if audible {
-                theme::mix(color, pal.text, 0.35)
+    let rep_px = pat_len * pps;
+    match (pattern, thumb) {
+        (Some(_), Some(thumb)) if inner.width() > 4.0 && inner.height() > 2.0 => {
+            let note_color = if s.audible {
+                theme::mix(s.color, pal.text, 0.35)
             } else {
                 pal.text_faint
             };
-            // The pattern's mini-notes repeat once per loop; the rect budget
-            // is shared across all repetitions.
-            let mut drawn = 0usize;
-            'reps: for rep in 0..loops {
-                let base = r.left() + rep as f32 * pat_len * pps;
-                if base > r.right() {
-                    break;
-                }
-                for n in &pat.notes {
-                    if drawn >= 3000 {
-                        break 'reps;
-                    }
-                    let x = base + n.start as f32 * pps;
-                    if x > r.right() {
-                        continue;
-                    }
-                    let w = (n.duration as f32 * pps).max(1.5).min(r.right() - x);
-                    if w <= 0.0 {
-                        continue;
-                    }
-                    let y = row(n.pitch);
-                    clip_painter.rect_filled(
-                        Rect::from_min_size(pos2(x, y - 1.0), vec2(w, 2.5)),
-                        0.5,
-                        note_color,
-                    );
-                    drawn += 1;
-                }
-            }
+            paint_thumb(&cp, r, inner, thumb, loops, rep_px, pps, note_color);
         }
-    }
-    // Faint separators at each loop boundary inside the clip body.
-    if loops > 1 {
-        let sep = Color32::from_rgba_unmultiplied(
-            pal.text_faint.r(),
-            pal.text_faint.g(),
-            pal.text_faint.b(),
-            110,
-        );
-        for rep in 1..loops {
-            let x = r.left() + rep as f32 * pat_len * pps;
-            if x <= r.left() || x >= r.right() {
-                continue;
-            }
-            clip_painter.vline(x, r.top() + 15.0..=r.bottom(), Stroke::new(1.0_f32, sep));
-        }
-    }
-    // Soundtrap-style fades: a translucent wedge over the note area plus a
-    // thin bright guide line along its slope, anchored at the clip's corners.
-    let fade_fill = Color32::from_rgba_unmultiplied(pal.text.r(), pal.text.g(), pal.text.b(), 72);
-    let fade_guide = Stroke::new(1.0_f32, pal.text);
-    let (top, bottom) = (inner.top(), inner.bottom());
-    if clip.fade_in > 0.0 {
-        let fx = (clip.fade_in as f32 * pps).clamp(0.0, inner.width());
-        if fx > 0.5 {
-            let (a, b, c) = (
-                pos2(r.left(), bottom),
-                pos2(r.left() + fx, bottom),
-                pos2(r.left() + fx, top),
+        (Some(_), _) if r.width() > 60.0 && inner.height() > 8.0 => {
+            let g = cp.layout_no_wrap(
+                "Empty".to_owned(),
+                theme::body_font(theme::TEXT_KICKER),
+                pal.text_faint,
             );
-            clip_painter.add(Shape::convex_polygon(
-                vec![a, b, c],
-                fade_fill,
-                Stroke::NONE,
-            ));
-            clip_painter.line_segment([a, c], fade_guide);
+            cp.galley(inner.center() - g.size() * 0.5, g, pal.text_faint);
         }
+        _ => {}
     }
-    if clip.fade_out > 0.0 {
-        let fx = (clip.fade_out as f32 * pps).clamp(0.0, inner.width());
-        if fx > 0.5 {
-            let (a, b, c) = (
-                pos2(r.right(), bottom),
-                pos2(r.right() - fx, bottom),
-                pos2(r.right() - fx, top),
-            );
-            clip_painter.add(Shape::convex_polygon(
-                vec![a, b, c],
-                fade_fill,
-                Stroke::NONE,
-            ));
-            clip_painter.line_segment([a, c], fade_guide);
-        }
-    }
-    // Loop badge in the top band, clear of the corner fade zones.
-    if loops > 1 && r.width() > 56.0 {
-        let label = format!("×{loops}");
-        let font = FontId::proportional(10.0);
-        let galley = clip_painter.layout_no_wrap(label.clone(), font.clone(), ink);
-        let text_w = galley.size().x;
-        let icon = 10.0;
-        let end = r.right() - 24.0;
-        let x = end - text_w - icon - 3.0;
-        theme::paint_icon(
-            &clip_painter,
-            Rect::from_center_size(pos2(x + icon * 0.5, band.center().y), vec2(icon, icon)),
-            theme::Icon::Loop,
-            ink,
-        );
-        clip_painter.text(
-            pos2(x + icon + 3.0, band.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            font,
-            ink,
-        );
-    }
-    // Small grip ticks at the top corners mark the fade handles.
-    if r.width() > 20.0 {
-        let tick = Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), 170);
-        clip_painter.add(Shape::convex_polygon(
-            vec![
-                pos2(r.left() + 1.0, r.top() + 1.0),
-                pos2(r.left() + 7.0, r.top() + 1.0),
-                pos2(r.left() + 1.0, r.top() + 7.0),
-            ],
-            tick,
-            Stroke::NONE,
-        ));
-        clip_painter.add(Shape::convex_polygon(
-            vec![
-                pos2(r.right() - 1.0, r.top() + 1.0),
-                pos2(r.right() - 7.0, r.top() + 1.0),
-                pos2(r.right() - 1.0, r.top() + 7.0),
-            ],
-            tick,
-            Stroke::NONE,
-        ));
-    }
-    let stroke = if selected {
-        Stroke::new(1.5_f32, pal.text)
-    } else {
-        Stroke::new(1.0_f32, color.gamma_multiply(0.55))
-    };
-    p.rect_stroke(r, 5.0, stroke, StrokeKind::Inside);
+    let name = pattern.map_or("Missing pattern", |p| p.name.as_str());
+    paint_clip_overlay(
+        p,
+        &cp,
+        pal,
+        r,
+        band,
+        inner,
+        ink,
+        s,
+        name,
+        loops,
+        rep_px,
+        (clip.fade_in as f32 * pps, clip.fade_out as f32 * pps),
+    );
 }
 
-/// Paints an imported-WAV clip: same frame/band/fade/loop grammar as
+/// The mini piano roll of one pattern clip: every visible repetition's
+/// visible notes as flat rects in a single mesh (cheap to tessellate),
+/// capped at [`THUMB_NOTE_BUDGET`] rects.
+#[allow(clippy::too_many_arguments)]
+fn paint_thumb(
+    cp: &Painter,
+    r: Rect,
+    inner: Rect,
+    thumb: &Thumb,
+    loops: u32,
+    rep_px: f32,
+    pps: f32,
+    color: Color32,
+) -> usize {
+    let vis = cp.clip_rect();
+    let (vx0, vx1) = (vis.left().max(r.left()), vis.right().min(r.right()));
+    if vx1 <= vx0 || rep_px <= 0.0 || thumb.notes.is_empty() {
+        return 0;
+    }
+    let note_h = (inner.height() * 0.09).clamp(2.0, 4.0);
+    let usable = (inner.height() - note_h).max(0.0);
+    let first = ((vx0 - r.left()) / rep_px).floor().max(0.0) as u32;
+    let last = (((vx1 - r.left()) / rep_px).floor() as u32).min(loops.saturating_sub(1));
+    let mut mesh = egui::Mesh::default();
+    let mut drawn = 0usize;
+    'reps: for rep in first..=last {
+        let base = r.left() + rep as f32 * rep_px;
+        // Visible window in pattern steps; notes are sorted by start.
+        let lo = (vx0 - base) / pps - thumb.max_dur;
+        let hi = (vx1 - base) / pps;
+        let from = thumb.notes.partition_point(|n| n.0 < lo);
+        let to = thumb.notes.partition_point(|n| n.0 <= hi);
+        for &(start, dur, row) in &thumb.notes[from..to.max(from)] {
+            let x = base + start * pps;
+            let w = (dur * pps).max(1.5).min(r.right() - x);
+            if w <= 0.0 || x + w < vx0 {
+                continue;
+            }
+            mesh.add_colored_rect(
+                Rect::from_min_size(pos2(x, inner.top() + row * usable), vec2(w, note_h)),
+                color,
+            );
+            drawn += 1;
+            if drawn >= THUMB_NOTE_BUDGET {
+                break 'reps;
+            }
+        }
+    }
+    if !mesh.is_empty() {
+        cp.add(Shape::mesh(mesh));
+    }
+    drawn
+}
+
+/// Paints an imported-WAV clip: the same frame/fade/loop grammar as
 /// [`paint_clip`], but the body shows diagonal hatching and the file name —
 /// a waveform is out of scope for the MVP, so the clip reads as audio
 /// content without pretending to show one.
-#[allow(clippy::too_many_arguments)]
-fn paint_audio_clip(
-    p: &Painter,
-    pal: Palette,
-    r: Rect,
-    clip: &AudioClip,
-    color: Color32,
-    selected: bool,
-    audible: bool,
-    pps: f32,
-) {
+fn paint_audio_clip(p: &Painter, pal: Palette, r: Rect, clip: &AudioClip, s: ClipStyle, pps: f32) {
     if r.width() < 1.0 {
         return;
     }
-    let ink = theme::ink_on(color);
-    let body = theme::mix(pal.canvas, color, if selected { 0.36 } else { 0.24 });
-    p.rect_filled(r, 5.0, body);
-    let band = Rect::from_min_max(r.min, pos2(r.right(), r.top() + 15.0));
-    p.rect_filled(
-        band,
-        egui::CornerRadius {
-            nw: 5,
-            ne: 5,
-            sw: 0,
-            se: 0,
-        },
-        if audible {
-            color
-        } else {
-            color.gamma_multiply(0.5)
-        },
-    );
-    let clip_painter = p.with_clip_rect(r.intersect(p.clip_rect()));
-    let loops = clip.loop_count();
-    let rep_len = clip.length.max(0.0) as f32;
-    let inner = Rect::from_min_max(
-        pos2(r.left() + 2.0, band.bottom() + 3.0),
-        pos2(r.right() - 2.0, r.bottom() - 3.0),
-    );
-    // Diagonal hatch marks — sparse enough to stay readable at any zoom.
+    let (cp, band, inner, ink) = paint_clip_body(p, pal, r, s);
+    // Diagonal hatch marks — sparse enough to stay readable at any zoom,
+    // emitted only across the visible part (anchored to the clip so the
+    // pattern does not swim while scrolling).
+    let vis = cp.clip_rect();
     if inner.is_positive() && inner.width() > 6.0 {
-        let hatch = if audible {
-            theme::mix(color, pal.text, 0.45).gamma_multiply(0.55)
+        let hatch = if s.audible {
+            theme::mix(s.color, pal.text, 0.45).gamma_multiply(0.55)
         } else {
             pal.text_faint
         };
-        let mut stripes = Vec::new();
         let step = 10.0_f32;
         let h = inner.height();
-        let mut x = inner.left() - h;
-        while x < inner.right() {
+        let skip = ((vis.left() - inner.left()) / step).floor().max(0.0);
+        let mut x = inner.left() - h + skip * step;
+        let end = inner.right().min(vis.right());
+        let mut stripes = Vec::new();
+        while x < end {
             stripes.push(pos2(x, inner.bottom()));
             stripes.push(pos2(x + h, inner.top()));
             x += step;
         }
-        clip_painter.add(Shape::line(stripes, Stroke::new(1.0_f32, hatch)));
+        cp.add(Shape::line(stripes, Stroke::new(1.0_f32, hatch)));
     }
-    if r.width() > 18.0 {
-        clip_painter.text(
-            pos2(r.left() + 5.0, band.center().y),
-            Align2::LEFT_CENTER,
-            &clip.name,
-            FontId::proportional(10.5),
-            ink,
-        );
-    }
-    // Loop boundary separators + badge, same rhythm as pattern clips.
-    if loops > 1 && rep_len > 0.0 {
-        let sep = Color32::from_rgba_unmultiplied(
-            pal.text_faint.r(),
-            pal.text_faint.g(),
-            pal.text_faint.b(),
-            110,
-        );
-        for rep in 1..loops {
-            let x = r.left() + rep as f32 * rep_len * pps;
-            if x <= r.left() || x >= r.right() {
-                continue;
-            }
-            clip_painter.vline(x, r.top() + 15.0..=r.bottom(), Stroke::new(1.0_f32, sep));
-        }
-    }
-    // Fade wedges, identical to the pattern-clip treatment.
-    let fade_fill = Color32::from_rgba_unmultiplied(pal.text.r(), pal.text.g(), pal.text.b(), 72);
-    let fade_guide = Stroke::new(1.0_f32, pal.text);
-    let (top, bottom) = (inner.top(), inner.bottom());
-    if clip.fade_in > 0.0 {
-        let fx = (clip.fade_in as f32 * pps).clamp(0.0, inner.width());
-        if fx > 0.5 {
-            let (a, b, c) = (
-                pos2(r.left(), bottom),
-                pos2(r.left() + fx, bottom),
-                pos2(r.left() + fx, top),
-            );
-            clip_painter.add(Shape::convex_polygon(
-                vec![a, b, c],
-                fade_fill,
-                Stroke::NONE,
-            ));
-            clip_painter.line_segment([a, c], fade_guide);
-        }
-    }
-    if clip.fade_out > 0.0 {
-        let fx = (clip.fade_out as f32 * pps).clamp(0.0, inner.width());
-        if fx > 0.5 {
-            let (a, b, c) = (
-                pos2(r.right(), bottom),
-                pos2(r.right() - fx, bottom),
-                pos2(r.right() - fx, top),
-            );
-            clip_painter.add(Shape::convex_polygon(
-                vec![a, b, c],
-                fade_fill,
-                Stroke::NONE,
-            ));
-            clip_painter.line_segment([a, c], fade_guide);
-        }
-    }
-    if loops > 1 && r.width() > 56.0 {
-        let label = format!("×{loops}");
-        clip_painter.text(
-            pos2(r.right() - 24.0, band.center().y),
-            Align2::RIGHT_CENTER,
-            label,
-            FontId::proportional(10.0),
-            ink,
-        );
-    }
-    // Corner fade-handle ticks.
-    if r.width() > 20.0 {
-        let tick = Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), 170);
-        clip_painter.add(Shape::convex_polygon(
-            vec![
-                pos2(r.left() + 1.0, r.top() + 1.0),
-                pos2(r.left() + 7.0, r.top() + 1.0),
-                pos2(r.left() + 1.0, r.top() + 7.0),
-            ],
-            tick,
-            Stroke::NONE,
-        ));
-        clip_painter.add(Shape::convex_polygon(
-            vec![
-                pos2(r.right() - 1.0, r.top() + 1.0),
-                pos2(r.right() - 7.0, r.top() + 1.0),
-                pos2(r.right() - 1.0, r.top() + 7.0),
-            ],
-            tick,
-            Stroke::NONE,
-        ));
-    }
-    let stroke = if selected {
-        Stroke::new(1.5_f32, pal.text)
-    } else {
-        Stroke::new(1.0_f32, color.gamma_multiply(0.55))
-    };
-    p.rect_stroke(r, 5.0, stroke, StrokeKind::Inside);
+    paint_clip_overlay(
+        p,
+        &cp,
+        pal,
+        r,
+        band,
+        inner,
+        ink,
+        s,
+        &clip.name,
+        clip.loop_count(),
+        clip.length.max(0.0) as f32 * pps,
+        (clip.fade_in as f32 * pps, clip.fade_out as f32 * pps),
+    );
 }
 
 #[cfg(test)]
@@ -4203,18 +4842,21 @@ mod tests {
     #[test]
     fn drop_lane_index_maps_pointer_y_to_the_insert_slot() {
         // Index = the hovered lane; its track would shift down on drop.
-        assert_eq!(drop_lane_index(0.0, 0.0, 0.0, 3), 0);
-        assert_eq!(drop_lane_index(LANE_H - 1.0, 0.0, 0.0, 3), 0);
-        assert_eq!(drop_lane_index(LANE_H, 0.0, 0.0, 3), 1);
-        assert_eq!(drop_lane_index(2.5 * LANE_H, 0.0, 0.0, 3), 2);
+        assert_eq!(drop_lane_index(0.0, 0.0, 0.0, LANE_H, 3), 0);
+        assert_eq!(drop_lane_index(LANE_H - 1.0, 0.0, 0.0, LANE_H, 3), 0);
+        assert_eq!(drop_lane_index(LANE_H, 0.0, 0.0, LANE_H, 3), 1);
+        assert_eq!(drop_lane_index(2.5 * LANE_H, 0.0, 0.0, LANE_H, 3), 2);
         // Below the last lane clamps to len (append); above clamps to 0.
-        assert_eq!(drop_lane_index(400.0, 0.0, 0.0, 3), 3);
-        assert_eq!(drop_lane_index(-5.0, 0.0, 0.0, 3), 0);
+        assert_eq!(drop_lane_index(400.0, 0.0, 0.0, LANE_H, 3), 3);
+        assert_eq!(drop_lane_index(-5.0, 0.0, 0.0, LANE_H, 3), 0);
         // Lane geometry accounts for the vertical scroll.
-        assert_eq!(drop_lane_index(10.0, 0.0, LANE_H, 3), 1);
-        assert_eq!(drop_lane_index(10.0, 40.0, 0.0, 3), 0);
+        assert_eq!(drop_lane_index(10.0, 0.0, LANE_H, LANE_H, 3), 1);
+        assert_eq!(drop_lane_index(10.0, 40.0, 0.0, LANE_H, 3), 0);
         // An empty song only ever inserts at 0.
-        assert_eq!(drop_lane_index(300.0, 0.0, 0.0, 0), 0);
+        assert_eq!(drop_lane_index(300.0, 0.0, 0.0, LANE_H, 0), 0);
+        // Taller lanes (vertical zoom) map the same pointer to an earlier row.
+        assert_eq!(drop_lane_index(70.0, 0.0, 0.0, 64.0, 3), 1);
+        assert_eq!(drop_lane_index(70.0, 0.0, 0.0, MAX_LANE_H, 3), 0);
     }
 
     #[test]
@@ -4334,20 +4976,23 @@ mod tests {
     // ----- chord strip ---------------------------------------------------------
 
     #[test]
-    fn chord_lane_sits_under_the_number_strip() {
+    fn ruler_strips_stack_without_overlap() {
         let ruler = Rect::from_min_size(Pos2::ZERO, vec2(400.0, RULER_H));
+        let markers = marker_lane_rect(ruler);
         let strip = number_strip_rect(ruler);
         let lane = chord_lane_rect(ruler);
-        // The three ruler strips stack without overlap: the loop lane on
-        // top, then the number strip, then the chord lane.
-        assert_eq!(strip.top(), ruler.top() + LOOP_LANE_H);
+        // Four strips top to bottom: loop lane, marker lane, bar numbers,
+        // chord lane — markers never sit on the bar numbers.
+        assert_eq!(markers.top(), ruler.top() + LOOP_LANE_H);
+        assert_eq!(strip.top(), markers.bottom());
         assert_eq!(lane.top(), strip.bottom());
         assert_eq!(lane.bottom(), ruler.bottom());
         assert_eq!(
             lane.height(),
-            RULER_H - LOOP_LANE_H - NUMBER_STRIP_H,
-            "the chord strip keeps the thin bottom share"
+            RULER_H - LOOP_LANE_H - MARKER_LANE_H - NUMBER_STRIP_H,
+            "the chord strip keeps the bottom share"
         );
+        assert!(lane.height() >= CHORD_CHIP_H && markers.height() >= MARKER_CHIP_H);
     }
 
     #[test]
@@ -4361,7 +5006,8 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |_| {});
         let ev = ChordEvent::new(9, ChordQuality::Minor7, 16.0);
-        let chip = chord_chip(&ctx, &ev, ruler, tl).expect("on screen");
+        let key = SongKey::default();
+        let chip = chord_chip(&ctx, &ev, None, key, ruler, tl).expect("on screen");
         let lane = chord_lane_rect(ruler);
         // The pill rides inside the lane, just right of its bar line.
         assert!(lane.contains(chip.center()));
@@ -4369,13 +5015,17 @@ mod tests {
         assert_eq!(chip.height(), CHORD_CHIP_H);
         // Longer symbols get wider chips.
         let wide = ChordEvent::new(6, ChordQuality::HalfDiminished7, 16.0);
-        let wide_chip = chord_chip(&ctx, &wide, ruler, tl).unwrap();
-        assert!(wide_chip.width() > chip.width(), "F#m7b5 beats Am7");
+        let wide_chip = chord_chip(&ctx, &wide, None, key, ruler, tl).unwrap();
+        assert!(wide_chip.width() > chip.width(), "Gbm7b5 beats Am7");
+        // A chip never runs into the next chord: it stops short of it.
+        let capped = chord_chip(&ctx, &wide, Some(24.0), key, ruler, tl).unwrap();
+        assert!(capped.right() < tl.x(24.0), "{capped:?}");
+        assert!(capped.width() < wide_chip.width());
         // Off-screen events have no chip and no hit target.
         let off_left = ChordEvent::new(0, ChordQuality::Major, -32.0);
-        assert_eq!(chord_chip(&ctx, &off_left, ruler, tl), None);
+        assert_eq!(chord_chip(&ctx, &off_left, None, key, ruler, tl), None);
         let off_right = ChordEvent::new(0, ChordQuality::Major, 1_000_000.0);
-        assert_eq!(chord_chip(&ctx, &off_right, ruler, tl), None);
+        assert_eq!(chord_chip(&ctx, &off_right, None, key, ruler, tl), None);
     }
 
     #[test]
@@ -4627,5 +5277,456 @@ mod tests {
         assert_eq!(app.project.bars, before);
         app.undo();
         assert!(app.project.markers.is_empty());
+    }
+
+    // ----- layout, navigation and paint paths ----------------------------------
+
+    /// Runs `n` full app frames at window `size`; `events` (with
+    /// `modifiers` held) go into the first one.
+    fn run_frames(
+        ctx: &egui::Context,
+        app: &mut CadenceApp,
+        size: egui::Vec2,
+        n: usize,
+        events: Vec<egui::Event>,
+        modifiers: Modifiers,
+    ) {
+        let mut events = Some(events);
+        for _ in 0..n {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                focused: true,
+                modifiers,
+                events: events.take().unwrap_or_default(),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.frame(ctx));
+        }
+    }
+
+    fn wheel(pos: Pos2, delta: egui::Vec2, modifiers: Modifiers) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers,
+            },
+        ]
+    }
+
+    /// The demo song with every optional toolbar item showing: a loop
+    /// region and a multi-clip selection.
+    fn busy_demo() -> CadenceApp {
+        let mut app = CadenceApp::headless(Project::demo());
+        app.transport.loop_region = Some((16.0, 48.0));
+        let ids: BTreeSet<u64> = app
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(|c| c.id))
+            .take(3)
+            .collect();
+        app.set_clip_selection(ids, None);
+        app
+    }
+
+    #[test]
+    fn toolbar_items_never_overlap_from_min_to_full_hd() {
+        for (w, h) in [(1100.0, 760.0), (1360.0, 860.0), (1920.0, 1080.0)] {
+            for mut app in [busy_demo(), CadenceApp::headless(Project::empty())] {
+                let ctx = egui::Context::default();
+                run_frames(&ctx, &mut app, vec2(w, h), 6, Vec::new(), Modifiers::NONE);
+                let row = app.arranger.toolbar_row;
+                let items = &app.arranger.toolbar_items;
+                assert!(row.is_positive(), "toolbar laid out at {w}");
+                assert!(
+                    items.len() >= 10,
+                    "{} items at {w} px: {items:?}",
+                    items.len()
+                );
+                for (i, a) in items.iter().enumerate() {
+                    assert!(
+                        row.expand(0.5).contains_rect(*a),
+                        "item {i} {a:?} leaves the toolbar {row:?} at {w} px"
+                    );
+                    for (j, b) in items.iter().enumerate().skip(i + 1) {
+                        assert!(
+                            !a.shrink(0.5).intersects(b.shrink(0.5)),
+                            "items {i} {a:?} and {j} {b:?} overlap at {w} px"
+                        );
+                    }
+                }
+                // The row stays inside the arranger card, right of nothing.
+                let grid = app.arranger.grid;
+                assert!(row.left() < grid.left() && row.right() <= grid.right() + SCROLLBAR + 0.5);
+                if w >= 1360.0 {
+                    assert_eq!(
+                        app.arranger.toolbar_overflow, 0,
+                        "everything fits without the overflow menu at {w} px"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn six_lanes_fit_the_default_arranger_at_1080p() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let ctx = egui::Context::default();
+        run_frames(
+            &ctx,
+            &mut app,
+            vec2(1920.0, 1080.0),
+            4,
+            Vec::new(),
+            Modifiers::NONE,
+        );
+        let grid = app.arranger.grid;
+        assert!(
+            grid.height() >= 6.0 * LANE_H,
+            "{} px of lanes hold {:.1} default lanes",
+            grid.height(),
+            grid.height() / LANE_H
+        );
+    }
+
+    #[test]
+    fn vertical_scrollbar_only_takes_room_when_lanes_overflow() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::empty());
+        run_frames(&ctx, &mut app, size, 4, Vec::new(), Modifiers::NONE);
+        let right_edge = app.arranger.toolbar_row.right() + theme::GAP_M;
+        assert!(
+            (app.arranger.grid.right() - right_edge).abs() < 0.5,
+            "one lane fits: no gutter ({:?} vs {right_edge})",
+            app.arranger.grid
+        );
+        for _ in 0..14 {
+            ops::add_track(&mut app.project, crate::model::Instrument::Piano);
+        }
+        run_frames(&ctx, &mut app, size, 4, Vec::new(), Modifiers::NONE);
+        assert!(
+            (app.arranger.grid.right() - (right_edge - SCROLLBAR)).abs() < 0.5,
+            "15 lanes overflow: the gutter is reserved beside the grid"
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_shift_pans_ctrl_zooms_alt_resizes_and_middle_drag_pans() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        for _ in 0..10 {
+            ops::add_track(&mut app.project, crate::model::Instrument::Piano);
+        }
+        run_frames(&ctx, &mut app, size, 4, Vec::new(), Modifiers::NONE);
+        let at = app.arranger.grid.center();
+
+        // Plain wheel: vertical scroll only.
+        let (sx, sy) = (app.arranger.scroll_x, app.arranger.scroll_y);
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            2,
+            wheel(at, vec2(0.0, -6.0), Modifiers::NONE),
+            Modifiers::NONE,
+        );
+        assert!(app.arranger.scroll_y > sy, "wheel scrolls the lanes");
+        assert_eq!(app.arranger.scroll_x, sx);
+
+        // Shift+wheel: horizontal.
+        let sy = app.arranger.scroll_y;
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            2,
+            wheel(at, vec2(0.0, -6.0), Modifiers::SHIFT),
+            Modifiers::SHIFT,
+        );
+        assert!(app.arranger.scroll_x > sx, "shift+wheel scrolls in time");
+        assert_eq!(app.arranger.scroll_y, sy);
+
+        // Ctrl/Cmd+wheel: time zoom, lane height untouched.
+        let pps = app.arranger.px_per_step;
+        let cmd = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        run_frames(&ctx, &mut app, size, 2, wheel(at, vec2(0.0, 6.0), cmd), cmd);
+        assert!(app.arranger.px_per_step > pps, "ctrl+wheel zooms in");
+        assert_eq!(app.arranger.lane_h, LANE_H);
+
+        // Alt+wheel: lane height, not scroll.
+        let (sx, pps) = (app.arranger.scroll_x, app.arranger.px_per_step);
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            2,
+            wheel(at, vec2(0.0, 6.0), Modifiers::ALT),
+            Modifiers::ALT,
+        );
+        assert!(app.arranger.lane_h > LANE_H, "alt+wheel grows the lanes");
+        assert!(app.arranger.lane_h <= MAX_LANE_H);
+        assert_eq!((app.arranger.scroll_x, app.arranger.px_per_step), (sx, pps));
+
+        // Middle drag pans both axes.
+        let (sx, sy) = (app.arranger.scroll_x, app.arranger.scroll_y);
+        let press = |pos: Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let to = at - vec2(60.0, 30.0);
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(at), press(at, true)],
+            Modifiers::NONE,
+        );
+        for k in 1..=3 {
+            let p = at - vec2(20.0, 10.0) * k as f32;
+            run_frames(
+                &ctx,
+                &mut app,
+                size,
+                1,
+                vec![egui::Event::PointerMoved(p)],
+                Modifiers::NONE,
+            );
+        }
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![press(to, false)],
+            Modifiers::NONE,
+        );
+        assert!(
+            app.arranger.scroll_x > sx + 20.0,
+            "middle drag pans in time"
+        );
+        assert!(
+            app.arranger.scroll_y > sy + 10.0,
+            "middle drag pans the lanes"
+        );
+        assert!(!app.arranger.pan, "the pan ends with the button");
+    }
+
+    #[test]
+    fn lane_height_zoom_is_clamped_and_keeps_the_anchor() {
+        let mut v = ArrangerView {
+            scroll_y: 100.0,
+            ..Default::default()
+        };
+        let anchor = 50.0;
+        let content_at = (v.scroll_y + anchor) / v.lane_h;
+        v.zoom_lanes(1.5, Some(anchor));
+        assert!(((v.scroll_y + anchor) / v.lane_h - content_at).abs() < 1e-3);
+        for _ in 0..20 {
+            v.zoom_lanes(1.5, None);
+        }
+        assert_eq!(v.lane_h, MAX_LANE_H);
+        for _ in 0..20 {
+            v.zoom_lanes(0.5, None);
+        }
+        assert_eq!(v.lane_h, MIN_LANE_H);
+        v.set_lane_height(LANE_H, 0.0);
+        assert_eq!(v.lane_h, LANE_H);
+    }
+
+    #[test]
+    fn demo_chords_are_spelled_in_its_flat_key() {
+        let p = Project::demo();
+        assert!(p.key.prefers_flats(), "the demo is in {}", p.key.name());
+        assert!(!p.chord_events.is_empty());
+        for ev in &p.chord_events {
+            let label = ev.label_in(p.key);
+            assert!(!label.contains('#'), "{label} should use flats");
+        }
+    }
+
+    #[test]
+    fn thumbnails_sort_notes_and_emit_only_the_visible_span() {
+        let mut track = crate::model::create_track(Instrument::Piano);
+        let pat = &mut track.patterns[0];
+        pat.length = 16;
+        pat.notes = (0..16)
+            .rev()
+            .map(|i| crate::model::Note::new(60 + (i % 12) as u8, i as f64, 1.0, 0.8))
+            .collect();
+        let pat = track.patterns[0].clone();
+        let thumb = Thumb::build(&track, &pat);
+        assert_eq!(thumb.notes.len(), 16);
+        assert!(
+            thumb.notes.windows(2).all(|w| w[0].0 <= w[1].0),
+            "sorted by start"
+        );
+        assert!(thumb.notes.iter().all(|n| (0.0..=1.0).contains(&n.2)));
+        assert_eq!(thumb.max_dur, 1.0);
+
+        // A 64-loop clip at 4 px/step is 4096 px wide; only ~400 px show.
+        let ctx = egui::Context::default();
+        let mut drawn = 0;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let vis = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 40.0));
+            let p = ctx
+                .layer_painter(egui::LayerId::background())
+                .with_clip_rect(vis);
+            let r = Rect::from_min_size(Pos2::ZERO, vec2(4096.0, 40.0));
+            let inner = r.shrink(4.0);
+            drawn = paint_thumb(&p, r, inner, &thumb, 64, 64.0, 4.0, Color32::WHITE);
+        });
+        assert!(
+            (100..=102).contains(&drawn),
+            "{drawn} rects for 100 visible notes (not all 1024)"
+        );
+    }
+
+    #[test]
+    fn thumbnail_cache_reuses_until_the_pattern_changes() {
+        let mut track = crate::model::create_track(Instrument::Piano);
+        track.patterns[0].notes = vec![crate::model::Note::new(60, 0.0, 1.0, 0.8)];
+        let mut cache = ThumbCache::default();
+        let a = cache.get(1, &track, &track.patterns[0]);
+        let b = cache.get(1, &track, &track.patterns[0]);
+        assert!(Arc::ptr_eq(&a, &b), "same state, same pattern: cached");
+        // An edit that bypasses the history still invalidates it.
+        track.patterns[0]
+            .notes
+            .push(crate::model::Note::new(64, 4.0, 1.0, 0.8));
+        let c = cache.get(1, &track, &track.patterns[0]);
+        assert_eq!(c.notes.len(), 2);
+        // A new history state drops everything.
+        let d = cache.get(2, &track, &track.patterns[0]);
+        assert!(!Arc::ptr_eq(&c, &d));
+    }
+
+    #[test]
+    fn paste_clips_here_lands_at_the_menu_step_and_undoes() {
+        let mut app = CadenceApp::headless(Project::empty());
+        let tid = app.project.tracks[0].id;
+        let clip = app.project.tracks[0].clips[0].id;
+        app.set_single_clip_selection(clip);
+        app.focus = Focus::Arranger;
+        app.copy_selection();
+        app.paste_clips_at(64.0);
+        let t = &app.project.tracks[0];
+        assert_eq!(t.clips.len(), 2);
+        let new = t.clips.iter().find(|c| c.id != clip).unwrap();
+        assert_eq!(new.start, 64.0, "pasted at the right-clicked bar");
+        assert_eq!(app.sel.clip, Some(new.id), "the copy is selected");
+        assert_eq!(app.sel.track, Some(tid));
+        app.project.validate().unwrap();
+        app.undo();
+        assert_eq!(app.project.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn empty_lane_hover_offers_the_place_hint_only_on_empty_tracks() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::empty());
+        let id = ops::add_track(&mut app.project, crate::model::Instrument::Piano).unwrap();
+        // Make the new track empty.
+        if let Some(t) = ops::track_mut(&mut app.project, id) {
+            t.clips.clear();
+        }
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let grid = app.arranger.grid;
+        let lane = |i: usize| grid.top() + LANE_H * (i as f32 + 0.5);
+        let far = pos2(grid.right() - 20.0, lane(0));
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(far)],
+            Modifiers::NONE,
+        );
+        assert_eq!(app.arranger.hover.empty_lane, None, "lane 0 has a clip");
+        let empty = pos2(grid.center().x, lane(1));
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(empty)],
+            Modifiers::NONE,
+        );
+        assert_eq!(app.arranger.hover.empty_lane, Some(1));
+    }
+
+    // ----- performance ---------------------------------------------------------
+
+    /// Mean cost of one arranger frame for `project` in a `size` panel, in
+    /// microseconds: `(build, tessellate)`. The view starts fitted, so the
+    /// whole song (every clip) is on screen — the worst case for painting.
+    fn arranger_frame_us(project: &Project, size: egui::Vec2, playing: bool) -> (f64, f64) {
+        use std::time::{Duration, Instant};
+        const FRAMES: usize = 300;
+        const WARMUP: usize = 30;
+        let ctx = egui::Context::default();
+        let mut app = CadenceApp::headless(project.clone());
+        theme::apply(&ctx, app.theme);
+        app.transport.playing = playing;
+        let total = project.total_steps().max(16.0);
+        let (mut build, mut tess) = (Duration::ZERO, Duration::ZERO);
+        for n in 0..FRAMES {
+            if playing {
+                app.transport.position = (n as f64 * 2.0) % total;
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                time: Some(n as f64 / 60.0),
+                ..Default::default()
+            };
+            let start = Instant::now();
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| app.arranger_ui(ui));
+            });
+            let built = start.elapsed();
+            let start = Instant::now();
+            std::hint::black_box(ctx.tessellate(out.shapes, out.pixels_per_point));
+            if n >= WARMUP {
+                build += built;
+                tess += start.elapsed();
+            }
+        }
+        let per = |d: Duration| d.as_secs_f64() * 1e6 / (FRAMES - WARMUP) as f64;
+        (per(build), per(tess))
+    }
+
+    /// `cargo test --release --locked --lib perf_arranger -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "release-mode performance measurement"]
+    fn perf_arranger_frames() {
+        for name in ["neon-circuits", "midnight-dub"] {
+            let path = format!("examples/songs/{name}.cadence");
+            let project = crate::persistence::load_project(std::path::Path::new(&path)).unwrap();
+            for (label, size) in [
+                ("1920x420", vec2(1920.0, 420.0)),
+                ("1920x1000", vec2(1920.0, 1000.0)),
+            ] {
+                for playing in [false, true] {
+                    let (b, t) = arranger_frame_us(&project, size, playing);
+                    println!(
+                        "arranger,{name},{label},{},build={b:.1} us,tessellate={t:.1} us",
+                        if playing { "playing" } else { "idle" }
+                    );
+                }
+            }
+        }
     }
 }
