@@ -3111,7 +3111,21 @@ impl CadenceApp {
                     }
                     commit |= resp.lost_focus()
                         || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    // The app's Esc shortcut runs first and consumes the
+                    // key (and egui drops the focus, which reads as a
+                    // commit): look at the raw events.
+                    cancel |= ui.input(|i| {
+                        i.raw.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Escape,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        })
+                    });
                 });
             });
         // A click anywhere outside the popup commits, like Enter.
@@ -3123,15 +3137,20 @@ impl CadenceApp {
         if let Some(ed) = self.arranger.marker_rename.as_mut() {
             ed.text = text;
         }
-        if commit {
+        if cancel {
+            self.arranger.marker_rename = None;
+        } else if commit {
             if let Some(ed) = self.arranger.marker_rename.take() {
                 self.edit("Rename marker", None, |p| {
                     ops::rename_marker(p, ed.id, &ed.text);
                 });
             }
-        } else if cancel {
-            self.arranger.marker_rename = None;
         }
+    }
+
+    /// A marker name is being edited inline (Esc belongs to that field).
+    pub(super) fn marker_rename_active(&self) -> bool {
+        self.arranger.marker_rename.is_some()
     }
 
     /// A gesture on the loop lane: on its first frame the band's ✕ clears
@@ -5302,6 +5321,65 @@ mod tests {
             };
             let _ = ctx.run(input, |ctx| app.frame(ctx));
         }
+    }
+
+    fn key_event(key: egui::Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]
+    }
+
+    /// Esc cancels an inline marker rename (it used to commit it: the app's
+    /// Esc shortcut ate the key and the field's lost focus read as Enter),
+    /// and leaves the clip selection alone; Enter commits.
+    #[test]
+    fn marker_rename_escape_cancels_and_enter_commits() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        let id = app.add_marker_named(32.0, "Verse".to_string()).unwrap();
+        let clip = app.project.tracks[0].clips[0].id;
+        app.sel.clips.insert(clip);
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let name = |app: &CadenceApp| {
+            let m = app.project.markers.iter().find(|m| m.id == id).unwrap();
+            m.name.clone()
+        };
+        app.arranger.marker_rename = Some(MarkerRename {
+            id,
+            text: "Chorus".to_string(),
+        });
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            3,
+            key_event(egui::Key::Escape),
+            Modifiers::NONE,
+        );
+        assert!(!app.marker_rename_active(), "Esc closes the field");
+        assert_eq!(name(&app), "Verse", "…without renaming");
+        assert!(app.sel.clips.contains(&clip), "…and keeps the selection");
+        app.arranger.marker_rename = Some(MarkerRename {
+            id,
+            text: "Chorus".to_string(),
+        });
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            3,
+            key_event(egui::Key::Enter),
+            Modifiers::NONE,
+        );
+        assert!(!app.marker_rename_active());
+        assert_eq!(name(&app), "Chorus");
     }
 
     fn wheel(pos: Pos2, delta: egui::Vec2, modifiers: Modifiers) -> Vec<egui::Event> {

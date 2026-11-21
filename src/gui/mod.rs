@@ -1440,7 +1440,12 @@ impl CadenceApp {
         if key(SC_RECORD.modifiers, SC_RECORD.logical_key) {
             self.toggle_record();
         }
-        if key(Modifiers::NONE, Key::Escape) {
+        // Esc cancels an inline rename (marker, pattern) without also
+        // dropping the selection.
+        if key(Modifiers::NONE, Key::Escape)
+            && !self.marker_rename_active()
+            && !self.pattern_rename_active()
+        {
             self.clear_selection();
         }
         if key(Modifiers::NONE, Key::Delete) || key(Modifiers::NONE, Key::Backspace) {

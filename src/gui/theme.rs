@@ -2819,16 +2819,18 @@ pub fn scrollbar(
         )
     };
     let hot = resp.hovered() || resp.dragged();
-    p.rect_filled(
-        thumb,
-        3.0,
-        if hot {
-            pal.text_faint
-        } else {
-            pal.control_border
-        },
-    );
+    p.rect_filled(thumb, 3.0, scrollbar_thumb(pal, hot));
     resp.dragged()
+}
+
+/// Scrollbar thumb color: at rest it still stands out from the track
+/// (≥ 3:1, a visible UI component in every theme); hovered it brightens.
+fn scrollbar_thumb(pal: Palette, hot: bool) -> Color32 {
+    if hot {
+        pal.text_faint
+    } else {
+        mix(pal.control_border, pal.text_faint, 0.6)
+    }
 }
 
 // ----- toolbar ---------------------------------------------------------------
@@ -4443,6 +4445,17 @@ mod tests {
     }
 
     // ----- palettes -----------------------------------------------------------
+
+    #[test]
+    fn scrollbar_thumbs_stand_out_from_their_track() {
+        for choice in ThemeChoice::ALL {
+            let pal = choice.palette();
+            for hot in [false, true] {
+                let ratio = contrast_ratio(scrollbar_thumb(pal, hot), pal.canvas);
+                assert!(ratio >= 3.0, "{choice:?} hot={hot}: {ratio:.2}");
+            }
+        }
+    }
 
     #[test]
     fn contrast_helpers_match_wcag() {

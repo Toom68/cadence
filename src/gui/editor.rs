@@ -812,6 +812,11 @@ impl CadenceApp {
         self.editor.roll_scroll_y = y.max(0.0);
     }
 
+    /// The pattern name is being edited inline (Esc belongs to that field).
+    pub(super) fn pattern_rename_active(&self) -> bool {
+        self.editor.rename.is_some()
+    }
+
     /// Ids the pattern note-ops act on: the selection when there is one,
     /// else `None` — which every note op reads as "the whole pattern".
     fn note_op_ids(&self) -> Option<BTreeSet<u64>> {
@@ -5214,12 +5219,18 @@ mod tests {
         f.app
             .apply_header_action(tid, pid, HeaderAction::StartRename);
         f.steps(2);
+        let note = pattern_of(&f.app, tid, pid).notes[0].id;
+        f.app.sel.notes.insert(note);
         f.events.push(Event::Text("Nope".into()));
         f.step();
         f.key(Key::Escape);
         f.step();
         assert!(f.app.editor.rename.is_none());
         assert_eq!(pattern_of(&f.app, tid, pid).name, "Bassline B");
+        assert!(
+            f.app.sel.notes.contains(&note),
+            "Esc in the rename field keeps the note selection"
+        );
         f.app.undo();
         assert_eq!(pattern_of(&f.app, tid, pid).name, before);
     }
