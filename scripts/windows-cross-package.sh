@@ -51,7 +51,14 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 echo "==> cargo build --release --locked --target $TARGET"
 cargo build --release --locked --target "$TARGET"
 
-SRC="$ROOT/target/$TARGET/release/cadence.exe"
+# Cargo builds into CARGO_TARGET_DIR when it is set (relative to the repo
+# root, like cargo), else into ./target.
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+case "$TARGET_DIR" in
+  /* | [A-Za-z]:*) ;;
+  *) TARGET_DIR="$ROOT/$TARGET_DIR" ;;
+esac
+SRC="$TARGET_DIR/$TARGET/release/cadence.exe"
 [ -f "$SRC" ] || { echo "expected binary not found: $SRC" >&2; exit 1; }
 
 file "$SRC" | grep -qi 'pe32' || { echo "$SRC is not a PE binary" >&2; exit 1; }
