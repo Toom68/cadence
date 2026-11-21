@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use egui::containers::menu::SubMenu;
 use egui::{
-    pos2, vec2, Align, Align2, Color32, Context, CursorIcon, Frame, Id, KeyboardShortcut, Layout,
+    pos2, vec2, Align, Color32, Context, CursorIcon, Frame, Id, KeyboardShortcut, LayerId, Layout,
     Margin, Order, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2,
     ViewportCommand, WidgetInfo, WidgetType,
 };
@@ -151,6 +151,7 @@ pub(super) struct LayoutProbe {
     pub(super) editor: Rect,
     pub(super) menu: Rect,
     pub(super) status: Rect,
+    pub(super) toast: Rect,
 }
 
 #[cfg(test)]
@@ -162,6 +163,7 @@ impl Default for LayoutProbe {
             editor: Rect::NOTHING,
             menu: Rect::NOTHING,
             status: Rect::NOTHING,
+            toast: Rect::NOTHING,
         }
     }
 }
@@ -1032,30 +1034,65 @@ impl CadenceApp {
         } else {
             Icon::Warning
         };
-        egui::Area::new(Id::new("cadence-toast"))
-            .order(Order::Tooltip)
-            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(STATUS_H + theme::GAP_L)))
-            // It floats over the work surface: clicks must pass through.
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.set_opacity(opacity);
-                Frame::new()
-                    .fill(pal.raised)
-                    .stroke(Stroke::new(1.0_f32, theme::mix(pal.border, color, 0.6)))
-                    .corner_radius(theme::RADIUS_L as u8)
-                    .inner_margin(Margin::symmetric(14, 10))
-                    .shadow(ctx.style().visuals.popup_shadow)
-                    .show(ui, |ui| {
-                        ui.set_max_width(520.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = theme::GAP_S;
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::splat(theme::ICON_L), Sense::hover());
-                            theme::paint_icon(ui.painter(), rect, icon, color);
-                            ui.label(RichText::new(&text).color(pal.text));
-                        });
-                    });
-            });
+        // Painted on its own layer rather than shown in an `Area`: it floats
+        // over the work surface and must never take the pointer. A new Area
+        // is hit-tested as interactable, at its full sizing-pass rect, on the
+        // frame it appears — that swallowed clicks and hover over half the
+        // editor for one frame whenever a toast popped up.
+        let mut painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("cadence-toast")));
+        painter.set_opacity(opacity);
+        let screen = ctx.content_rect();
+        let pad = vec2(14.0, 10.0);
+        let max_text =
+            (screen.width() - 2.0 * pad.x - theme::ICON_L - theme::GAP_S - 48.0).clamp(80.0, 520.0);
+        let galley = painter.layout(text, theme::body_font(theme::TEXT_BODY), pal.text, max_text);
+        let size = vec2(
+            pad.x * 2.0 + theme::ICON_L + theme::GAP_S + galley.size().x,
+            pad.y * 2.0 + galley.size().y.max(theme::ICON_L),
+        );
+        let bottom = screen.bottom() - STATUS_H - theme::GAP_L;
+        let rect = Rect::from_min_size(
+            pos2(
+                (screen.center().x - size.x * 0.5).round(),
+                (bottom - size.y).round(),
+            ),
+            size,
+        );
+        painter.add(
+            ctx.style()
+                .visuals
+                .popup_shadow
+                .as_shape(rect, theme::RADIUS_L),
+        );
+        painter.rect(
+            rect,
+            theme::RADIUS_L,
+            pal.raised,
+            Stroke::new(1.0_f32, theme::mix(pal.border, color, 0.6)),
+            StrokeKind::Inside,
+        );
+        let inner = rect.shrink2(pad);
+        theme::paint_icon(
+            &painter,
+            Rect::from_min_size(
+                pos2(inner.left(), inner.center().y - theme::ICON_L * 0.5),
+                Vec2::splat(theme::ICON_L),
+            ),
+            icon,
+            color,
+        );
+        painter.galley(
+            pos2(
+                inner.left() + theme::ICON_L + theme::GAP_S,
+                inner.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            pal.text,
+        );
+        #[cfg(test)]
+        {
+            self.shell.probe.toast = rect;
+        }
         let hold = Toast::hold(kind);
         ctx.request_repaint_after(if age < hold {
             hold - age
@@ -1711,5 +1748,38 @@ mod tests {
         ui.app.shell.toast.as_mut().unwrap().since = Instant::now() - Duration::from_secs(30);
         ui.frames(2);
         assert!(ui.app.shell.toast.is_none());
+    }
+
+    /// A toast floats over the work surface but never takes the pointer —
+    /// not even on the frame it appears (an `Area` used to swallow clicks
+    /// over half the editor for that one frame).
+    #[test]
+    fn toasts_never_block_the_work_surface() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        ui.select(0, false);
+        let notes = |ui: &Harness| {
+            let (tid, pid) = ui.app.editor_target().unwrap();
+            ops::pattern(ops::track(&ui.app.project, tid).unwrap(), pid)
+                .unwrap()
+                .notes
+                .len()
+        };
+        let before = notes(&ui);
+        ui.app.set_status(
+            StatusKind::Success,
+            "Saved “Afterglow” to the songs folder.",
+        );
+        ui.frames(1);
+        let toast = ui.app.shell.probe.toast;
+        assert!(toast.is_positive(), "the toast is painted");
+        assert!(toast.bottom() <= ui.app.shell.probe.status.top());
+        let grid = ui.app.editor_test_rects().0;
+        assert!(grid.contains(toast.center()), "{toast:?} over {grid:?}");
+        ui.click(toast.center());
+        assert_ne!(
+            notes(&ui),
+            before,
+            "the drum grid under the toast got the click"
+        );
     }
 }
