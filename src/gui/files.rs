@@ -153,7 +153,7 @@ impl CadenceApp {
     pub(super) fn open_path(&mut self, path: PathBuf) {
         match persistence::load_project(&path) {
             Ok(project) => {
-                let shown = path.display().to_string();
+                let shown = file_label(&path);
                 self.replace_project(project, Some(path), true);
                 self.set_status(StatusKind::Success, format!("Opened {shown}."));
                 self.warn_missing_fonts();
@@ -267,7 +267,9 @@ impl CadenceApp {
                 if self.io_enabled {
                     let _ = persistence::clear_recovery();
                 }
-                self.set_status(StatusKind::Success, format!("Saved {}.", path.display()));
+                // The file name is enough here (the toast repeats it); the
+                // full path is in the transport's saved-state tooltip.
+                self.set_status(StatusKind::Success, format!("Saved {}.", file_label(&path)));
                 true
             }
             Err(err) => {
@@ -864,6 +866,15 @@ fn sample_instrument(name: &str, spec: crate::packs::SampleSpec) -> crate::packs
         kit: None,
         sample: Some(spec),
     }
+}
+
+/// A song's file name for status messages ("neon-circuits.cadence"), or the
+/// whole path when it has none.
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// Reads a file refusing anything over `max` bytes (checked before and during

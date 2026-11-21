@@ -1365,6 +1365,7 @@ fn help_section(ui: &mut Ui, pal: Palette, ctx: &Context, section: &Section) {
     ui.label(theme::kicker_text(pal, section.title));
     ui.add_space(theme::GAP_XS);
     let left = (ui.available_width() * 0.5).floor();
+    ui.spacing_mut().item_spacing.y = theme::GAP_XS;
     for (label, keys) in section.rows {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = theme::GAP_S;
@@ -1390,9 +1391,8 @@ fn help_section(ui: &mut Ui, pal: Palette, ctx: &Context, section: &Section) {
                 }
             }
         });
-        ui.add_space(2.0);
     }
-    ui.add_space(theme::GAP_M);
+    ui.add_space(theme::GAP_L);
 }
 
 /// A mouse gesture: modifier key caps, then the action in words.
