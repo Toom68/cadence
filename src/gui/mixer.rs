@@ -2184,6 +2184,17 @@ mod tests {
         ctx: &egui::Context,
         raw: egui::RawInput,
     ) -> (Vec<Rect>, Vec<Rect>) {
+        painted_bodies(app, ctx, raw, false)
+    }
+
+    /// Like [`painted_strips`]; with `clip` each rect is cut to the clip
+    /// rectangle it was painted under (what the user actually sees).
+    fn painted_bodies(
+        app: &mut CadenceApp,
+        ctx: &egui::Context,
+        raw: egui::RawInput,
+        clip: bool,
+    ) -> (Vec<Rect>, Vec<Rect>) {
         let mx = app.palette().mixer;
         let full = ctx.run(raw, |ctx| app.frame(ctx));
         let mut strips = Vec::new();
@@ -2192,10 +2203,19 @@ mod tests {
             let egui::Shape::Rect(rs) = &cs.shape else {
                 continue;
             };
+            let rect = if clip {
+                rs.rect.intersect(cs.clip_rect)
+            } else {
+                rs.rect
+            };
             if rs.fill == mx.strip {
-                strips.push(rs.rect);
-            } else if rs.fill == mx.master {
-                masters.push(rs.rect);
+                strips.push(rect);
+            } else if rs.fill == mx.master
+                && [MASTER_W, MASTER_W_COMPACT]
+                    .iter()
+                    .any(|w| (rs.rect.width() - w).abs() < 0.5)
+            {
+                masters.push(rect);
             }
         }
         (strips, masters)
@@ -2256,7 +2276,7 @@ mod tests {
                     for _ in 0..2 {
                         let _ = painted_strips(&mut app, &ctx, input_sized(w, h));
                     }
-                    let (strips, masters) = painted_strips(&mut app, &ctx, input_sized(w, h));
+                    let (strips, masters) = painted_bodies(&mut app, &ctx, input_sized(w, h), true);
                     let ctx_desc = format!("{w}x{h} {choice:?} compact={compact}");
                     assert_eq!(masters.len(), 1, "{ctx_desc}: master");
                     let master = masters[0];
