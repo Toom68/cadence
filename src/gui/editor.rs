@@ -2444,13 +2444,14 @@ impl CadenceApp {
         let down_tip = theme::shortcut_tip(ui.ctx(), "Octave down", &SC_OCTAVE_DOWN);
         let up_tip = theme::shortcut_tip(ui.ctx(), "Octave up", &SC_OCTAVE_UP);
         let octave_label = format!("C{octave}");
-        let record = self.transport.recording.then(|| {
-            if self.transport.playing {
+        let record = self
+            .transport
+            .recording
+            .then_some(if self.transport.playing {
                 "Recording"
             } else {
                 "Step recording"
-            }
-        });
+            });
         let record_w = record.map_or(0.0, |t| {
             text_width(ui, t, theme::strong_font(ui, theme::TEXT_SMALL)) + 30.0
         });
@@ -3537,7 +3538,7 @@ impl CadenceApp {
                         ChordStripTab::Borrowed => {
                             for chord in ops::borrowed_chords(key) {
                                 let resp =
-                                    chord_chip(ui, pal, &chord.label, &chord.symbol, CHORD_CHIP_W);
+                                    chord_chip(ui, pal, chord.label, &chord.symbol, CHORD_CHIP_W);
                                 if resp.hovered() {
                                     hover_spec = Some(chord.spec);
                                 }
@@ -4118,8 +4119,7 @@ impl CadenceApp {
         let key_font = theme::strong_font(ui, theme::TEXT_KICKER);
         let mut preview = None;
         let (r0, r1) = g.visible_rows();
-        for row in r0..r1.min(rows.len()) {
-            let (pitch, name) = rows[row];
+        for (row, &(pitch, name)) in rows.iter().enumerate().take(r1).skip(r0) {
             let y = g.row_y(row);
             let r = Rect::from_min_max(
                 pos2(g.labels.left(), y),
@@ -4562,7 +4562,7 @@ fn pad_layout(count: usize, area: Rect) -> PadLayout {
     let gap = theme::GAP_M;
     let cell_w = (area.width() - gap * (cols - 1) as f32) / cols as f32;
     let cell_h = (area.height() - gap * (rows - 1) as f32) / rows as f32;
-    let h = cell_h.min(cell_w).min(PAD_MAX).max(24.0);
+    let h = cell_h.min(cell_w).clamp(24.0, PAD_MAX);
     let w = cell_w.min(h * 1.3).max(24.0);
     let total = vec2(
         cols as f32 * w + gap * (cols - 1) as f32,
