@@ -1430,7 +1430,7 @@ mod tests {
         assert!(sizes.windows(2).all(|w| w[0] <= w[1]), "{sizes:?}");
         // Swing stays reachable at every size the app allows.
         assert!(Plan::choose(1100.0).swing);
-        assert!(!MINIMAL.swing);
+        const { assert!(!MINIMAL.swing) };
     }
 
     #[test]

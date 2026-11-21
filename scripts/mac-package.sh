@@ -20,22 +20,29 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 DIST="$ROOT/dist"
 APP="$DIST/Cadence.app"
 BIN_NAME="cadence"
+# Cargo builds into CARGO_TARGET_DIR when it is set (relative to the repo
+# root, like cargo), else into ./target.
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+case "$TARGET_DIR" in
+  /*) ;;
+  *) TARGET_DIR="$ROOT/$TARGET_DIR" ;;
+esac
 
 if [ "${UNIVERSAL:-0}" = "1" ]; then
   ARCH="universal"
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
     cargo build --release --locked --target "$target"
   done
-  BIN_SRC="$ROOT/target/universal-$BIN_NAME"
+  BIN_SRC="$TARGET_DIR/universal-$BIN_NAME"
   lipo -create \
-    "target/aarch64-apple-darwin/release/$BIN_NAME" \
-    "target/x86_64-apple-darwin/release/$BIN_NAME" \
+    "$TARGET_DIR/aarch64-apple-darwin/release/$BIN_NAME" \
+    "$TARGET_DIR/x86_64-apple-darwin/release/$BIN_NAME" \
     -output "$BIN_SRC"
 else
   ARCH="$(uname -m)"
   [ "$ARCH" = "x86_64" ] || ARCH="arm64"
   cargo build --release --locked
-  BIN_SRC="$ROOT/target/release/$BIN_NAME"
+  BIN_SRC="$TARGET_DIR/release/$BIN_NAME"
 fi
 
 rm -rf "$APP"

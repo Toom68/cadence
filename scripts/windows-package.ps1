@@ -16,6 +16,13 @@ if (-not $Version) { throw 'Could not read version from Cargo.toml' }
 cargo build --release --locked
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
+# Cargo builds into CARGO_TARGET_DIR when it is set (relative paths resolve
+# from the repo root, like cargo's), else into ./target.
+$TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+if (-not [System.IO.Path]::IsPathRooted($TargetDir)) { $TargetDir = Join-Path $Root $TargetDir }
+$Built = Join-Path $TargetDir 'release/cadence.exe'
+if (-not (Test-Path $Built)) { throw "expected binary not found: $Built" }
+
 $Dist = Join-Path $Root 'dist'
 $Name = "Cadence-$Version-windows-x64"
 $Stage = Join-Path $Dist $Name
@@ -26,7 +33,7 @@ if (Test-Path $Zip) { Remove-Item -Force $Zip }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $Exe = Join-Path $Stage 'Cadence.exe'
-Copy-Item (Join-Path $Root 'target/release/cadence.exe') $Exe
+Copy-Item $Built $Exe
 
 # Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans).
 $Licenses = Join-Path $Stage 'licenses'

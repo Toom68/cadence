@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use egui::containers::menu::SubMenu;
 use egui::{
-    pos2, vec2, Align, Align2, Color32, Context, CursorIcon, Frame, Id, KeyboardShortcut, Layout,
+    pos2, vec2, Align, Color32, Context, CursorIcon, Frame, Id, KeyboardShortcut, LayerId, Layout,
     Margin, Order, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2,
     ViewportCommand, WidgetInfo, WidgetType,
 };
@@ -20,10 +20,10 @@ use super::dialogs::Dialog;
 use super::files::PendingAction;
 use super::theme::{self, Icon, Palette, Segment, ThemeChoice};
 use super::{
-    arranger, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT, SC_DUPLICATE,
-    SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER, SC_MAX_EDITOR,
-    SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO, SC_SAVE, SC_SAVE_AS,
-    SC_SELECT_ALL, SC_UNDO,
+    arranger, editor, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT,
+    SC_DUPLICATE, SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER,
+    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO,
+    SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
 };
 use crate::model::Instrument;
 
@@ -71,11 +71,15 @@ const ARRANGER_COLLAPSED_H: f32 = 104.0;
 const MIN_EDITOR_H: f32 = 200.0;
 /// Piano-roll rows the automatic split tries to keep visible, in px.
 pub(super) const EDITOR_GRID_TARGET: f32 = 260.0;
-/// Editor panel height around its grid with the chord strip closed: tab
-/// strip, pattern toolbar, chord header, ruler and velocity lane.
-pub(super) const EDITOR_CHROME: f32 = 236.0;
+/// The tab strip on top of the editor card (6 + 28 + 6).
+const TAB_STRIP_H: f32 = 40.0;
+/// Editor panel height around its grid with the chord strip closed: card
+/// outline, tab strip and the piano roll's own chrome (pattern toolbar,
+/// chord row, roll toolbar, ruler, velocity lane). A layout test checks it
+/// against the real frame.
+pub(super) const EDITOR_CHROME: f32 = 2.0 + TAB_STRIP_H + editor::ROLL_CHROME;
 /// What the open chord strip adds to [`EDITOR_CHROME`].
-pub(super) const CHORD_STRIP_EXTRA: f32 = 56.0;
+pub(super) const CHORD_STRIP_EXTRA: f32 = editor::CHORD_STRIP_EXTRA;
 /// The automatic split never gives the arranger more than this share.
 const MAX_AUTO_SHARE: f32 = 0.55;
 
@@ -151,6 +155,7 @@ pub(super) struct LayoutProbe {
     pub(super) editor: Rect,
     pub(super) menu: Rect,
     pub(super) status: Rect,
+    pub(super) toast: Rect,
 }
 
 #[cfg(test)]
@@ -162,6 +167,7 @@ impl Default for LayoutProbe {
             editor: Rect::NOTHING,
             menu: Rect::NOTHING,
             status: Rect::NOTHING,
+            toast: Rect::NOTHING,
         }
     }
 }
@@ -1032,30 +1038,65 @@ impl CadenceApp {
         } else {
             Icon::Warning
         };
-        egui::Area::new(Id::new("cadence-toast"))
-            .order(Order::Tooltip)
-            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(STATUS_H + theme::GAP_L)))
-            // It floats over the work surface: clicks must pass through.
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.set_opacity(opacity);
-                Frame::new()
-                    .fill(pal.raised)
-                    .stroke(Stroke::new(1.0_f32, theme::mix(pal.border, color, 0.6)))
-                    .corner_radius(theme::RADIUS_L as u8)
-                    .inner_margin(Margin::symmetric(14, 10))
-                    .shadow(ctx.style().visuals.popup_shadow)
-                    .show(ui, |ui| {
-                        ui.set_max_width(520.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = theme::GAP_S;
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::splat(theme::ICON_L), Sense::hover());
-                            theme::paint_icon(ui.painter(), rect, icon, color);
-                            ui.label(RichText::new(&text).color(pal.text));
-                        });
-                    });
-            });
+        // Painted on its own layer rather than shown in an `Area`: it floats
+        // over the work surface and must never take the pointer. A new Area
+        // is hit-tested as interactable, at its full sizing-pass rect, on the
+        // frame it appears — that swallowed clicks and hover over half the
+        // editor for one frame whenever a toast popped up.
+        let mut painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("cadence-toast")));
+        painter.set_opacity(opacity);
+        let screen = ctx.content_rect();
+        let pad = vec2(14.0, 10.0);
+        let max_text =
+            (screen.width() - 2.0 * pad.x - theme::ICON_L - theme::GAP_S - 48.0).clamp(80.0, 520.0);
+        let galley = painter.layout(text, theme::body_font(theme::TEXT_BODY), pal.text, max_text);
+        let size = vec2(
+            pad.x * 2.0 + theme::ICON_L + theme::GAP_S + galley.size().x,
+            pad.y * 2.0 + galley.size().y.max(theme::ICON_L),
+        );
+        let bottom = screen.bottom() - STATUS_H - theme::GAP_L;
+        let rect = Rect::from_min_size(
+            pos2(
+                (screen.center().x - size.x * 0.5).round(),
+                (bottom - size.y).round(),
+            ),
+            size,
+        );
+        painter.add(
+            ctx.style()
+                .visuals
+                .popup_shadow
+                .as_shape(rect, theme::RADIUS_L),
+        );
+        painter.rect(
+            rect,
+            theme::RADIUS_L,
+            pal.raised,
+            Stroke::new(1.0_f32, theme::mix(pal.border, color, 0.6)),
+            StrokeKind::Inside,
+        );
+        let inner = rect.shrink2(pad);
+        theme::paint_icon(
+            &painter,
+            Rect::from_min_size(
+                pos2(inner.left(), inner.center().y - theme::ICON_L * 0.5),
+                Vec2::splat(theme::ICON_L),
+            ),
+            icon,
+            color,
+        );
+        painter.galley(
+            pos2(
+                inner.left() + theme::ICON_L + theme::GAP_S,
+                inner.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            pal.text,
+        );
+        #[cfg(test)]
+        {
+            self.shell.probe.toast = rect;
+        }
         let hold = Toast::hold(kind);
         ctx.request_repaint_after(if age < hold {
             hold - age
@@ -1147,9 +1188,17 @@ impl CadenceApp {
                     .inner_margin(Margin::same(0))
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
+                        // The pattern editor's toolbars start right under the
+                        // tab strip; the other tabs keep the usual gap.
+                        let gap = ui.spacing().item_spacing.y;
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         self.bottom_tabs(ui);
                         if ui.available_height() < 48.0 {
                             return;
+                        }
+                        if self.tab != Tab::Editor {
+                            ui.add_space(gap);
+                            ui.spacing_mut().item_spacing.y = gap;
                         }
                         match self.tab {
                             Tab::Editor => self.editor_ui(ui),
@@ -1554,10 +1603,21 @@ mod tests {
                 let mut ui = Harness::new(vec2(w, h));
                 ui.select(2, chord);
                 assert!(
-                    ui.grid_height() >= 258.0,
+                    ui.grid_height() >= EDITOR_GRID_TARGET - 0.5,
                     "{w}x{h} chord={chord}: piano roll grid is {:.0} px",
                     ui.grid_height()
                 );
+                // Every chord palette fits one row of chips there.
+                for tab in editor::ChordStripTab::ALL {
+                    ui.app.editor.chord_tab = tab;
+                    ui.frames(2);
+                    assert!(
+                        ui.grid_height() >= EDITOR_GRID_TARGET - 0.5,
+                        "{w}x{h} chord={chord} {tab:?}: grid is {:.0} px",
+                        ui.grid_height()
+                    );
+                }
+                ui.app.editor.chord_tab = editor::ChordStripTab::Diatonic;
             }
             let mut ui = Harness::new(vec2(1100.0, 760.0));
             ui.select(2, chord);
@@ -1573,6 +1633,40 @@ mod tests {
                 ui.grid_height()
             );
         }
+    }
+
+    /// The split's model of the editor chrome matches the real frame, so
+    /// the default split gives the piano roll exactly what it promises.
+    #[test]
+    fn editor_chrome_constants_match_the_frame() {
+        for (w, h) in [(1100.0, 760.0), (1360.0, 860.0), (1920.0, 1080.0)] {
+            for chord in [false, true] {
+                let mut ui = Harness::new(vec2(w, h));
+                ui.select(2, chord);
+                let chrome = ui.app.shell.probe.editor.height() - ui.grid_height();
+                let want = EDITOR_CHROME + if chord { CHORD_STRIP_EXTRA } else { 0.0 };
+                assert!(
+                    (chrome - want).abs() < 0.5,
+                    "{w}x{h} chord={chord}: chrome {chrome} != {want}"
+                );
+            }
+        }
+    }
+
+    /// Opening the chord strip in the default split grows the editor
+    /// upwards: the piano roll itself stays exactly where it was.
+    #[test]
+    fn opening_the_chord_strip_keeps_the_piano_roll_in_place() {
+        let mut ui = Harness::new(vec2(1440.0, 900.0));
+        ui.select(2, false);
+        let closed = ui.app.editor_test_rects().0;
+        ui.select(2, true);
+        let open = ui.app.editor_test_rects().0;
+        assert!(
+            (closed.top() - open.top()).abs() < 0.5,
+            "{closed:?} -> {open:?}"
+        );
+        assert!((closed.height() - open.height()).abs() < 0.5);
     }
 
     /// At 1080p the arranger shows at least six lanes by default.
@@ -1711,5 +1805,38 @@ mod tests {
         ui.app.shell.toast.as_mut().unwrap().since = Instant::now() - Duration::from_secs(30);
         ui.frames(2);
         assert!(ui.app.shell.toast.is_none());
+    }
+
+    /// A toast floats over the work surface but never takes the pointer —
+    /// not even on the frame it appears (an `Area` used to swallow clicks
+    /// over half the editor for that one frame).
+    #[test]
+    fn toasts_never_block_the_work_surface() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        ui.select(0, false);
+        let notes = |ui: &Harness| {
+            let (tid, pid) = ui.app.editor_target().unwrap();
+            ops::pattern(ops::track(&ui.app.project, tid).unwrap(), pid)
+                .unwrap()
+                .notes
+                .len()
+        };
+        let before = notes(&ui);
+        ui.app.set_status(
+            StatusKind::Success,
+            "Saved “Afterglow” to the songs folder.",
+        );
+        ui.frames(1);
+        let toast = ui.app.shell.probe.toast;
+        assert!(toast.is_positive(), "the toast is painted");
+        assert!(toast.bottom() <= ui.app.shell.probe.status.top());
+        let grid = ui.app.editor_test_rects().0;
+        assert!(grid.contains(toast.center()), "{toast:?} over {grid:?}");
+        ui.click(toast.center());
+        assert_ne!(
+            notes(&ui),
+            before,
+            "the drum grid under the toast got the click"
+        );
     }
 }

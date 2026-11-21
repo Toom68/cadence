@@ -46,11 +46,26 @@ const HEADER_INST_MAX_W: f32 = 140.0;
 const PATTERN_COMBO_W: f32 = 176.0;
 const LENGTH_COMBO_W: f32 = 76.0;
 const VEL_SLIDER_W: f32 = 88.0;
-/// Chord strip: disclosure row height and chip sizes.
+/// Chord strip: disclosure row height (closed, and open with the palette
+/// tabs and voicing options on it) and chip sizes.
 const CHORD_ROW_H: f32 = 32.0;
+const CHORD_OPEN_ROW_H: f32 = theme::TOOLBAR_H;
+const CHORD_KEY_MAX_W: f32 = 140.0;
 const CHORD_CHIP_W: f32 = 64.0;
 const CHORD_CHIP_H: f32 = 40.0;
+/// Space under the chord chips.
+const CHORD_CHIPS_PAD: f32 = 8.0;
+/// Progression chips shrink (down to the minimum) to stay on one row.
 const PROGRESSION_CHIP_W: f32 = 148.0;
+const PROGRESSION_CHIP_MIN_W: f32 = 104.0;
+/// The piano roll's chrome around its note grid with the chord strip
+/// closed: header, chord row, roll toolbar, ruler and velocity lane. The
+/// rows stack without gaps. The app shell sizes its default split from it.
+pub(super) const ROLL_CHROME: f32 =
+    theme::TOOLBAR_H + CHORD_ROW_H + theme::TOOLBAR_H + RULER_H + VEL_H;
+/// What the open chord strip (one row of chips) adds to [`ROLL_CHROME`].
+pub(super) const CHORD_STRIP_EXTRA: f32 =
+    CHORD_OPEN_ROW_H - CHORD_ROW_H + CHORD_CHIP_H + CHORD_CHIPS_PAD;
 /// Largest drum pad side on the Keyboard tab.
 const PAD_MAX: f32 = 168.0;
 /// Note-length and snap choices offered in the piano-roll toolbar.
@@ -427,7 +442,11 @@ enum ToolAction {
 struct EditorLayout {
     header: (Rect, Vec<Rect>, usize),
     tools: (Rect, Vec<Rect>, usize),
+    /// Palette tabs and voicing options on the open chord row.
+    chords: (Rect, Vec<Rect>, usize),
     chord_row: Rect,
+    /// The part of the chord row that toggles the strip.
+    chord_toggle: Rect,
 }
 
 #[cfg(test)]
@@ -436,7 +455,9 @@ impl Default for EditorLayout {
         Self {
             header: (Rect::NOTHING, Vec::new(), 0),
             tools: (Rect::NOTHING, Vec::new(), 0),
+            chords: (Rect::NOTHING, Vec::new(), 0),
             chord_row: Rect::NOTHING,
+            chord_toggle: Rect::NOTHING,
         }
     }
 }
@@ -1011,6 +1032,9 @@ impl CadenceApp {
             }
             self.editor_roll_home(tid, pid);
         }
+        // The editor's rows (header, chord row, toolbar, canvas) are full-
+        // height toolbars with their own padding: stack them without gaps.
+        ui.spacing_mut().item_spacing.y = 0.0;
         self.editor_header(ui, tid, pid);
         if drum {
             self.drum_editor(ui, tid, pid);
@@ -3312,9 +3336,40 @@ impl CadenceApp {
         let open = self.editor.chord_open;
         let key = self.project.key;
 
-        // ----- disclosure row
-        let (row, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), CHORD_ROW_H), Sense::click());
+        // ----- disclosure row: chevron, "Chords" and the key; open, the same
+        // row carries the palette tabs and the voicing options (one toolbar
+        // row instead of two, so the piano roll keeps its room).
+        let key_name = key.name();
+        let title_font = theme::strong_font(ui, theme::TEXT_BODY);
+        let key_font = theme::body_font(12.0);
+        let title_w = text_width(ui, "Chords", title_font.clone());
+        let key_w = text_width(ui, &key_name, key_font.clone()).min(CHORD_KEY_MAX_W);
+        let row_h = if open { CHORD_OPEN_ROW_H } else { CHORD_ROW_H };
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+        let disclosure = Rect::from_min_size(
+            pos2(
+                row.left() + theme::GAP_S,
+                row.center().y - theme::CONTROL_M * 0.5,
+            ),
+            vec2(
+                theme::GAP_XS
+                    + theme::ICON_S
+                    + theme::GAP_S
+                    + title_w
+                    + theme::GAP_S
+                    + key_w
+                    + theme::GAP_S,
+                theme::CONTROL_M,
+            ),
+        );
+        // Closed, the whole row opens the strip; open, only the disclosure
+        // closes it, so a near miss between the voicing combos never does.
+        let target = if open {
+            disclosure
+        } else {
+            row.shrink2(vec2(theme::GAP_S, 2.0))
+        };
+        let resp = ui.interact(target, ui.id().with(("chord-row", tid)), Sense::click());
         resp.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, "Chords")
         });
@@ -3333,17 +3388,17 @@ impl CadenceApp {
         #[cfg(test)]
         {
             self.editor.layout.chord_row = row;
+            self.editor.layout.chord_toggle = target;
         }
-        let inner = row.shrink2(vec2(theme::GAP_S, 2.0));
         if hovered {
             ui.painter().rect_filled(
-                inner,
+                target,
                 theme::RADIUS_M,
                 pal.control_hover.gamma_multiply(0.5),
             );
         }
         let ink = if hovered { pal.text } else { pal.text_dim };
-        let mut x = inner.left() + theme::GAP_XS;
+        let mut x = disclosure.left() + theme::GAP_XS;
         theme::paint_icon(
             ui.painter(),
             Rect::from_center_size(
@@ -3363,56 +3418,44 @@ impl CadenceApp {
             pos2(x, row.center().y),
             Align2::LEFT_CENTER,
             "Chords",
-            theme::strong_font(ui, theme::TEXT_BODY),
+            title_font,
             ink,
             120.0,
         );
         x = title.right() + theme::GAP_S;
-        let (keyr, _) = theme::paint_elided(
+        theme::paint_elided(
             ui,
             pos2(x, row.center().y),
             Align2::LEFT_CENTER,
-            &key.name(),
-            theme::body_font(12.0),
+            &key_name,
+            key_font,
             pal.text_faint,
-            140.0,
+            CHORD_KEY_MAX_W,
         );
-        if open {
-            let left = keyr.right() + theme::GAP_L;
-            let seg = Rect::from_min_max(
-                pos2(left, row.center().y - theme::CONTROL_S * 0.5),
-                pos2(inner.right(), row.center().y + theme::CONTROL_S * 0.5),
-            );
-            if seg.width() > 120.0 {
-                let mut tab = self.editor.chord_tab;
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(seg)
-                        .layout(Layout::left_to_right(Align::Center)),
-                    |ui| {
-                        theme::segmented(
-                            ui,
-                            pal,
-                            &mut tab,
-                            &ChordStripTab::ALL
-                                .map(|t| theme::Segment::new(t, t.label()).tip(t.tip())),
-                            theme::CONTROL_S,
-                            None,
-                        );
-                    },
-                );
-                self.editor.chord_tab = tab;
-            }
-        }
         if !open {
             return;
         }
 
-        // ----- voicing options
+        // ----- palette tabs and voicing options
+        let options = Rect::from_min_max(
+            pos2(disclosure.right() + theme::GAP_S, row.top()),
+            pos2(row.right() - 12.0, row.bottom()),
+        );
         let strumming = self.editor.chord_spacing > 0.0;
         let bass_label = chord_bass_label(self.editor.chord_bass, key);
+        let tabs = ChordStripTab::ALL.map(|t| theme::Segment::new(t, t.label()).tip(t.tip()));
+        let tabs_w = theme::segmented_width(ui, &tabs, theme::CONTROL_M);
         let ed = &mut self.editor;
-        toolbar_row(ui, pal, ("chord-options", tid), |tb| {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(options)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        let out = theme::toolbar(&mut child, pal, ("chord-options", tid), |tb| {
+            tb.item(tabs_w, |ui| {
+                theme::segmented(ui, pal, &mut ed.chord_tab, &tabs, theme::CONTROL_M, None);
+            });
+            tb.separator();
             tb.labeled("Type", 104.0, |ui| {
                 theme::combo(
                     ("chord-quality", tid),
@@ -3492,6 +3535,12 @@ impl CadenceApp {
                     .on_disabled_hover_text("Pick a strum spacing to roll the chord");
             });
         });
+        #[cfg(test)]
+        {
+            self.editor.layout.chords = (out.rect, out.placed.clone(), out.overflowed);
+        }
+        #[cfg(not(test))]
+        let _ = out;
 
         // ----- chord chips
         let mut stamp = None;
@@ -3504,11 +3553,17 @@ impl CadenceApp {
                 left: 12,
                 right: 12,
                 top: 0,
-                bottom: 8,
+                bottom: CHORD_CHIPS_PAD as i8,
             })
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(theme::GAP_XS + 2.0, theme::GAP_XS + 2.0);
+                    let gap = theme::GAP_XS + 2.0;
+                    ui.spacing_mut().item_spacing = vec2(gap, gap);
+                    // Progression chips narrow to keep the presets on one row.
+                    let n = ops::PROGRESSIONS.len() as f32;
+                    let progression_w = ((ui.available_width() - gap * (n - 1.0)) / n)
+                        .floor()
+                        .clamp(PROGRESSION_CHIP_MIN_W, PROGRESSION_CHIP_W);
                     match self.editor.chord_tab {
                         ChordStripTab::Diatonic => {
                             for degree in 0..7 {
@@ -3562,7 +3617,7 @@ impl CadenceApp {
                                     .collect::<Vec<_>>()
                                     .join(" – ");
                                 let resp =
-                                    chord_chip(ui, pal, &symbols, preset.name, PROGRESSION_CHIP_W);
+                                    chord_chip(ui, pal, &symbols, preset.name, progression_w);
                                 if resp.hovered() {
                                     hover_spec = ops::progression_specs(key, preset, None)
                                         .into_iter()
@@ -3583,7 +3638,9 @@ impl CadenceApp {
                     }
                 });
             });
-        // Hover audition: one stab per chord entered, not per frame.
+        // Hover audition: one stab per chord entered, not per frame — and
+        // only when the pointer moved there. Opening the strip moves the
+        // chips under a still pointer; that must stay silent.
         let hover_id = egui::Id::new("cadence.editor.chord_hover");
         let prev = ui
             .ctx()
@@ -3592,7 +3649,8 @@ impl CadenceApp {
         let now = hover_spec.map_or(String::new(), |s| s.symbol());
         if now != prev {
             ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
-            if let Some(spec) = hover_spec {
+            let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
+            if let Some(spec) = hover_spec.filter(|_| moved) {
                 if let Some(track) = self.track_ref(tid) {
                     self.audition_chord_spec(track, &spec);
                 }
@@ -5109,6 +5167,23 @@ mod tests {
                 }
                 f.app.sel.notes.clear();
             }
+            // The open chord row: disclosure, palette tabs and voicing
+            // options side by side, never on top of each other.
+            f.select(1);
+            f.app.editor.chord_open = true;
+            f.steps(3);
+            let (row, placed, overflow) = f.app.editor.layout.chords.clone();
+            assert_row_clean("chord options", w, row, &placed);
+            let toggle = f.app.editor.layout.chord_toggle;
+            assert!(f.app.editor.layout.chord_row.contains_rect(toggle));
+            assert!(
+                placed.iter().all(|r| r.left() >= toggle.right()),
+                "chord options @ {w} start after the disclosure"
+            );
+            if w >= 1360.0 {
+                assert_eq!(overflow, 0, "chord options @ {w}: everything fits");
+            }
+            f.app.editor.chord_open = false;
         }
     }
 
@@ -5274,11 +5349,21 @@ mod tests {
         let row = f.app.editor.layout.chord_row;
         assert!(row.is_positive(), "melodic tracks show the chord row");
         assert!(!f.app.editor.chord_open);
-        // Anywhere along the row toggles it — here its empty right end.
+        // Anywhere along the closed row opens it — here its empty right end.
         f.click(pos2(row.right() - 20.0, row.center().y));
         f.steps(2);
         assert!(f.app.editor.chord_open, "row click opens the strip");
-        f.click(pos2(row.left() + 20.0, row.center().y));
+        // Opening can move the row (the split favors the roll), so read it
+        // again from the frame.
+        let row = f.app.editor.layout.chord_row;
+        let toggle = f.app.editor.layout.chord_toggle;
+        assert!(row.contains_rect(toggle) && toggle.width() < row.width() * 0.5);
+        // Open, a click beside the voicing options leaves it open…
+        f.click(pos2(row.right() - 20.0, row.center().y));
+        f.steps(2);
+        assert!(f.app.editor.chord_open, "a near miss keeps the strip open");
+        // …and the chevron closes it.
+        f.click(pos2(toggle.left() + 12.0, toggle.center().y));
         f.steps(2);
         assert!(!f.app.editor.chord_open, "chevron click closes it");
         // Drum tracks have no chord strip at all.
