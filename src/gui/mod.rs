@@ -1207,7 +1207,8 @@ impl CadenceApp {
     /// drive the full interface with a bare `egui::Context`.
     fn frame(&mut self, ctx: &Context) {
         if !self.style_applied {
-            theme::apply(ctx, self.theme);
+            // Also installs the bundled fonts; reports done once they are live.
+            let fonts_live = theme::apply(ctx, self.theme);
             // Keyboard shortcuts are gated on `wants_keyboard_input()`, which
             // is true while any widget holds focus (a TextEdit or DragValue).
             // The default `Clicks` mode only surrenders that focus on a full
@@ -1218,7 +1219,7 @@ impl CadenceApp {
             ctx.memory_mut(|m| {
                 m.options.input_options.surrender_focus_on = SurrenderFocusOn::Presses;
             });
-            self.style_applied = true;
+            self.style_applied = fonts_live;
         }
         if let Some(engine) = &self.engine {
             engine.wake_on_device_change(|| {
@@ -1237,6 +1238,7 @@ impl CadenceApp {
         self.sidebar(ctx);
         self.central(ctx);
         self.dialogs(ctx);
+        theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
             self.history.seal();
