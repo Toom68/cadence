@@ -4628,4 +4628,68 @@ mod tests {
         app.undo();
         assert!(app.project.markers.is_empty());
     }
+
+    // ----- performance ---------------------------------------------------------
+
+    /// Mean cost of one arranger frame for `project` in a `size` panel, in
+    /// microseconds: `(build, tessellate)`. The view starts fitted, so the
+    /// whole song (every clip) is on screen — the worst case for painting.
+    fn arranger_frame_us(project: &Project, size: egui::Vec2, playing: bool) -> (f64, f64) {
+        use std::time::{Duration, Instant};
+        const FRAMES: usize = 300;
+        const WARMUP: usize = 30;
+        let ctx = egui::Context::default();
+        let mut app = CadenceApp::headless(project.clone());
+        theme::apply(&ctx, app.theme);
+        app.transport.playing = playing;
+        let total = project.total_steps().max(16.0);
+        let (mut build, mut tess) = (Duration::ZERO, Duration::ZERO);
+        for n in 0..FRAMES {
+            if playing {
+                app.transport.position = (n as f64 * 2.0) % total;
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                time: Some(n as f64 / 60.0),
+                ..Default::default()
+            };
+            let start = Instant::now();
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| app.arranger_ui(ui));
+            });
+            let built = start.elapsed();
+            let start = Instant::now();
+            std::hint::black_box(ctx.tessellate(out.shapes, out.pixels_per_point));
+            if n >= WARMUP {
+                build += built;
+                tess += start.elapsed();
+            }
+        }
+        let per = |d: Duration| d.as_secs_f64() * 1e6 / (FRAMES - WARMUP) as f64;
+        (per(build), per(tess))
+    }
+
+    /// `cargo test --release --locked --lib perf_arranger -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "release-mode performance measurement"]
+    fn perf_arranger_frames() {
+        for name in ["neon-circuits", "midnight-dub"] {
+            let path = format!("examples/songs/{name}.cadence");
+            let project = crate::persistence::load_project(std::path::Path::new(&path)).unwrap();
+            for (label, size) in [
+                ("1920x420", vec2(1920.0, 420.0)),
+                ("1920x1000", vec2(1920.0, 1000.0)),
+            ] {
+                for playing in [false, true] {
+                    let (b, t) = arranger_frame_us(&project, size, playing);
+                    println!(
+                        "arranger,{name},{label},{},build={b:.1} us,tessellate={t:.1} us",
+                        if playing { "playing" } else { "idle" }
+                    );
+                }
+            }
+        }
+    }
 }
