@@ -1807,6 +1807,58 @@ mod tests {
         assert!(ui.app.shell.toast.is_none());
     }
 
+    /// Release behavior sweep through the real shortcuts: tab switching,
+    /// track add / duplicate / delete with undo and both redo shortcuts,
+    /// loop, seek and record toggles.
+    #[test]
+    fn shortcuts_drive_tabs_tracks_undo_redo_and_transport() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        let cmd = egui::Modifiers::COMMAND;
+        for (key, tab) in [
+            (egui::Key::Num2, Tab::Mixer),
+            (egui::Key::Num3, Tab::Keys),
+            (egui::Key::Num1, Tab::Editor),
+        ] {
+            ui.key(key, cmd);
+            assert_eq!(ui.app.tab, tab, "{key:?}");
+        }
+        let tracks = ui.app.project.tracks.len();
+        ui.app.add_track(Instrument::Pluck);
+        ui.frames(2);
+        assert_eq!(ui.app.project.tracks.len(), tracks + 1);
+        let added = ui.app.project.tracks.last().unwrap().id;
+        ui.app.duplicate_track(added);
+        ui.frames(2);
+        assert_eq!(ui.app.project.tracks.len(), tracks + 2);
+        ui.app.delete_track(added);
+        ui.frames(2);
+        assert_eq!(ui.app.project.tracks.len(), tracks + 1);
+        // Undo walks back delete, duplicate, add; both redo shortcuts work.
+        for want in [tracks + 2, tracks + 1, tracks] {
+            ui.key(egui::Key::Z, cmd);
+            assert_eq!(ui.app.project.tracks.len(), want);
+        }
+        ui.key(egui::Key::Z, CMD_SHIFT);
+        assert_eq!(ui.app.project.tracks.len(), tracks + 1);
+        ui.key(egui::Key::Y, cmd);
+        assert_eq!(ui.app.project.tracks.len(), tracks + 2);
+        // Transport keys.
+        let looping = ui.app.transport.looping;
+        ui.key(egui::Key::L, egui::Modifiers::NONE);
+        assert_ne!(ui.app.transport.looping, looping, "L toggles the loop");
+        ui.app.transport.position = 40.0;
+        ui.key(egui::Key::Home, egui::Modifiers::NONE);
+        assert_eq!(ui.app.transport.position, 0.0, "Home returns to the start");
+        let recording = ui.app.transport.recording;
+        ui.key(egui::Key::R, egui::Modifiers::NONE);
+        assert_ne!(ui.app.transport.recording, recording, "R arms recording");
+        // F1 opens the shortcuts, Esc closes them.
+        ui.key(egui::Key::F1, egui::Modifiers::NONE);
+        assert!(matches!(ui.app.dialog, Dialog::Help));
+        ui.key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(matches!(ui.app.dialog, Dialog::None));
+    }
+
     /// A toast floats over the work surface but never takes the pointer —
     /// not even on the frame it appears (an `Area` used to swallow clicks
     /// over half the editor for that one frame).
