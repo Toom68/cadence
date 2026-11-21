@@ -2592,6 +2592,55 @@ mod tests {
         ));
     }
 
+    /// Run with
+    /// `cargo test --release --locked --lib perf_bench_sidebar -- --ignored --nocapture --test-threads=1`.
+    /// Average headless frame cost with the sidebar on each tab (full pack
+    /// catalog, demo song, nothing hovered).
+    #[test]
+    #[ignore = "release-mode performance measurement"]
+    fn perf_bench_sidebar() {
+        use std::time::Instant;
+        let catalog =
+            crate::packs::load_catalog_from(&std::env::temp_dir().join("cadence-bench-no-packs"));
+        for (label, tab, quick_open, collapsed) in [
+            (
+                "rest-of-app (sidebar collapsed)",
+                SideTab::Library,
+                false,
+                true,
+            ),
+            ("library", SideTab::Library, false, false),
+            ("track", SideTab::Track, false, false),
+            ("track+quick-add", SideTab::Track, true, false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = CadenceApp::headless(Project::demo());
+            app.catalog = catalog.clone();
+            app.side_tab = tab;
+            ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new(QUICK_ADD_OPEN), quick_open);
+                d.insert_temp(egui::Id::new(SIDEBAR_COLLAPSED), collapsed);
+            });
+            let mut elapsed = std::time::Duration::ZERO;
+            for n in 0..240 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1360.0, 860.0))),
+                    time: Some(n as f64 / 60.0),
+                    ..Default::default()
+                };
+                let start = Instant::now();
+                let _ = ctx.run(input, |ctx| app.frame(ctx));
+                if n >= 40 {
+                    elapsed += start.elapsed();
+                }
+            }
+            println!(
+                "sidebar,{label},{:.1} us/frame",
+                elapsed.as_secs_f64() * 5000.0
+            );
+        }
+    }
+
     #[test]
     fn quick_picks_recent_cap() {
         let mut app = app();
