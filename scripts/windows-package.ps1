@@ -28,6 +28,12 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 $Exe = Join-Path $Stage 'Cadence.exe'
 Copy-Item (Join-Path $Root 'target/release/cadence.exe') $Exe
 
+# Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans).
+$Licenses = Join-Path $Stage 'licenses'
+New-Item -ItemType Directory -Force -Path $Licenses | Out-Null
+Copy-Item (Join-Path $Root 'assets/fonts/OFL.txt') (Join-Path $Licenses 'Inter-OFL.txt')
+Copy-Item (Join-Path $Root 'assets/fonts/DejaVu-LICENSE.txt') (Join-Path $Licenses 'DejaVu-LICENSE.txt')
+
 # Smoke test: the GUI-subsystem binary still answers CLI requests.
 $Out = Join-Path $Stage 'version.txt'
 $Proc = Start-Process -FilePath $Exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $Out

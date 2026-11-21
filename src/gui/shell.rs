@@ -32,7 +32,7 @@ pub(super) const MENU_H: f32 = 28.0;
 /// Status bar height.
 pub(super) const STATUS_H: f32 = 24.0;
 /// Every menu is exactly this wide, so the bar never jumps between menus.
-const MENU_W: f32 = 264.0;
+const MENU_W: f32 = 296.0;
 /// Height of the draggable gap between the arranger and the editor.
 const HANDLE_H: f32 = 12.0;
 /// Height of the bottom tab strip card (tabs row + rule + card outline).

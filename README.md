@@ -86,10 +86,11 @@ Shortcuts are app-wide (⌘ on macOS, Ctrl on Windows). Press **F1** in the app 
 | Esc | Deselect / close dialog |
 | Arrow keys | Nudge selection (Shift+↑/↓ nudges by octave) |
 | = / − | Zoom in / out |
-| ⌘/Ctrl + 1 / 2 | Pattern Editor / Mixer tab |
+| ⌘/Ctrl + 1 / 2 / 3 | Pattern Editor / Mixer / Keyboard tab |
+| ⌘/Ctrl + Shift + ↑ / ↓ | Maximize the editor / the arranger (again to restore) |
 | F1 | Shortcuts & tips |
 
-The **File** menu also has *New from Demo*, *Import MIDI…*, and *Export MIDI…*; **Transport** holds Play/Stop/Loop/Metronome; **View** holds zoom, *Fit Song in Arranger*, and *Theme* — Graphite (default), Midnight, or Paper — which recolors the whole interface and is remembered between sessions.
+The **File** menu also has *New from Demo*, the imports (*MIDI*, *Audio File*, *Sample*, *Instrument Pack*) and the exports (*WAV*, *Stems*, *MIDI*); **Track** adds, duplicates, deletes and reorders tracks; **Transport** holds Play/Stop/Loop/Record/Metronome; **View** holds the tabs, zoom, *Fit Song in Arranger*, the panel sizes (drag or double-click the divider between the arranger and the editor too) and *Theme* — Graphite (default), Midnight, or Paper — which recolors the whole interface and is remembered between sessions.
 
 ## Export
 

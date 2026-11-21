@@ -1209,6 +1209,8 @@ fn master_meter(ui: &mut Ui, pal: Palette, width: f32, peak: [f32; 2], clipping:
         p.rect_filled(rect, 3.0, m.well);
         let inner = rect.shrink(2.0);
         let lane_h = (inner.height() - 2.0) * 0.5;
+        // Unlit segments stay readable on the dark well, in every theme.
+        let unlit = theme::mix(m.meter_off, pal.text_faint, 0.2);
         let step = 4.0;
         let count = ((inner.width() + 1.0) / step).floor().max(1.0) as usize;
         for (lane, level) in peak.iter().enumerate() {
@@ -1217,7 +1219,7 @@ fn master_meter(ui: &mut Ui, pal: Palette, width: f32, peak: [f32; 2], clipping:
             for i in 0..count {
                 let at = i as f32 / count as f32;
                 let color = if i >= lit {
-                    m.meter_off
+                    unlit
                 } else if clipping && i + 1 == count {
                     m.meter_clip
                 } else if at < 0.62 {

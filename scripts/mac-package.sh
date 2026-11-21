@@ -43,6 +43,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_SRC" "$APP/Contents/MacOS/$BIN_NAME"
 chmod 755 "$APP/Contents/MacOS/$BIN_NAME"
 cp assets/icon.icns "$APP/Contents/Resources/Cadence.icns"
+# Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans);
+# they must be in the bundle before it is signed.
+mkdir -p "$APP/Contents/Resources/licenses"
+cp assets/fonts/OFL.txt "$APP/Contents/Resources/licenses/Inter-OFL.txt"
+cp assets/fonts/DejaVu-LICENSE.txt "$APP/Contents/Resources/licenses/DejaVu-LICENSE.txt"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

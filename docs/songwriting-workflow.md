@@ -22,7 +22,7 @@ Project-level controls set the frame everything else sits in:
 
 ## 3. Add tracks
 
-The left **sidebar** has two tabs: **Instruments** (the library) and **Track** (the selected track's inspector). In the library, each row has **+** to add a track and **▶** to audition the sound (double-click also adds); **Edit → Add Track** does the same from the menu. Up to 32 tracks per song — the counter shows `n/32`. Each track has a name, color, instrument, volume, pan, mute/solo, and effects. A new track starts with one empty pattern and a clip at the start of the song. Tracks can be reordered, duplicated, or deleted from the sidebar.
+The left **sidebar** has two tabs: **Instruments** (the library) and **Track** (the selected track's inspector). In the library, each row has **+** to add a track and **▶** to audition the sound (double-click also adds); **Track → Add Track** does the same from the menu. Up to 32 tracks per song — the counter shows `n/32`. Each track has a name, color, instrument, volume, pan, mute/solo, and effects. A new track starts with one empty pattern and a clip at the start of the song. Tracks can be reordered, duplicated, or deleted from the sidebar.
 
 The library also lists **JSON instrument packs** (grouped by pack, with a search field and an *Import Pack…* / *Reload* footer) — see [instrument-packs.md](instrument-packs.md).
 
