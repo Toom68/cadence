@@ -735,27 +735,40 @@ impl CadenceApp {
 
     // ----- help ---------------------------------------------------------------
 
-    /// Shortcuts and concrete editing instructions (F1 / Help menu).
+    /// Shortcuts, mouse gestures and editing tips (F1 / Help menu): the one
+    /// place every shortcut and gesture is written down, a page per area.
     fn help_dialog(&mut self, ctx: &Context) -> bool {
         let pal = self.palette();
         let mut closed = false;
-        let height = (ctx.content_rect().height() - 230.0).clamp(240.0, 560.0);
+        let height = (ctx.content_rect().height() - 260.0).clamp(220.0, 560.0);
+        let page_id = egui::Id::new("cadence-help-page");
+        let mut page: HelpPage = ctx.data(|d| d.get_temp(page_id)).unwrap_or_default();
         let resp = show_dialog(ctx, "cadence-help", pal, W_HELP, |ui| {
-            header(ui, pal, "SHORTCUTS & TIPS", "How to write a song");
+            header(ui, pal, "SHORTCUTS & TIPS", "How to work in Cadence");
             ui.add_space(theme::GAP_S);
+            let pages = HelpPage::ALL.map(|p| theme::Segment::new(p, p.label()));
+            theme::segmented(ui, pal, &mut page, &pages, theme::CONTROL_M, None);
+            ui.add_space(theme::GAP_M);
             ScrollArea::vertical()
+                .id_salt(("help-scroll", page))
                 .max_height(height)
                 .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.columns(2, |cols| {
-                        shortcut_table(&mut cols[0], pal, ctx, "FILE", FILE_ROWS);
-                        shortcut_table(&mut cols[0], pal, ctx, "EDIT", EDIT_ROWS);
-                        shortcut_table(&mut cols[0], pal, ctx, "TRANSPORT", TRANSPORT_ROWS);
-                        shortcut_table(&mut cols[1], pal, ctx, "VIEW", VIEW_ROWS);
-                        shortcut_table(&mut cols[1], pal, ctx, "ARRANGER & EDITOR", EDITING_ROWS);
-                        shortcut_table(&mut cols[1], pal, ctx, "COMPUTER KEYBOARD", KEYBOARD_ROWS);
-                    });
-                    gesture_list(ui, pal);
+                .show(ui, |ui| match page {
+                    HelpPage::Shortcuts => {
+                        ui.columns(2, |cols| {
+                            for section in &SHORTCUT_SECTIONS[..2] {
+                                help_section(&mut cols[0], pal, ctx, section);
+                            }
+                            for section in &SHORTCUT_SECTIONS[2..] {
+                                help_section(&mut cols[1], pal, ctx, section);
+                            }
+                        });
+                    }
+                    page => {
+                        for section in page.sections() {
+                            help_section(ui, pal, ctx, section);
+                        }
+                    }
                 });
             button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Done").clicked() {
@@ -763,6 +776,7 @@ impl CadenceApp {
                 }
             });
         });
+        ctx.data_mut(|d| d.insert_temp(page_id, page));
         closed |= enter_pressed(ctx);
         !closed && !resp.should_close()
     }
@@ -975,150 +989,422 @@ fn form_label(ui: &mut Ui, pal: Palette, text: &str) {
 
 // ----- help content -------------------------------------------------------------
 
-/// What a Help row shows on the right.
-#[derive(Clone, Copy)]
-enum Keys {
+/// Pages of the Help dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum HelpPage {
+    #[default]
+    Shortcuts,
+    Arranger,
+    Editor,
+    Mixer,
+    Keyboard,
+}
+
+impl HelpPage {
+    pub(super) const ALL: [HelpPage; 5] = [
+        HelpPage::Shortcuts,
+        HelpPage::Arranger,
+        HelpPage::Editor,
+        HelpPage::Mixer,
+        HelpPage::Keyboard,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            HelpPage::Shortcuts => "Shortcuts",
+            HelpPage::Arranger => "Arranger",
+            HelpPage::Editor => "Pattern editor",
+            HelpPage::Mixer => "Mixer",
+            HelpPage::Keyboard => "Keyboard",
+        }
+    }
+
+    /// The page's sections, top to bottom (Shortcuts lays them out in two
+    /// columns).
+    pub(super) fn sections(self) -> &'static [Section] {
+        match self {
+            HelpPage::Shortcuts => SHORTCUT_SECTIONS,
+            HelpPage::Arranger => ARRANGER_SECTIONS,
+            HelpPage::Editor => EDITOR_SECTIONS,
+            HelpPage::Mixer => MIXER_SECTIONS,
+            HelpPage::Keyboard => KEYBOARD_SECTIONS,
+        }
+    }
+}
+
+/// How to do it: the right-hand side of a Help row.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Keys {
     /// A real shortcut, written in the platform's notation.
     Shortcut(&'static KeyboardShortcut),
+    /// Either of two shortcuts.
+    Either(&'static KeyboardShortcut, &'static KeyboardShortcut),
     /// Literal keys; `" / "` separates alternatives, `+` joins a chord.
     Text(&'static str),
+    /// A mouse gesture. Leading `{cmd}+`, `{alt}+` and `{shift}+` become
+    /// key caps with the platform's modifier names; `" / "` separates
+    /// alternatives.
+    Mouse(&'static str),
     /// Only reachable from a menu.
     Menu(&'static str),
 }
 
-type Row = (&'static str, Keys);
+/// `(what you want, how to do it)`.
+pub(super) type Row = (&'static str, Keys);
 
-const FILE_ROWS: &[Row] = &[
-    ("New song…", Keys::Shortcut(&super::SC_NEW)),
-    ("Open…", Keys::Shortcut(&super::SC_OPEN)),
-    ("Save", Keys::Shortcut(&super::SC_SAVE)),
-    ("Save as…", Keys::Shortcut(&super::SC_SAVE_AS)),
-    ("Export WAV…", Keys::Shortcut(&super::SC_EXPORT_WAV)),
-    ("Import MIDI, audio, packs", Keys::Menu("File menu")),
-    ("Quit", Keys::Shortcut(&super::SC_QUIT)),
-];
-const EDIT_ROWS: &[Row] = &[
-    ("Undo", Keys::Shortcut(&super::SC_UNDO)),
-    ("Redo", Keys::Shortcut(&super::SC_REDO)),
-    ("Cut", Keys::Shortcut(&super::SC_CUT)),
-    ("Copy", Keys::Shortcut(&super::SC_COPY)),
-    ("Paste", Keys::Shortcut(&super::SC_PASTE)),
-    ("Duplicate", Keys::Shortcut(&super::SC_DUPLICATE)),
-    ("Select all", Keys::Shortcut(&super::SC_SELECT_ALL)),
-    ("Delete", Keys::Text("Del / Backspace")),
-    ("Deselect", Keys::Text("Esc")),
-    ("Arpeggiator…", Keys::Menu("Edit menu")),
-];
-const TRANSPORT_ROWS: &[Row] = &[
-    ("Play / pause", Keys::Shortcut(&super::SC_PLAY)),
-    ("Return to start", Keys::Shortcut(&super::SC_HOME)),
-    ("Loop", Keys::Shortcut(&super::SC_LOOP)),
-    ("Record", Keys::Shortcut(&super::SC_RECORD)),
-    ("Metronome", Keys::Menu("Transport menu")),
-];
-const VIEW_ROWS: &[Row] = &[
-    ("Pattern editor", Keys::Shortcut(&super::SC_EDITOR)),
-    ("Mixer", Keys::Shortcut(&super::SC_MIXER)),
-    ("Keyboard", Keys::Shortcut(&super::SC_KEYS)),
-    ("Zoom in / out", Keys::Text("= / -")),
-    ("Maximize editor", Keys::Shortcut(&super::SC_MAX_EDITOR)),
-    ("Maximize arranger", Keys::Shortcut(&super::SC_MAX_ARRANGER)),
-    ("Shortcuts & tips", Keys::Shortcut(&super::SC_HELP)),
-];
-const EDITING_ROWS: &[Row] = &[
-    ("Split clip at pointer / playhead", Keys::Text("B")),
-    ("Nudge selection", Keys::Text("← / → / ↑ / ↓")),
-    ("Nudge by an octave", Keys::Text("Shift+↑ / Shift+↓")),
-];
-const KEYBOARD_ROWS: &[Row] = &[
-    ("White keys C D E F G A B", Keys::Text("Z X C V B N M")),
-    ("Black keys C♯ D♯ F♯ G♯ A♯", Keys::Text("S D G H J")),
-    ("Octave down / up", Keys::Text("Q / W")),
-    ("One octave up, that note only", Keys::Text("Shift+key")),
-];
+/// A titled group of Help rows.
+pub(super) struct Section {
+    pub(super) title: &'static str,
+    pub(super) rows: &'static [Row],
+}
 
-/// Gestures and tips, `(heading, text)`, shown under the shortcut tables. Add
-/// new entries here; the dialog lays them out on its own.
-const GESTURES: &[(&str, &str)] = &[
-    (
-        "Arranger",
-        "Drag empty lane space to box-select clips across tracks; drag a selected clip to move \
-         the group, or Alt-drag to copy it. Clicking an unselected clip selects it alone \
-         (clicking a selected clip keeps the group); Shift-click toggles it. Double-click empty \
-         lane space to place the selected pattern; clip top corners set fades and the right \
-         edge changes loops.",
-    ),
-    (
-        "Piano roll",
-        "Click empty grid to draw a note, drag empty grid to box-select notes, drag any \
-         selected note to move the group, pull the right edge to resize, and right-click \
-         erases. Drag the velocity lane under the roll to shape note loudness.",
-    ),
-    (
-        "Chord strip",
-        "Click a diatonic chord of the song key to stamp it at the pointer or playhead — as a \
-         block or a strum, in any of 18 chord qualities via the Type menu. Hovering a chord \
-         auditions it; the Scale toggle tints the key's notes in the roll.",
-    ),
-    (
-        "Drum grid",
-        "Click or drag across the kit rows to paint hits; Shift+click cycles accent levels; \
-         right-click erases. The Fill button adds a four-on-the-floor hit on the top row.",
-    ),
-    (
-        "Mixer",
-        "Drag channel faders for volume and pan; turn the knobs for filter, reverb, delay and \
-         drive. Mute/solo per channel; the rightmost strip is the master.",
-    ),
-    (
-        "Panels",
-        "Drag the divider between the arranger and the editor to resize them; double-click it \
-         to maximize the arranger, and again to restore. The arrows next to the tabs favor \
-         the editor or the arranger.",
-    ),
-    (
-        "Files",
-        "Songs save as .cadence files. MIDI and WAV export live in the File menu. Instrument \
-         packs are plain JSON — Import Instrument Pack… adds new synth sounds with no rebuild.",
-    ),
+use Keys::{Either, Menu, Mouse, Shortcut, Text};
+
+/// The Shortcuts page: the first two sections fill the left column.
+const SHORTCUT_SECTIONS: &[Section] = &[
+    Section {
+        title: "TRANSPORT",
+        rows: &[
+            ("Play / pause", Shortcut(&super::SC_PLAY)),
+            ("Return to start", Shortcut(&super::SC_HOME)),
+            ("Loop on / off", Shortcut(&super::SC_LOOP)),
+            ("Record what you play", Shortcut(&super::SC_RECORD)),
+            ("Metronome", Menu("Transport menu")),
+            ("Tap the tempo", Mouse("Click TAP in rhythm")),
+            ("Move the playhead", Mouse("Click the ruler")),
+        ],
+    },
+    Section {
+        title: "FILE",
+        rows: &[
+            ("New song", Shortcut(&super::SC_NEW)),
+            ("Open", Shortcut(&super::SC_OPEN)),
+            ("Save", Shortcut(&super::SC_SAVE)),
+            ("Save as", Shortcut(&super::SC_SAVE_AS)),
+            ("Export WAV", Shortcut(&super::SC_EXPORT_WAV)),
+            ("Export stems or MIDI", Menu("File menu")),
+            ("Import MIDI, audio, packs", Menu("File menu")),
+            ("Quit", Shortcut(&super::SC_QUIT)),
+        ],
+    },
+    Section {
+        title: "EDITING",
+        rows: &[
+            ("Undo", Shortcut(&super::SC_UNDO)),
+            ("Redo", Either(&super::SC_REDO, &super::SC_REDO_ALT)),
+            ("Cut", Shortcut(&super::SC_CUT)),
+            ("Copy", Shortcut(&super::SC_COPY)),
+            (
+                "Paste at the pointer or playhead",
+                Shortcut(&super::SC_PASTE),
+            ),
+            ("Duplicate", Shortcut(&super::SC_DUPLICATE)),
+            ("Select all", Shortcut(&super::SC_SELECT_ALL)),
+            ("Delete", Text("Del / Backspace")),
+            ("Deselect, close a dialog", Text("Esc")),
+            ("Nudge the selection", Text("← / → / ↑ / ↓")),
+            ("Nudge by an octave", Text("Shift+↑ / Shift+↓")),
+            ("Arpeggiator", Menu("Edit menu")),
+        ],
+    },
+    Section {
+        title: "VIEW & PANELS",
+        rows: &[
+            ("Pattern editor", Shortcut(&super::SC_EDITOR)),
+            ("Mixer", Shortcut(&super::SC_MIXER)),
+            ("Keyboard", Shortcut(&super::SC_KEYS)),
+            ("Maximize the editor", Shortcut(&super::SC_MAX_EDITOR)),
+            ("Maximize the arranger", Shortcut(&super::SC_MAX_ARRANGER)),
+            ("Resize arranger and editor", Mouse("Drag the divider")),
+            (
+                "Maximize, again to restore",
+                Mouse("Double-click the divider"),
+            ),
+            ("Theme, fit song", Menu("View menu")),
+            ("These tips", Shortcut(&super::SC_HELP)),
+        ],
+    },
+    Section {
+        title: "LIBRARY",
+        rows: &[
+            (
+                "Add a sound as a new track",
+                Mouse("Double-click it / click +"),
+            ),
+            ("Add it at a bar", Mouse("Drag it onto the arranger")),
+            ("Preview a sound", Mouse("Click ▶")),
+            ("Fold a section", Mouse("Click its header")),
+            ("Center a track's pan", Mouse("Double-click the Pan slider")),
+        ],
+    },
 ];
 
-/// A titled two-column table of what each action's keys are.
-fn shortcut_table(ui: &mut Ui, pal: Palette, ctx: &Context, title: &str, rows: &[Row]) {
-    ui.label(theme::kicker_text(pal, title));
+/// Scrolling and zooming: the same in the arranger and both editors.
+const NAVIGATION: Section = Section {
+    title: "NAVIGATION",
+    rows: &[
+        ("Scroll up and down", Mouse("Wheel")),
+        ("Scroll left and right", Mouse("{shift}+wheel")),
+        ("Zoom time at the pointer", Mouse("{cmd}+wheel / pinch")),
+        ("Taller or shorter lanes and rows", Mouse("{alt}+wheel")),
+        ("Pan freely", Mouse("Middle-drag / two-finger swipe")),
+        ("Zoom in / out", Text("= / -")),
+    ],
+};
+
+const ARRANGER_SECTIONS: &[Section] = &[
+    Section {
+        title: "CLIPS",
+        rows: &[
+            ("Select a clip and show its pattern", Mouse("Click it")),
+            (
+                "Add to or remove from the selection",
+                Mouse("{shift}+click"),
+            ),
+            (
+                "Box-select clips across tracks",
+                Mouse("Drag empty lane space"),
+            ),
+            (
+                "Move (selected clips move as a group)",
+                Mouse("Drag a clip"),
+            ),
+            ("Copy", Mouse("{alt}+drag a clip")),
+            ("Fade in / fade out", Mouse("Drag a top corner")),
+            ("Loop the clip", Mouse("Drag the right edge")),
+            ("Edit its pattern", Mouse("Double-click it")),
+            (
+                "Place the track's pattern",
+                Mouse("Double-click an empty lane"),
+            ),
+            ("Split at the pointer or playhead", Text("B")),
+            (
+                "Repeat, fades, unique copy, delete",
+                Mouse("Right-click a clip"),
+            ),
+            (
+                "Paste here, place a pattern, markers",
+                Mouse("Right-click a lane"),
+            ),
+            ("New track with a sound", Mouse("Drag a library sound in")),
+        ],
+    },
+    Section {
+        title: "RULER & MARKERS",
+        rows: &[
+            (
+                "Move the playhead (snaps to beats)",
+                Mouse("Click or drag the ruler"),
+            ),
+            ("Exact 1/16 positions", Mouse("{shift}+drag the ruler")),
+            ("Set a loop region", Mouse("Drag the thin top strip")),
+            ("Clear the loop region", Mouse("Click ✕ next to its bars")),
+            ("Add a section marker", Mouse("Double-click the ruler")),
+            ("Move a marker", Mouse("Drag its flag")),
+            (
+                "Rename / delete a marker",
+                Mouse("Double-click / right-click its flag"),
+            ),
+            ("Markers and song end", Mouse("Right-click the ruler")),
+        ],
+    },
+    Section {
+        title: "CHORD LANE (BOTTOM OF THE RULER)",
+        rows: &[
+            ("Add the key's chord", Mouse("Click the lane")),
+            ("Change the chord quality", Mouse("Click a chord")),
+            ("Change the chord root", Mouse("{shift}+click a chord")),
+            ("Move a chord", Mouse("Drag it")),
+            ("Delete a chord", Mouse("Right-click it")),
+        ],
+    },
+    Section {
+        title: "TRACKS",
+        rows: &[
+            ("Select a track", Mouse("Click its header")),
+            ("Track settings", Mouse("Double-click its header")),
+            ("Track height and more", Mouse("Right-click its header")),
+            ("Mute / solo", Mouse("Click M / S")),
+        ],
+    },
+    NAVIGATION,
+];
+
+const EDITOR_SECTIONS: &[Section] = &[
+    Section {
+        title: "PIANO ROLL",
+        rows: &[
+            ("Draw a note (Note length, Snap)", Mouse("Click empty grid")),
+            ("Box-select notes", Mouse("Drag empty grid")),
+            (
+                "Select a note / add to the selection",
+                Mouse("Click / {shift}+click a note"),
+            ),
+            ("Move the selected notes", Mouse("Drag a note")),
+            ("Change a note's length", Mouse("Drag its right edge")),
+            ("Erase", Mouse("Right-click / right-drag")),
+            ("Set velocity", Mouse("Drag in the velocity lane")),
+            ("Hear a pitch", Mouse("Click or drag the keys")),
+        ],
+    },
+    Section {
+        title: "DRUM GRID",
+        rows: &[
+            ("Paint or erase steps", Mouse("Click or drag")),
+            ("Accent: 100 → 70 → 40%", Mouse("{shift}+click a hit")),
+            ("Erase", Mouse("Right-click / right-drag")),
+            ("Hear a piece", Mouse("Click its name")),
+            ("Four on the floor on the top row", Mouse("Click Fill")),
+        ],
+    },
+    Section {
+        title: "CHORD STRIP (MELODIC TRACKS)",
+        rows: &[
+            ("Open or close it", Mouse("Click Chords above the roll")),
+            ("Hear a chord", Mouse("Hover a chord")),
+            (
+                "Stamp it at the pointer or playhead",
+                Mouse("Click a chord"),
+            ),
+            (
+                "Stamp a progression, a chord per bar",
+                Mouse("Click a preset"),
+            ),
+            (
+                "Type, inversion, bass, strum",
+                Menu("Menus on the Chords row"),
+            ),
+            ("Tint the key's notes in the roll", Mouse("Click Scale")),
+        ],
+    },
+    Section {
+        title: "PATTERNS",
+        rows: &[
+            ("Switch pattern", Mouse("Click the pattern name")),
+            ("Rename the pattern", Mouse("Double-click the pattern name")),
+            ("Rename, clear notes, delete pattern", Mouse("Click ⋯")),
+            (
+                "Place it at the playhead",
+                Mouse("Click Add to arrangement"),
+            ),
+        ],
+    },
+    NAVIGATION,
+];
+
+const MIXER_SECTIONS: &[Section] = &[Section {
+    title: "MIXER",
+    rows: &[
+        ("Volume, pan, effect amount", Mouse("Drag a fader or knob")),
+        ("Fine adjustment", Mouse("{shift}+drag / {alt}+wheel")),
+        ("Back to the default", Mouse("Double-click a fader or knob")),
+        ("Jump to a level", Mouse("Click the fader groove")),
+        ("Scroll the strips", Mouse("Wheel / swipe over them")),
+        ("Mute / solo", Mouse("Click M / S")),
+        ("Drive, filter, delay, reverb", Mouse("Click FX on a strip")),
+        ("Send a track to a bus", Mouse("Pick it under the name")),
+        ("Clear a peak or clip light", Mouse("Click the meter")),
+        ("Clear every peak", Mouse("Click Clear peaks")),
+        ("Narrower strips", Mouse("Click Compact")),
+    ],
+}];
+
+const KEYBOARD_SECTIONS: &[Section] = &[Section {
+    title: "PLAYING FROM THE COMPUTER KEYBOARD",
+    rows: &[
+        ("White keys C D E F G A B", Text("Z X C V B N M")),
+        ("Black keys C♯ D♯ F♯ G♯ A♯", Text("S D G H J")),
+        ("Octave down / up", Text("Q / W")),
+        ("That note an octave up", Mouse("{shift}+key")),
+        ("Glissando", Mouse("Drag across the piano")),
+        ("Drum pad (higher click = louder)", Mouse("Click a pad")),
+        (
+            "Drum pieces from the keyboard",
+            Mouse("The key shown on each pad"),
+        ),
+        ("Record into the pattern", Shortcut(&super::SC_RECORD)),
+    ],
+}];
+
+/// `{cmd}`, `{alt}`, `{shift}` → the modifier, or `None` for any other token.
+fn gesture_modifier(token: &str) -> Option<Modifiers> {
+    match token {
+        "{cmd}" => Some(Modifiers::COMMAND),
+        "{alt}" => Some(Modifiers::ALT),
+        "{shift}" => Some(Modifiers::SHIFT),
+        _ => None,
+    }
+}
+
+/// Splits one gesture alternative into its leading modifiers and the mouse
+/// action: `"{alt}+drag a clip"` → ([ALT], "drag a clip").
+pub(super) fn split_gesture(text: &str) -> (Vec<Modifiers>, &str) {
+    let mut mods = Vec::new();
+    let mut rest = text;
+    while rest.starts_with('{') {
+        let Some(m) = rest
+            .find('}')
+            .and_then(|end| gesture_modifier(&rest[..=end]).map(|m| (m, end)))
+        else {
+            break;
+        };
+        mods.push(m.0);
+        rest = rest[m.1 + 1..].trim_start_matches('+');
+    }
+    (mods, rest)
+}
+
+/// A titled group of `what → how` rows.
+fn help_section(ui: &mut Ui, pal: Palette, ctx: &Context, section: &Section) {
+    ui.label(theme::kicker_text(pal, section.title));
     ui.add_space(theme::GAP_XS);
-    egui::Grid::new(("help-table", title))
-        .num_columns(2)
-        .spacing([theme::GAP_M, 6.0])
-        .show(ui, |ui| {
-            for (label, keys) in rows {
-                ui.label(RichText::new(*label).color(pal.text_dim));
-                match keys {
-                    Keys::Shortcut(sc) => keycaps(ui, pal, &ctx.format_shortcut(sc)),
-                    Keys::Text(text) => keycaps(ui, pal, text),
-                    Keys::Menu(menu) => {
-                        ui.label(RichText::new(*menu).small().color(pal.text_faint));
-                    }
+    let left = (ui.available_width() * 0.5).floor();
+    for (label, keys) in section.rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::GAP_S;
+            ui.allocate_ui_with_layout(
+                vec2(left, 22.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.set_width(left);
+                    ui.add(egui::Label::new(RichText::new(*label).color(pal.text_dim)).wrap());
+                },
+            );
+            match keys {
+                Shortcut(sc) => keycaps(ui, pal, &ctx.format_shortcut(sc)),
+                Either(a, b) => keycaps(
+                    ui,
+                    pal,
+                    &format!("{} / {}", ctx.format_shortcut(a), ctx.format_shortcut(b)),
+                ),
+                Text(text) => keycaps(ui, pal, text),
+                Mouse(text) => gesture(ui, pal, ctx, text),
+                Menu(menu) => {
+                    ui.label(RichText::new(*menu).color(pal.text_faint));
                 }
-                ui.end_row();
             }
         });
+        ui.add_space(2.0);
+    }
     ui.add_space(theme::GAP_M);
 }
 
-/// The tips list at the end of the Help dialog.
-fn gesture_list(ui: &mut Ui, pal: Palette) {
-    ui.label(theme::kicker_text(pal, "MOUSE & EDITING"));
-    ui.add_space(theme::GAP_XS);
-    for (heading, text) in GESTURES {
-        ui.label(
-            theme::strong_text(*heading)
-                .size(theme::TEXT_BODY)
-                .color(pal.text),
-        );
-        ui.label(RichText::new(*text).small().color(pal.text_dim));
-        ui.add_space(theme::GAP_S);
-    }
+/// A mouse gesture: modifier key caps, then the action in words.
+fn gesture(ui: &mut Ui, pal: Palette, ctx: &Context, text: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (n, alternative) in text.split(" / ").enumerate() {
+            if n > 0 {
+                ui.label(RichText::new("or").small().color(pal.text_faint));
+            }
+            let (mods, action) = split_gesture(alternative);
+            for m in mods {
+                keycap(ui, pal, &ctx.format_modifiers(m));
+                ui.label(RichText::new("+").small().color(pal.text_faint));
+            }
+            ui.label(RichText::new(action).color(pal.text));
+        }
+    });
 }
 
 /// Splits a shortcut string into its keys: `"Ctrl+Shift+S"` → Ctrl, Shift,
@@ -1295,5 +1581,124 @@ mod tests {
         assert_eq!(app.project, project);
         assert_eq!(app.history.state(), state);
         assert!(app.dirty());
+    }
+
+    #[test]
+    fn gestures_parse_their_modifiers() {
+        assert_eq!(
+            split_gesture("{alt}+drag a clip"),
+            (vec![Modifiers::ALT], "drag a clip")
+        );
+        assert_eq!(
+            split_gesture("{cmd}+{shift}+wheel"),
+            (vec![Modifiers::COMMAND, Modifiers::SHIFT], "wheel")
+        );
+        assert_eq!(split_gesture("Wheel"), (vec![], "Wheel"));
+        // Every placeholder in the Help is one the parser knows.
+        for page in HelpPage::ALL {
+            for section in page.sections() {
+                for (label, keys) in section.rows {
+                    assert!(!label.contains('{'), "{label}");
+                    if let Keys::Mouse(text) = keys {
+                        for alt in text.split(" / ") {
+                            let (_, action) = split_gesture(alt);
+                            assert!(
+                                !action.contains('{')
+                                    && !action.contains('}')
+                                    && !action.is_empty(),
+                                "{label}: {text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Help is the single list of shortcuts: every app shortcut is in it.
+    #[test]
+    fn help_lists_every_shortcut() {
+        use crate::gui as g;
+        let mut listed: Vec<KeyboardShortcut> = Vec::new();
+        for page in HelpPage::ALL {
+            for section in page.sections() {
+                for (_, keys) in section.rows {
+                    match keys {
+                        Keys::Shortcut(sc) => listed.push(**sc),
+                        Keys::Either(a, b) => listed.extend([**a, **b]),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for sc in [
+            g::SC_NEW,
+            g::SC_OPEN,
+            g::SC_SAVE,
+            g::SC_SAVE_AS,
+            g::SC_EXPORT_WAV,
+            g::SC_QUIT,
+            g::SC_UNDO,
+            g::SC_REDO,
+            g::SC_REDO_ALT,
+            g::SC_DUPLICATE,
+            g::SC_COPY,
+            g::SC_PASTE,
+            g::SC_CUT,
+            g::SC_SELECT_ALL,
+            g::SC_EDITOR,
+            g::SC_MIXER,
+            g::SC_KEYS,
+            g::SC_HELP,
+            g::SC_PLAY,
+            g::SC_HOME,
+            g::SC_LOOP,
+            g::SC_MAX_EDITOR,
+            g::SC_MAX_ARRANGER,
+            g::SC_RECORD,
+        ] {
+            assert!(listed.contains(&sc), "{sc:?} is missing from Help");
+        }
+    }
+
+    /// Every Help page renders in every theme, at the smallest window, with
+    /// the platform's modifier names.
+    #[test]
+    fn help_pages_render_with_platform_modifier_names() {
+        let ctx = Context::default();
+        ctx.set_os(egui::os::OperatingSystem::Windows);
+        let _ = ctx.run(RawInput::default(), |_| {});
+        assert_eq!(ctx.format_modifiers(Modifiers::COMMAND), "Ctrl");
+        assert_eq!(ctx.format_modifiers(Modifiers::ALT), "Alt");
+        assert_eq!(
+            ctx.format_shortcut(&super::super::SC_SAVE_AS),
+            "Ctrl+Shift+S"
+        );
+        let mac = Context::default();
+        mac.set_os(egui::os::OperatingSystem::Mac);
+        let _ = mac.run(RawInput::default(), |_| {});
+        // ⌘ once a font has the glyph (Cadence bundles one), else "Cmd".
+        assert!(["⌘", "Cmd"].contains(&mac.format_modifiers(Modifiers::COMMAND).as_str()));
+        for theme in crate::gui::theme::ThemeChoice::ALL {
+            for page in HelpPage::ALL {
+                let mut app = headless();
+                app.theme = theme;
+                app.dialog = Dialog::Help;
+                let ctx = Context::default();
+                ctx.set_os(egui::os::OperatingSystem::Windows);
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("cadence-help-page"), page));
+                for _ in 0..3 {
+                    let input = RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            vec2(1100.0, 760.0),
+                        )),
+                        ..Default::default()
+                    };
+                    run_frame(&mut app, &ctx, input);
+                }
+                assert!(matches!(app.dialog, Dialog::Help), "{theme:?} {page:?}");
+            }
+        }
     }
 }
