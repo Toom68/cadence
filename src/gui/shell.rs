@@ -20,10 +20,10 @@ use super::dialogs::Dialog;
 use super::files::PendingAction;
 use super::theme::{self, Icon, Palette, Segment, ThemeChoice};
 use super::{
-    arranger, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT, SC_DUPLICATE,
-    SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER, SC_MAX_EDITOR,
-    SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO, SC_SAVE, SC_SAVE_AS,
-    SC_SELECT_ALL, SC_UNDO,
+    arranger, editor, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT,
+    SC_DUPLICATE, SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER,
+    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO,
+    SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
 };
 use crate::model::Instrument;
 
@@ -71,11 +71,15 @@ const ARRANGER_COLLAPSED_H: f32 = 104.0;
 const MIN_EDITOR_H: f32 = 200.0;
 /// Piano-roll rows the automatic split tries to keep visible, in px.
 pub(super) const EDITOR_GRID_TARGET: f32 = 260.0;
-/// Editor panel height around its grid with the chord strip closed: tab
-/// strip, pattern toolbar, chord header, ruler and velocity lane.
-pub(super) const EDITOR_CHROME: f32 = 236.0;
+/// The tab strip on top of the editor card (6 + 28 + 6).
+const TAB_STRIP_H: f32 = 40.0;
+/// Editor panel height around its grid with the chord strip closed: card
+/// outline, tab strip and the piano roll's own chrome (pattern toolbar,
+/// chord row, roll toolbar, ruler, velocity lane). A layout test checks it
+/// against the real frame.
+pub(super) const EDITOR_CHROME: f32 = 2.0 + TAB_STRIP_H + editor::ROLL_CHROME;
 /// What the open chord strip adds to [`EDITOR_CHROME`].
-pub(super) const CHORD_STRIP_EXTRA: f32 = 56.0;
+pub(super) const CHORD_STRIP_EXTRA: f32 = editor::CHORD_STRIP_EXTRA;
 /// The automatic split never gives the arranger more than this share.
 const MAX_AUTO_SHARE: f32 = 0.55;
 
@@ -1184,9 +1188,17 @@ impl CadenceApp {
                     .inner_margin(Margin::same(0))
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
+                        // The pattern editor's toolbars start right under the
+                        // tab strip; the other tabs keep the usual gap.
+                        let gap = ui.spacing().item_spacing.y;
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         self.bottom_tabs(ui);
                         if ui.available_height() < 48.0 {
                             return;
+                        }
+                        if self.tab != Tab::Editor {
+                            ui.add_space(gap);
+                            ui.spacing_mut().item_spacing.y = gap;
                         }
                         match self.tab {
                             Tab::Editor => self.editor_ui(ui),
@@ -1591,10 +1603,21 @@ mod tests {
                 let mut ui = Harness::new(vec2(w, h));
                 ui.select(2, chord);
                 assert!(
-                    ui.grid_height() >= 258.0,
+                    ui.grid_height() >= EDITOR_GRID_TARGET - 0.5,
                     "{w}x{h} chord={chord}: piano roll grid is {:.0} px",
                     ui.grid_height()
                 );
+                // Every chord palette fits one row of chips there.
+                for tab in editor::ChordStripTab::ALL {
+                    ui.app.editor.chord_tab = tab;
+                    ui.frames(2);
+                    assert!(
+                        ui.grid_height() >= EDITOR_GRID_TARGET - 0.5,
+                        "{w}x{h} chord={chord} {tab:?}: grid is {:.0} px",
+                        ui.grid_height()
+                    );
+                }
+                ui.app.editor.chord_tab = editor::ChordStripTab::Diatonic;
             }
             let mut ui = Harness::new(vec2(1100.0, 760.0));
             ui.select(2, chord);
@@ -1610,6 +1633,40 @@ mod tests {
                 ui.grid_height()
             );
         }
+    }
+
+    /// The split's model of the editor chrome matches the real frame, so
+    /// the default split gives the piano roll exactly what it promises.
+    #[test]
+    fn editor_chrome_constants_match_the_frame() {
+        for (w, h) in [(1100.0, 760.0), (1360.0, 860.0), (1920.0, 1080.0)] {
+            for chord in [false, true] {
+                let mut ui = Harness::new(vec2(w, h));
+                ui.select(2, chord);
+                let chrome = ui.app.shell.probe.editor.height() - ui.grid_height();
+                let want = EDITOR_CHROME + if chord { CHORD_STRIP_EXTRA } else { 0.0 };
+                assert!(
+                    (chrome - want).abs() < 0.5,
+                    "{w}x{h} chord={chord}: chrome {chrome} != {want}"
+                );
+            }
+        }
+    }
+
+    /// Opening the chord strip in the default split grows the editor
+    /// upwards: the piano roll itself stays exactly where it was.
+    #[test]
+    fn opening_the_chord_strip_keeps_the_piano_roll_in_place() {
+        let mut ui = Harness::new(vec2(1440.0, 900.0));
+        ui.select(2, false);
+        let closed = ui.app.editor_test_rects().0;
+        ui.select(2, true);
+        let open = ui.app.editor_test_rects().0;
+        assert!(
+            (closed.top() - open.top()).abs() < 0.5,
+            "{closed:?} -> {open:?}"
+        );
+        assert!((closed.height() - open.height()).abs() < 0.5);
     }
 
     /// At 1080p the arranger shows at least six lanes by default.

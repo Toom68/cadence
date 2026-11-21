@@ -2329,6 +2329,31 @@ pub fn segmented<T: Copy + PartialEq>(
     resp
 }
 
+/// Width [`segmented`] takes with `width: None` — for reserving a toolbar
+/// slot (`tb.item(segmented_width(..), |ui| segmented(..))`).
+pub fn segmented_width<T>(ui: &Ui, options: &[Segment<'_, T>], height: f32) -> f32 {
+    let font = strong_font(ui, if height < 26.0 { 11.5 } else { 12.5 });
+    let pad = button_pad(height) + 2.0;
+    let icon = icon_side(height) - 2.0;
+    let segments: f32 = options
+        .iter()
+        .map(|o| {
+            let text = if o.label.is_empty() {
+                0.0
+            } else {
+                label_galley(ui, o.label, font.clone()).size().x
+            };
+            let icon_w = match (o.icon, text > 0.0) {
+                (Some(_), true) => icon + ICON_TEXT_GAP,
+                (Some(_), false) => icon,
+                (None, _) => 0.0,
+            };
+            (text + icon_w + 2.0 * pad).ceil().max(height)
+        })
+        .sum();
+    segments + 4.0
+}
+
 // ----- slider, combo ---------------------------------------------------------
 
 /// Slider with a thin track, accent fill and a round handle. Drag or click to
@@ -4785,6 +4810,24 @@ mod tests {
         assert_eq!(value.get(), 1);
         harness.click(pos2(115.0, CONTROL_M * 0.5), add);
         assert_eq!(value.get(), 0);
+    }
+
+    #[test]
+    fn segmented_width_predicts_the_natural_width() {
+        let harness = Harness::new(600.0);
+        let pal = harness.pal();
+        harness.frame(Vec::new(), |ui: &mut Ui| {
+            for height in [CONTROL_S, CONTROL_M] {
+                let options = [
+                    Segment::new(0u8, "Diatonic"),
+                    Segment::new(1u8, "Progressions").icon(Icon::Chords),
+                    Segment::new(2u8, "").icon(Icon::Eraser),
+                ];
+                let want = segmented_width(ui, &options, height);
+                let resp = segmented(ui, pal, &mut 0u8, &options, height, None);
+                assert!((resp.rect.width() - want).abs() < 0.01, "{height}: {want}");
+            }
+        });
     }
 
     #[test]
