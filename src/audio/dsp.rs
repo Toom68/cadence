@@ -124,6 +124,16 @@ pub fn sine(phase: f32) -> f32 {
     (phase * TAU).sin()
 }
 
+/// Wrap a delay-line position known to be in `[0, 2 * len)`.
+#[inline]
+fn wrap_once(i: usize, len: usize) -> usize {
+    if i >= len {
+        i - len
+    } else {
+        i
+    }
+}
+
 /// Topology-preserving state-variable filter coefficients (Cytomic / Simper form).
 #[derive(Clone, Copy, Debug)]
 pub struct SvfCoefs {
@@ -437,7 +447,7 @@ impl Reverb {
             peak = peak.max(input.abs());
             let pre_out = self.pre[self.pre_pos];
             self.pre[self.pre_pos] = input;
-            self.pre_pos = (self.pre_pos + 1) % self.pre.len();
+            self.pre_pos = wrap_once(self.pre_pos + 1, self.pre.len());
             let mut x = self.input_lp.low(self.input_hp.high(pre_out));
             for d in &mut self.diffusers {
                 x = d.process(x);
@@ -463,8 +473,9 @@ impl Reverb {
                 let read = self.pos[k] as f32 + size as f32 - delay;
                 let i0 = read.floor();
                 let frac = read - i0;
-                let a = buf[i0 as usize % size];
-                let b = buf[(i0 as usize + 1) % size];
+                let index = wrap_once(i0 as usize, size);
+                let a = buf[index];
+                let b = buf[wrap_once(index + 1, size)];
                 *out = self.damp[k].low(a + (b - a) * frac) * self.gains[k];
             }
             // Householder mixing: y = x - (2/N) * sum(x).
@@ -475,7 +486,7 @@ impl Reverb {
                 let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
                 let v = flush(*out - sum + x * sign * 0.35);
                 self.lines[k][self.pos[k]] = v;
-                self.pos[k] = (self.pos[k] + 1) % size;
+                self.pos[k] = wrap_once(self.pos[k] + 1, size);
                 energy = energy.max(v.abs());
             }
             *sl = (outs[0] - outs[2] + outs[4] + outs[6] - outs[1] * 0.3) * 0.9;
@@ -569,25 +580,21 @@ impl PingPongDelay {
         self.energy < 1e-6
     }
 
-    #[inline]
-    fn read(buf: &[f32], write: usize, delay: f32) -> f32 {
-        let size = buf.len();
-        let pos = write as f32 + size as f32 - delay;
-        let i0 = pos.floor();
-        let frac = pos - i0;
-        let a = buf[i0 as usize % size];
-        let b = buf[(i0 as usize + 1) % size];
-        a + (b - a) * frac
-    }
-
     /// Processes a block in place: input is the send, output the wet echoes.
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
         let size = self.buf_l.len();
         let mut energy = 0.0f32;
         for (sl, sr) in l.iter_mut().zip(r.iter_mut()) {
             self.time = self.target_time + (self.time - self.target_time) * self.time_coef;
-            let dl = Self::read(&self.buf_l, self.write, self.time);
-            let dr = Self::read(&self.buf_r, self.write, self.time);
+            let pos = self.write as f32 + size as f32 - self.time;
+            let i0 = pos.floor();
+            let frac = pos - i0;
+            // Both channels have the same read head; the delay is at least
+            // one sample and shorter than the ring, so one wrap suffices.
+            let a = wrap_once(i0 as usize, size);
+            let b = wrap_once(a + 1, size);
+            let dl = self.buf_l[a] + (self.buf_l[b] - self.buf_l[a]) * frac;
+            let dr = self.buf_r[a] + (self.buf_r[b] - self.buf_r[a]) * frac;
             let input = (*sl + *sr) * 0.5;
             let side = (*sl - *sr) * 0.5;
             let fb_l = self.hp_l.high(self.lp_l.low(dr));
@@ -595,7 +602,7 @@ impl PingPongDelay {
             // The left line is fed by the input; each echo hops to the other side.
             self.buf_l[self.write] = flush(input + side + fb_l * self.feedback);
             self.buf_r[self.write] = flush(fb_r - side * 0.5);
-            self.write = (self.write + 1) % size;
+            self.write = wrap_once(self.write + 1, size);
             *sl = dl;
             *sr = dr;
             energy = energy.max(dl.abs()).max(dr.abs()).max(input.abs());
