@@ -446,6 +446,16 @@ impl Meters {
 
 // ----- painted mixer widgets -----------------------------------------------------
 
+/// Fill behind the mixer's text edits, which read `text_dim` on it: the
+/// recessed well where that has the contrast (the dark desks), else the
+/// control fill (Paper's wells are dark under dark text).
+fn edit_fill(mx: &MixerPalette) -> Color32 {
+    if theme::contrast_ratio(mx.text_dim, mx.well) >= 4.5 {
+        mx.well
+    } else {
+        mx.control
+    }
+}
 /// Re-styles egui's own widgets (combos, text edits, their popups) inside the
 /// mixer subtree so they sit on the desk in every theme.
 fn mixer_widget_style(ui: &mut Ui, look: Look) {
@@ -453,7 +463,7 @@ fn mixer_widget_style(ui: &mut Ui, look: Look) {
     let v = &mut ui.style_mut().visuals;
     v.window_fill = mx.strip_hi;
     v.window_stroke = Stroke::new(1.0_f32, mx.border);
-    v.extreme_bg_color = mx.well;
+    v.extreme_bg_color = edit_fill(&mx);
     v.menu_corner_radius = CornerRadius::same(6);
     v.selection.bg_fill = mx.select;
     v.selection.stroke = Stroke::new(1.0_f32, mx.pan);
@@ -1909,10 +1919,10 @@ fn dim_strip(ui: &Ui, look: Look, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_mode, db_text, db_to_fader, fader_db, fx_key, legible, lin_to_db, meter_pos,
-        pedals_open, place_strips, Gauge, Look, Meters, Pedal, Slot, BUS_W, BUS_W_COMPACT,
-        COMPACT_KEY, FADER_FLOOR_DB, HOLD_SECS, MASTER_TRIM_DB, MASTER_W, MASTER_W_COMPACT,
-        RELEASE_PER_FRAME, STRIP_W, STRIP_W_COMPACT,
+        compact_mode, db_text, db_to_fader, edit_fill, fader_db, fx_key, legible, lin_to_db,
+        meter_pos, pedals_open, place_strips, Gauge, Look, Meters, Pedal, Slot, BUS_W,
+        BUS_W_COMPACT, COMPACT_KEY, FADER_FLOOR_DB, HOLD_SECS, MASTER_TRIM_DB, MASTER_W,
+        MASTER_W_COMPACT, RELEASE_PER_FRAME, STRIP_W, STRIP_W_COMPACT,
     };
     use crate::gui::theme::{self, ThemeChoice};
     use crate::gui::{ops, CadenceApp, Tab};
@@ -1976,6 +1986,10 @@ mod tests {
                 );
             }
             assert!(theme::contrast_ratio(mx.text_faint, mx.strip) >= 3.5);
+            assert!(
+                theme::contrast_ratio(mx.text_dim, edit_fill(&mx)) >= 4.5,
+                "{choice:?}: bus names are readable in their text edit"
+            );
             assert_ne!(mx.meter_low, mx.meter_mid);
             assert_ne!(mx.meter_mid, mx.meter_high);
             assert!(
