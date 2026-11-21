@@ -1,9 +1,9 @@
 # Cadence
 
-Cadence is a focused, multi-track songwriting studio for macOS and Windows — a native Rust desktop app. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs across multiple instrument tracks, mix built-in synthesized instruments with per-track effects, and export WAV or MIDI.
+Cadence is a focused, multi-track songwriting studio for macOS and Windows — a native Rust desktop app. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs across multiple instrument tracks, drop imported WAV clips onto audio lanes, mix with per-track effects and subgroup buses, and export WAV, per-track stems, or MIDI.
 
 - **Native Rust desktop app** — an eframe/egui interface driven by a CPAL audio engine; no Electron, no web runtime, no Node.js needed to build or run
-- **202 sounds plus JSON packs** — synthesized in Rust: 6 built-ins and 196 bundled pack presets across thirteen banks (chiptune `8-bit`, seven experimental `psy-*` banks, drum kits, guitars, neon leads, one-shot FX, and mallets & keys), plus unlimited user-installed JSON packs (pure JSON, no rebuild); no samples or binary plugins required
+- **203 bundled sounds, three ways to add more** — synthesized in Rust: 7 built-ins and 196 bundled pack presets across thirteen banks (chiptune `8-bit`, seven experimental `psy-*` banks, drum kits, guitars, neon leads, one-shot FX, and mallets & keys). Add user-installed JSON instrument packs (pure JSON, no rebuild), drop `.sf2` SoundFonts in for the full General MIDI program set, or import a `.wav` as a sampled instrument or a timeline clip
 - **Local-first** — projects are plain JSON `.cadence` files; an automatic recovery copy protects against lost work; the app works fully offline after building
 
 ## Requirements
@@ -43,11 +43,12 @@ On first launch Cadence opens the included demo song, *Afterglow*. If a valid re
 The `cadence` binary also runs without the GUI — useful for rendering and validation in scripts and CI:
 
 ```bash
-cadence --render-demo output.wav          # render the built-in demo song to WAV
-cadence --render song.cadence output.wav  # render a saved project to WAV
-cadence --check song.cadence              # validate a project file and print a summary
-cadence song.cadence                      # open the app with a song
-cadence --version / --help                # version and usage
+cadence --render-demo output.wav              # render the built-in demo song to WAV
+cadence --render song.cadence output.wav      # render a saved project to WAV
+cadence --render-stems song.cadence out_dir/  # render every audible track to its own WAV
+cadence --check song.cadence                  # validate a project file and print a summary
+cadence song.cadence                          # open the app with a song
+cadence --version / --help                    # version and usage
 
 # Instrument packs (JSON synth presets — see packs/README.md)
 cadence --new-pack my-synths pack.json    # write a starter pack template
@@ -58,9 +59,11 @@ cadence --list-instruments                # list built-in + installed instrument
 
 ## Using Cadence
 
-The short version: the app opens on the demo song — press **play** to hear it, pick a track in the sidebar, write or edit patterns in the track editor (drum step grid or piano roll), arrange pattern clips on the timeline, set tempo/swing/song length, then mix and export.
+The short version: the app opens on the demo song — press **play** to hear it, pick a track in the sidebar, write or edit patterns in the pattern editor (drum step grid or piano roll), arrange pattern and audio clips on the timeline, set tempo/swing/song length, then mix and export.
 
-See [docs/songwriting-workflow.md](docs/songwriting-workflow.md) for the full walkthrough, [docs/project-files.md](docs/project-files.md) for saving/recovery/`.cadence` format, and [docs/export.md](docs/export.md) for WAV and MIDI details.
+The window is a menu bar (File · Edit · Track · Transport · View · Help), a transport bar (song name, playback buttons, position display, tempo/tap, swing, master volume and meters, undo/redo), an instrument sidebar on the left, the arranger on top, and a tabbed editor below — **Pattern Editor | Mixer | Keyboard** — with a draggable divider between the two panels. A status bar at the bottom reports save state, audio state and export progress, with toasts for outcomes.
+
+See [docs/songwriting-workflow.md](docs/songwriting-workflow.md) for the full walkthrough, [docs/project-files.md](docs/project-files.md) for saving/recovery/`.cadence` format, and [docs/export.md](docs/export.md) for WAV, stems and MIDI details.
 
 ## Keyboard shortcuts
 
@@ -71,6 +74,8 @@ Shortcuts are app-wide (⌘ on macOS, Ctrl on Windows). Press **F1** in the app 
 | Space | Play / pause |
 | Home | Return to start |
 | L | Toggle loop |
+| R | Toggle record (MIDI/step recording into the selected track's pattern) |
+| B | Split the clip at the pointer / playhead (arranger) |
 | ⌘/Ctrl + N | New Song |
 | ⌘/Ctrl + O | Open… |
 | ⌘/Ctrl + S | Save |
@@ -90,11 +95,12 @@ Shortcuts are app-wide (⌘ on macOS, Ctrl on Windows). Press **F1** in the app 
 | ⌘/Ctrl + Shift + ↑ / ↓ | Maximize the editor / the arranger (again to restore) |
 | F1 | Shortcuts & tips |
 
-The **File** menu also has *New from Demo*, the imports (*MIDI*, *Audio File*, *Sample*, *Instrument Pack*) and the exports (*WAV*, *Stems*, *MIDI*); **Track** adds, duplicates, deletes and reorders tracks; **Transport** holds Play/Stop/Loop/Record/Metronome; **View** holds the tabs, zoom, *Fit Song in Arranger*, the panel sizes (drag or double-click the divider between the arranger and the editor too) and *Theme* — Graphite (default), Midnight, or Paper — which recolors the whole interface and is remembered between sessions.
+The **File** menu also has *New from Demo*, the imports (*MIDI*, *Audio File*, *Sample*, *Instrument Pack*) and the exports (*WAV*, *Stems*, *MIDI*); **Edit** adds *Split Clip at Playhead*, *Add Marker at Playhead*, *Quantize Notes*, *Humanize Notes* and *Arpeggiator…*; **Track** adds, duplicates, deletes and reorders tracks (including audio tracks); **Transport** holds Play/Stop/Loop/Record/Metronome; **View** holds the tabs, zoom, *Fit Song in Arranger*, *Follow Playhead*, the panel sizes (drag or double-click the divider between the arranger and the editor too) and *Theme* — Graphite (default), Midnight, or Paper — which recolors the whole interface and is remembered between sessions.
 
 ## Export
 
-- **File → Export WAV…** renders the current mix (honoring mute/solo and master volume) to a `.wav` file on a background thread with progress.
+- **File → Export WAV…** renders the current mix (honoring mute/solo, buses and master volume) to a `.wav` file on a background thread with progress.
+- **File → Export Stems…** renders every audible track to its own `<track name>-NN.wav` in a folder you pick — the same per-track signal it contributes to the mix.
 - **File → Export MIDI…** writes the song's notes to a `.mid` file for use in other DAWs; **File → Import MIDI…** brings an existing `.mid`/`.midi` back in as a project.
 
 Details and limitations: [docs/export.md](docs/export.md).
@@ -108,24 +114,24 @@ Packaging is honest: macOS bundles are **ad-hoc signed only** (no Developer ID, 
 
 ## Project files
 
-A `.cadence` file is a plain-text JSON document describing tempo, swing, song length, and every track/pattern/clip/note. Cadence validates files on open and keeps a local recovery copy so unsaved work survives crashes. See [docs/project-files.md](docs/project-files.md).
+A `.cadence` file is a plain-text JSON document describing tempo, swing, song length, key, section markers, chord events, buses, and every track/pattern/clip/note. Cadence validates files on open and keeps a local recovery copy so unsaved work survives crashes. Imported WAV clips live in a per-install audio store the project references by name — see [docs/project-files.md](docs/project-files.md).
 
 ## Limitations
 
-- **Built-in synthesizers and JSON packs — no binary plugin hosting yet.** Sounds are synthesized in-app: six built-in timbres, 196 bundled pack presets across thirteen banks (chiptune, experimental `psy-*`, drum kits, guitars, neon, one-shots, mallets & keys), and optional user-installed JSON instrument packs (see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md)). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
+- **Built-in synthesizers, JSON packs and SoundFonts — no binary plugin hosting yet.** Sounds are synthesized in-app (seven built-in timbres, 196 bundled pack presets across thirteen banks, optional user-installed JSON packs), sampled from user-installed `.sf2` SoundFonts, or embedded as small WAV clips — see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
 - **Packages are not distribution-signed and Windows is unverified at runtime.** macOS builds are ad-hoc signed only and Windows builds are unsigned — no Developer ID, notarization, or Authenticode, so platform security warnings can appear when sharing builds. The Windows x64 exe builds and packages cleanly (GNU cross-build; MSVC path in CI) but has not been executed on Windows or Wine — Windows 10+ is the expected target per Rust's platform support.
-- **No audio recording or audio-file import.** Cadence is a pattern-based MIDI-style sequencer — you compose notes, you don't record takes.
+- **No audio recording.** Cadence is a pattern-based sequencer — you compose notes and drop in finished WAV files; you don't record takes. MIDI recording from the computer keyboard or Keyboard tab exists (the record button or **R**), writing notes into the selected track's pattern.
+- **Audio clips are per-install.** Imported WAVs are staged into the app's audio store and referenced by content-hash name; a `.cadence` file does not embed the audio, so a song's audio lanes only sound where the same files were imported.
 - Fixed sixteenth-note grid (1/16 snap); positions are stored in sixteenth steps.
-- Swing amount up to 0.6, tempo 30–300 BPM, 1–128 bars per song, up to 32 tracks.
-- WAV export is a full mixdown only — no per-track stems.
+- Swing amount up to 0.6, tempo 30–300 BPM, 1–128 bars per song, up to 32 tracks, four fixed subgroup buses.
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
 | [docs/songwriting-workflow.md](docs/songwriting-workflow.md) | Step-by-step guide to writing a song in Cadence |
-| [docs/project-files.md](docs/project-files.md) | `.cadence` JSON format, save/open, recovery, validation limits |
-| [docs/export.md](docs/export.md) | WAV and MIDI export/import behavior and caveats |
+| [docs/project-files.md](docs/project-files.md) | `.cadence` JSON format, save/open, recovery, audio store, validation limits |
+| [docs/export.md](docs/export.md) | WAV, stems and MIDI export/import behavior and caveats |
 | [docs/instrument-packs.md](docs/instrument-packs.md) | JSON instrument packs: make, install, and where they live |
 | [docs/architecture.md](docs/architecture.md) | How the Rust crate, audio engine, model, and GUI fit together |
 | [docs/verification.md](docs/verification.md) | What has actually been verified — test results, native run evidence, limits |
@@ -138,12 +144,14 @@ Single Rust crate `cadence-studio` — library `cadence_studio`, binary `cadence
 ```
 src/main.rs        window setup, CLI modes (song open, --render*/--check, packs)
 src/lib.rs         module wiring
-src/model.rs       Project/Track/Pattern/Clip/Note data model + validation
-src/audio/         CPAL playback engine, synth voices, mixer/FX, WAV renderer
+src/model.rs       Project/Track/Pattern/Clip/Note/AudioClip/Bus data model + validation
+src/audio/         CPAL playback engine, synth voices, mixer/FX, WAV & stem renderer
 src/midi.rs        Standard MIDI File import/export (midly)
 src/packs.rs       JSON instrument packs (validate, catalog, install)
-src/gui/           eframe/egui interface: transport, sidebar, arranger, editors, mixer
-src/persistence.rs .cadence save/load, atomic writes, recovery autosave
+src/font.rs        SoundFont (.sf2) instruments: user font dir, GM program names, catalog
+src/gui/           eframe/egui interface: shell (menus/status/toasts), transport,
+                   sidebar, arranger, editors, mixer, dialogs, theme
+src/persistence.rs .cadence save/load, atomic writes, recovery autosave, audio store
 packs/             bundled instrument packs (embedded via include_str!)
 tools/instrument-packs/  agent guide for authoring new packs as pure JSON
 ```
