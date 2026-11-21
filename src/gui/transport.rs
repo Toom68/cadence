@@ -1203,8 +1203,6 @@ const METER_FLOOR_DB: f32 = 54.0;
 /// Two thin LED-style lanes (left over right) with a clip light at the end.
 fn master_meter(ui: &mut Ui, pal: Palette, width: f32, peak: [f32; 2], clipping: bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, METER_H), Sense::hover());
-    #[cfg(test)]
-    probe(ui, rect);
     if ui.is_rect_visible(rect) {
         let m = pal.mixer;
         let p = ui.painter();
@@ -1346,6 +1344,156 @@ mod tests {
         app.project.bars = 1;
         app.transport.loop_region = Some((32.0, 64.0));
         assert_eq!(app.play_start(200.0), 0.0);
+    }
+
+    /// Frames of the real app at `width` × 860; returns the context and app.
+    fn run_bar(width: f32, setup: impl FnOnce(&mut CadenceApp)) -> (Context, CadenceApp) {
+        let ctx = Context::default();
+        let mut app = CadenceApp::headless(crate::model::Project::demo());
+        setup(&mut app);
+        for n in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 860.0))),
+                focused: true,
+                time: Some(f64::from(n) / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.frame(ctx));
+        }
+        (ctx, app)
+    }
+
+    /// Every item of the bar stays inside the window and clear of every
+    /// other item, at every width the app can be resized to, up to 4K.
+    #[test]
+    fn bar_items_never_overlap_or_leave_the_window() {
+        // From the narrowest plan (below the 1100 px minimum window) to 4K.
+        for width in [
+            MINIMAL.width().ceil() + 24.0,
+            1100.0,
+            1150.0,
+            1240.0,
+            1300.0,
+            1360.0,
+            1440.0,
+            1600.0,
+            1920.0,
+            2560.0,
+        ] {
+            for dirty in [false, true] {
+                let (ctx, _) = run_bar(width, |app| {
+                    if dirty {
+                        app.edit("Rename", None, |p| p.name.push('!'));
+                    }
+                    app.transport.recording = dirty;
+                    app.transport.peak = [0.9, 0.5];
+                });
+                let items = probed(&ctx);
+                assert!(items.len() >= 14, "{width}: only {} items", items.len());
+                for (i, a) in items.iter().enumerate() {
+                    assert!(
+                        a.left() >= -0.01 && a.right() <= width + 0.01,
+                        "{width}: item {i} {a:?} leaves the window"
+                    );
+                    assert!(
+                        a.top() >= 28.0 && a.bottom() <= 28.0 + TRANSPORT_H,
+                        "{width}: item {i} {a:?} leaves the bar"
+                    );
+                    for (j, b) in items.iter().enumerate().skip(i + 1) {
+                        assert!(
+                            !a.shrink(0.01).intersects(b.shrink(0.01)),
+                            "{width}: items {i} {a:?} and {j} {b:?} overlap"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plans_fit_their_window_and_degrade_in_order() {
+        for plan in [ROOMY, NORMAL, TIGHT, MINIMAL] {
+            assert!((plan.width() - plan.left() - plan.right() - MIN_FLEX).abs() < 0.01);
+        }
+        // The designed windows: default 1360 wide, the 1100 minimum, 1080p.
+        assert!(
+            Plan::choose(1100.0).width() <= 1100.0,
+            "the minimum window gets a plan that fits"
+        );
+        assert!(Plan::choose(1360.0).width() <= 1360.0);
+        assert_eq!(Plan::choose(1920.0), ROOMY);
+        // Wider windows never get a smaller plan.
+        let widths = [1100.0, 1200.0, 1300.0, 1400.0, 1500.0, 2000.0];
+        let sizes: Vec<f32> = widths.iter().map(|w| Plan::choose(*w).width()).collect();
+        assert!(sizes.windows(2).all(|w| w[0] <= w[1]), "{sizes:?}");
+        // Swing stays reachable at every size the app allows.
+        assert!(Plan::choose(1100.0).swing);
+        assert!(!MINIMAL.swing);
+    }
+
+    #[test]
+    fn meter_scale_is_in_decibels() {
+        assert_eq!(meter_position(0.0), 0.0);
+        assert_eq!(meter_position(1.0), 1.0);
+        assert!(meter_position(0.0001) < 0.05, "−80 dB is off the scale");
+        // −18 dBFS lights a third of the meter: it used to be 12%.
+        let eighteen = meter_position(10f32.powf(-18.0 / 20.0));
+        assert!((0.6..0.7).contains(&eighteen), "{eighteen}");
+        assert!(meter_position(0.5) > meter_position(0.25));
+    }
+
+    #[test]
+    fn display_texts_rebuild_only_when_they_change() {
+        let (ctx, mut app) = run_bar(1360.0, |_| {});
+        assert_eq!(app.transport.cache.position, "1.1.1");
+        app.transport.position = 3.4;
+        app.refresh_bar(&ctx);
+        let before = app.transport.cache.position.as_ptr();
+        assert_eq!(app.transport.cache.position, "1.1.4");
+        // Same sixteenth: the cached string is kept, not rebuilt.
+        app.transport.position = 3.9;
+        app.refresh_bar(&ctx);
+        assert_eq!(app.transport.cache.position.as_ptr(), before);
+        app.transport.position = 4.0;
+        app.refresh_bar(&ctx);
+        assert_eq!(app.transport.cache.position, "1.2.1");
+        assert!(app.transport.cache.time_pair.contains(" / "));
+        app.transport.time_first = true;
+        assert_eq!(app.transport.cache.bar_line, "bar 1.2.1");
+    }
+
+    #[test]
+    fn name_field_mirrors_the_song_and_renames_through_undo() {
+        let (ctx, mut app) = run_bar(1360.0, |_| {});
+        assert_eq!(app.transport.name_buf, app.project.name);
+        app.transport.name_buf = "Night drive".to_owned();
+        app.apply_bar_action(BarAction {
+            rename: true,
+            ..Default::default()
+        });
+        assert_eq!(app.project.name, "Night drive");
+        assert!(app.history.can_undo());
+        app.refresh_bar(&ctx);
+        assert_eq!(app.transport.name_buf, "Night drive");
+        app.undo();
+        app.refresh_bar(&ctx);
+        assert_eq!(app.transport.name_buf, app.project.name);
+        assert_ne!(app.project.name, "Night drive");
+    }
+
+    #[test]
+    fn tempo_swing_and_master_edits_are_undoable() {
+        let (_, mut app) = run_bar(1360.0, |_| {});
+        app.apply_bar_action(BarAction {
+            bpm: Some(133.0),
+            swing: Some(0.3),
+            master: Some(0.5),
+            ..Default::default()
+        });
+        assert_eq!(app.project.bpm, 133.0);
+        assert_eq!(app.project.swing, 0.3);
+        assert_eq!(app.project.master_volume, 0.5);
+        assert!(app.history.can_undo());
     }
 
     fn assert_bpm(actual: Option<f64>, expected: f64) {

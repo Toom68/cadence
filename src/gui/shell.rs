@@ -75,7 +75,7 @@ pub(super) const EDITOR_GRID_TARGET: f32 = 260.0;
 /// strip, pattern toolbar, chord header, ruler and velocity lane.
 pub(super) const EDITOR_CHROME: f32 = 236.0;
 /// What the open chord strip adds to [`EDITOR_CHROME`].
-pub(super) const CHORD_STRIP_EXTRA: f32 = 88.0;
+pub(super) const CHORD_STRIP_EXTRA: f32 = 56.0;
 /// The automatic split never gives the arranger more than this share.
 const MAX_AUTO_SHARE: f32 = 0.55;
 
@@ -1443,5 +1443,273 @@ mod tests {
         split.reset();
         assert_eq!(split.mode, PanelMode::Balanced);
         assert!(split.user_share.is_none());
+    }
+
+    // ----- layout tests through the real frame ------------------------------------
+
+    use crate::model::Project;
+    use egui::{Pos2, RawInput, Vec2};
+
+    const CMD_SHIFT: egui::Modifiers = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+
+    /// A bare context plus an app, driven one full frame at a time.
+    struct Harness {
+        ctx: Context,
+        app: CadenceApp,
+        size: Vec2,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new(size: Vec2) -> Self {
+            let mut h = Self {
+                ctx: Context::default(),
+                app: CadenceApp::headless(Project::demo()),
+                size,
+                time: 0.0,
+            };
+            h.frames(4);
+            h
+        }
+
+        fn input(&self, events: Vec<egui::Event>, modifiers: egui::Modifiers) -> RawInput {
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                focused: true,
+                time: Some(self.time),
+                modifiers,
+                events,
+                ..Default::default()
+            }
+        }
+
+        fn frame_with(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+            let input = self.input(events, modifiers);
+            let _ = self.ctx.run(input, |ctx| self.app.frame(ctx));
+            self.time += 1.0 / 60.0;
+        }
+
+        fn frames(&mut self, n: usize) {
+            for _ in 0..n {
+                self.frame_with(Vec::new(), egui::Modifiers::NONE);
+            }
+        }
+
+        fn resize(&mut self, size: Vec2) {
+            self.size = size;
+            self.frames(4);
+        }
+
+        fn grid_height(&self) -> f32 {
+            self.app.editor_test_rects().0.height()
+        }
+
+        fn pointer(&mut self, pos: Pos2, pressed: Option<bool>) {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.frame_with(events, egui::Modifiers::NONE);
+        }
+
+        fn click(&mut self, pos: Pos2) {
+            self.pointer(pos, Some(true));
+            self.pointer(pos, Some(false));
+        }
+
+        fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+            let event = egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            self.frame_with(vec![event], modifiers);
+            self.frames(2);
+        }
+
+        fn select(&mut self, track: usize, chord_open: bool) {
+            let id = self.app.project.tracks[track].id;
+            self.app.select_track(id);
+            self.app.editor.chord_open = chord_open;
+            self.frames(4);
+        }
+    }
+
+    /// The piano roll (melodic track) keeps room to work in at the sizes
+    /// the app is designed for. At 1360×860 — the default 1376×899 outer
+    /// window — it gets ≥ 260 px with the chord strip closed or open; at
+    /// the 1100×760 minimum the arranger keeps its floor, so the roll gets
+    /// what is left (and the drum grid, which has less chrome, stays big).
+    #[test]
+    fn editor_grid_keeps_room_at_common_sizes() {
+        for chord in [false, true] {
+            for (w, h) in [(1360.0, 860.0), (1440.0, 900.0), (1920.0, 1080.0)] {
+                let mut ui = Harness::new(vec2(w, h));
+                ui.select(2, chord);
+                assert!(
+                    ui.grid_height() >= 258.0,
+                    "{w}x{h} chord={chord}: piano roll grid is {:.0} px",
+                    ui.grid_height()
+                );
+            }
+            let mut ui = Harness::new(vec2(1100.0, 760.0));
+            ui.select(2, chord);
+            assert!(
+                ui.grid_height() >= 130.0,
+                "1100x760 chord={chord}: piano roll grid is {:.0} px",
+                ui.grid_height()
+            );
+            ui.select(0, chord);
+            assert!(
+                ui.grid_height() >= 220.0,
+                "1100x760 chord={chord}: drum grid is {:.0} px",
+                ui.grid_height()
+            );
+        }
+    }
+
+    /// At 1080p the arranger shows at least six lanes by default.
+    #[test]
+    fn default_split_shows_six_lanes_at_1080p() {
+        let ui = Harness::new(vec2(1920.0, 1080.0));
+        let arranger = ui.app.shell.probe.arranger.height();
+        let needed = 40.0 + arranger::RULER_H + 16.0 + 6.0 * arranger::LANE_H;
+        assert!(
+            arranger >= needed,
+            "{arranger:.0} px arranger, need {needed:.0}"
+        );
+    }
+
+    /// Panels tile the central area without overlap or overflow in every
+    /// mode, tab and size, and never panic on tiny areas.
+    #[test]
+    fn panels_never_overlap_or_overflow() {
+        for (w, h) in [
+            (1100.0, 760.0),
+            (1360.0, 860.0),
+            (1920.0, 1080.0),
+            (900.0, 500.0),
+        ] {
+            for mode in [
+                PanelMode::Balanced,
+                PanelMode::ArrangerMax,
+                PanelMode::EditorMax,
+            ] {
+                for tab in [Tab::Editor, Tab::Mixer, Tab::Keys] {
+                    let mut ui = Harness::new(vec2(w, h));
+                    ui.app.tab = tab;
+                    ui.app.shell.split.mode = mode;
+                    ui.frames(3);
+                    let p = &ui.app.shell.probe;
+                    let key = format!("{w}x{h} {mode:?} {tab:?}");
+                    assert!(p.arranger.bottom() <= p.handle.top() + 0.01, "{key}");
+                    assert!(p.handle.bottom() <= p.editor.top() + 0.01, "{key}");
+                    assert!(
+                        p.editor.bottom() <= p.status.top() + 0.5,
+                        "{key}: editor {:?} status {:?}",
+                        p.editor,
+                        p.status
+                    );
+                    assert!(p.menu.height() > 0.0 && p.menu.bottom() <= p.arranger.top());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maximize_modes_collapse_the_other_panel() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        let normal = ui.app.shell.probe.editor.height();
+        ui.key(egui::Key::ArrowDown, CMD_SHIFT);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::ArrangerMax);
+        let collapsed = ui.app.shell.probe.editor.height();
+        assert!(
+            collapsed <= TABS_H + 1.0,
+            "editor is just its tab strip: {collapsed}"
+        );
+        // The same shortcut again restores.
+        ui.key(egui::Key::ArrowDown, CMD_SHIFT);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::Balanced);
+        assert!((ui.app.shell.probe.editor.height() - normal).abs() < 1.0);
+        ui.key(egui::Key::ArrowUp, CMD_SHIFT);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::EditorMax);
+        assert!(ui.app.shell.probe.arranger.height() <= ARRANGER_COLLAPSED_H + 1.0);
+        assert!(ui.grid_height() > 300.0, "the editor takes the room");
+    }
+
+    #[test]
+    fn dragging_the_divider_resizes_and_survives_window_resizes() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        let start = ui.app.shell.probe.arranger.height();
+        let handle = ui.app.shell.probe.handle.center();
+        ui.pointer(handle, Some(true));
+        ui.pointer(handle + vec2(0.0, 40.0), None);
+        ui.pointer(handle + vec2(0.0, 40.0), Some(false));
+        ui.frames(2);
+        let dragged = ui.app.shell.probe.arranger.height();
+        assert!(dragged > start + 20.0, "dragged {start:.0} -> {dragged:.0}");
+        assert!(ui.app.shell.split.user_share.is_some());
+        let total = |ui: &Harness| {
+            ui.app.shell.probe.arranger.height() + HANDLE_H + ui.app.shell.probe.editor.height()
+        };
+        let share = dragged / total(&ui);
+        ui.resize(vec2(1920.0, 1080.0));
+        let big = ui.app.shell.probe.arranger.height();
+        let big_share = big / total(&ui);
+        assert!(big > dragged, "a taller window gives the arranger more");
+        assert!(
+            (big_share - share).abs() < 0.05,
+            "{share:.2} vs {big_share:.2}"
+        );
+    }
+
+    #[test]
+    fn double_clicking_the_divider_maximizes_then_restores() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        let handle = ui.app.shell.probe.handle.center();
+        ui.click(handle);
+        ui.click(handle);
+        ui.frames(2);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::ArrangerMax);
+        // Let the multi-click window lapse, or egui counts a triple click.
+        ui.time += 2.0;
+        ui.frames(2);
+        let handle = ui.app.shell.probe.handle.center();
+        ui.click(handle);
+        ui.click(handle);
+        ui.frames(2);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::Balanced);
+    }
+
+    #[test]
+    fn switching_tabs_reveals_a_collapsed_editor() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        ui.app.shell.split.mode = PanelMode::ArrangerMax;
+        ui.frames(2);
+        ui.app.tab = Tab::Mixer;
+        ui.frames(2);
+        assert_eq!(ui.app.shell.split.mode, PanelMode::Balanced);
+    }
+
+    #[test]
+    fn toasts_follow_status_severity_only() {
+        let mut ui = Harness::new(vec2(1360.0, 860.0));
+        ui.app.set_status(StatusKind::Info, "Copied 2 notes.");
+        assert!(ui.app.shell.toast.is_none());
+        ui.app.set_status(StatusKind::Success, "Saved.");
+        ui.frames(2);
+        assert!(ui.app.shell.toast.is_some());
+        assert_eq!(ui.app.status.as_ref().unwrap().text, "Saved.");
+        // Expired toasts are dropped without a frame ever needing them.
+        ui.app.shell.toast.as_mut().unwrap().since = Instant::now() - Duration::from_secs(30);
+        ui.frames(2);
+        assert!(ui.app.shell.toast.is_none());
     }
 }
