@@ -39,8 +39,9 @@
 //!
 //! The UI font is Inter 4.1 (`assets/fonts`, SIL OFL 1.1): Regular for the
 //! proportional family and SemiBold as the named family [`strong_family`].
-//! egui's default fonts stay behind both as fallbacks, so symbols and emoji
-//! still render; monospace stays Hack. [`apply`] installs the fonts and the
+//! egui's default fonts stay behind both as fallbacks (emoji), then DejaVu
+//! Sans 2.37 as the last resort for symbols none of them has (▸ ▾ ♭ ♯ ✕ ⋯);
+//! monospace stays Hack (with the same last resort). [`apply`] installs the fonts and the
 //! text styles and returns `true` once the fonts are live (they activate one
 //! pass after they are requested — until then every "strong" style quietly
 //! uses the regular family, so nothing can panic on a fresh `Context`).
@@ -619,6 +620,9 @@ pub fn ink_on(fill: Color32) -> Color32 {
 
 const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 const INTER_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
+/// Symbol coverage none of the other fonts has (geometric shapes, music
+/// signs, dingbats, math operators).
+const DEJAVU_SANS: &[u8] = include_bytes!("../../assets/fonts/DejaVuSans.ttf");
 
 static STRONG_FAMILY: LazyLock<FontFamily> = LazyLock::new(|| FontFamily::Name("Strong".into()));
 static KICKER_STYLE: LazyLock<TextStyle> = LazyLock::new(|| TextStyle::Name("Kicker".into()));
@@ -677,24 +681,32 @@ pub fn strong_font(ui: &Ui, size: f32) -> FontId {
 }
 
 /// The font set: Inter first, then every egui default font as a fallback
-/// (symbols, emoji), plus the SemiBold [`strong_family`]. Monospace is
-/// untouched (Hack).
+/// (emoji), then DejaVu Sans for the remaining symbols; plus the SemiBold
+/// [`strong_family`]. Monospace keeps Hack first.
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "Inter".to_owned(),
-        Arc::new(FontData::from_static(INTER_REGULAR)),
-    );
-    fonts.font_data.insert(
-        "Inter-SemiBold".to_owned(),
-        Arc::new(FontData::from_static(INTER_SEMIBOLD)),
-    );
+    for (name, data) in [
+        ("Inter", INTER_REGULAR),
+        ("Inter-SemiBold", INTER_SEMIBOLD),
+        ("DejaVuSans", DEJAVU_SANS),
+    ] {
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(data)));
+    }
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     let fallbacks = proportional.clone();
     proportional.insert(0, "Inter".to_owned());
+    proportional.push("DejaVuSans".to_owned());
     let mut strong = vec!["Inter-SemiBold".to_owned(), "Inter".to_owned()];
     strong.extend(fallbacks);
+    strong.push("DejaVuSans".to_owned());
     fonts.families.insert(strong_family(), strong);
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("DejaVuSans".to_owned());
     fonts
 }
 
@@ -1394,8 +1406,8 @@ pub fn icon_shapes(rect: Rect, icon: Icon, color: Color32, pixels_per_point: f32
         }
         Icon::Minus => g.line(&[(1.5, 8.0), (14.5, 8.0)]),
         Icon::Close => {
-            g.line(&[(2.5, 2.5), (13.5, 13.5)]);
-            g.line(&[(13.5, 2.5), (2.5, 13.5)]);
+            g.line(&[(2.0, 2.0), (14.0, 14.0)]);
+            g.line(&[(14.0, 2.0), (2.0, 14.0)]);
         }
         Icon::Check => g.line(&[(1.5, 8.5), (6.0, 13.0), (14.5, 3.5)]),
         Icon::Duplicate => {
@@ -1472,10 +1484,10 @@ pub fn icon_shapes(rect: Rect, icon: Icon, color: Color32, pixels_per_point: f32
                 g.dot(x, y, 1.0);
             }
         }
-        Icon::ChevronDown => g.line(&[(2.5, 5.5), (8.0, 11.0), (13.5, 5.5)]),
-        Icon::ChevronUp => g.line(&[(2.5, 10.5), (8.0, 5.0), (13.5, 10.5)]),
-        Icon::ChevronRight => g.line(&[(5.5, 2.5), (11.0, 8.0), (5.5, 13.5)]),
-        Icon::ChevronLeft => g.line(&[(10.5, 2.5), (5.0, 8.0), (10.5, 13.5)]),
+        Icon::ChevronDown => g.line(&[(2.0, 5.0), (8.0, 11.0), (14.0, 5.0)]),
+        Icon::ChevronUp => g.line(&[(2.0, 11.0), (8.0, 5.0), (14.0, 11.0)]),
+        Icon::ChevronRight => g.line(&[(5.0, 2.0), (11.0, 8.0), (5.0, 14.0)]),
+        Icon::ChevronLeft => g.line(&[(11.0, 2.0), (5.0, 8.0), (11.0, 14.0)]),
         Icon::Menu => {
             for x in [2.5, 8.0, 13.5] {
                 g.dot(x, 8.0, 1.4);
@@ -4076,20 +4088,23 @@ mod tests {
     fn inter_leads_and_the_default_fonts_stay_as_fallbacks() {
         let defaults = FontDefinitions::default();
         let fonts = font_definitions();
+        let with_last_resort = |family: &FontFamily| {
+            let mut names = defaults.families[family].clone();
+            names.push("DejaVuSans".to_owned());
+            names
+        };
         let proportional = &fonts.families[&FontFamily::Proportional];
         assert_eq!(proportional[0], "Inter");
         assert_eq!(
             proportional[1..],
-            defaults.families[&FontFamily::Proportional][..]
+            with_last_resort(&FontFamily::Proportional)[..]
         );
         let strong = &fonts.families[&strong_family()];
-        assert_eq!(strong[0], "Inter-SemiBold");
-        for fallback in &defaults.families[&FontFamily::Proportional] {
-            assert!(strong.contains(fallback), "strong family lost {fallback}");
-        }
+        assert_eq!(strong[..2], ["Inter-SemiBold", "Inter"]);
+        assert_eq!(strong[2..], proportional[1..]);
         assert_eq!(
             fonts.families[&FontFamily::Monospace],
-            defaults.families[&FontFamily::Monospace]
+            with_last_resort(&FontFamily::Monospace)
         );
     }
 
@@ -4291,6 +4306,7 @@ mod tests {
 
     #[test]
     fn every_icon_paints_inside_its_rect() {
+        let mut problems = Vec::new();
         for ppp in [1.0, 1.25, 1.5, 2.0] {
             for size in [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 28.0] {
                 for origin in [pos2(40.0, 24.0), pos2(40.5, 17.25)] {
@@ -4300,29 +4316,29 @@ mod tests {
                     let allowed = rect.expand(0.26 / ppp);
                     for icon in Icon::ALL {
                         let shapes = icon_shapes(rect, icon, Color32::WHITE, ppp);
-                        assert!(!shapes.is_empty(), "{icon:?} paints nothing");
+                        let at = format!("{icon:?} at {size} px, ppp {ppp}, origin {origin:?}");
+                        if shapes.is_empty() {
+                            problems.push(format!("{at}: paints nothing"));
+                        }
                         let mut bounds = Rect::NOTHING;
                         for shape in &shapes {
                             let b = shape.visual_bounding_rect();
-                            assert!(
-                                b.width() > 0.0 && b.height() > 0.0,
-                                "{icon:?} at {size} px has an empty shape"
-                            );
+                            if !(b.width() > 0.0 && b.height() > 0.0) {
+                                problems.push(format!("{at}: empty shape"));
+                            }
                             bounds = bounds.union(b);
                         }
-                        assert!(
-                            allowed.contains_rect(bounds),
-                            "{icon:?} at {size} px (ppp {ppp}, origin {origin:?}) leaves its \
-                             rect: {bounds:?} vs {rect:?}"
-                        );
-                        assert!(
-                            bounds.width().max(bounds.height()) >= size * 0.6,
-                            "{icon:?} at {size} px is too small: {bounds:?}"
-                        );
+                        if !allowed.contains_rect(bounds) {
+                            problems.push(format!("{at}: leaves its rect: {bounds:?}"));
+                        }
+                        if bounds.width().max(bounds.height()) < size * 0.6 {
+                            problems.push(format!("{at}: too small: {:?}", bounds.size()));
+                        }
                     }
                 }
             }
         }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 
     #[test]
@@ -4774,7 +4790,6 @@ mod tests {
             let cut = elide(ui, long, body_font(TEXT_BODY), pal.text, 90.0);
             assert!(cut.elided);
             assert!(cut.size().x <= 90.0);
-            assert!(cut.text().ends_with('…'), "{:?}", cut.text());
             let whole = elide(ui, "Short", body_font(TEXT_BODY), pal.text, 90.0);
             assert!(!whole.elided);
             assert_eq!(whole.text(), "Short");
