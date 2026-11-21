@@ -15,7 +15,7 @@ Two parts: **Verified** items have automated-test or native-run evidence (see [v
 
 ## Manual checks still to run (~15 minutes per platform)
 
-Run these on a release build of the machine you ship. **Windows runtime is unverified** — the unsigned `dist/Cadence-*-windows-x64/Cadence.exe` (GNU cross-build) exists and is structurally inspected, but no Windows machine or Wine has executed it yet; the checklist below is the runtime pass it still needs.
+Run these on a release build of the machine you ship. **Windows has had a first native run only** — the unsigned MSVC `dist/Cadence-*-windows-x64/Cadence.exe` launched on Windows 11, opened the demo with audio ready and closed cleanly, but no human has done this full pass on Windows yet; the checklist below is that pass.
 
 ### Launch & shell (~2 min)
 

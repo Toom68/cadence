@@ -6,21 +6,20 @@ What has actually been run and observed — and what hasn't. This file exists so
 
 Since the 1.1.0 record below, a multi-worker release-polish program rebuilt the app shell (menus, transport bar, status bar with toasts, themes, arranger/editor split), the sidebar (instrument cards, bank chooser, collapsible sections, inspector), the arranger (four-strip ruler, markers, chord lane, automation lanes, audio lanes), the pattern editor (rename/overflow menu, chord-strip tabs, dedicated Keyboard tab, recording) and the mixer (live meters, dB faders, buses, clip LEDs). Each worker ran the standard gates on its own branch; UI evidence is screenshot-backed in the program's `shots/` folders (arranger, editor, sidebar, mixer, shell, design) plus a mixer performance log.
 
-Re-run on this branch's merged tree (`cargo fmt --all -- --check`, `cargo test --locked --all-targets --no-fail-fast`):
+Re-run on the final merged tree after the QA pass (Windows 11, x86-64, MSVC, Rust 1.100.0):
 
 | Check | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
-| `cargo test --locked --all-targets --no-fail-fast` | **567 passed, 3 failed, 10 ignored** |
-| `cargo clippy --locked --all-targets -- -D warnings` | **1 error** — `clippy::assertions_on_constants` at `src/gui/transport.rs:1433` (`assert!(!MINIMAL.swing)` in a lib test; a Rust 1.100 lint against an already-committed assertion) |
+| `cargo clippy --locked --all-targets -- -D warnings` | clean |
+| `cargo test --locked --all-targets` | **581 passed, 0 failed, 10 ignored** (529 library + 52 integration) |
+| `cargo build --release --locked` | passed |
 
 - All test binaries pass: main (4), cli (5), fonts (4, +2 ignored — need a real `.sf2`), midi_interop (2), packs_pipeline (5), persistence (13), psy_soundbank (6), recovery (1), render (6), stems (6).
-- **Three headless GUI unit tests fail on the merged code** (pre-existing integration fallout, not doc-related):
-  - `gui::editor::tests::chord_strip_row_toggles_and_is_melodic_only` — "chevron click closes it" (editor.rs:5283).
-  - `gui::shell::tests::editor_grid_keeps_room_at_common_sizes` — piano-roll grid is 250 px at 1360×860 vs. the ≥ 258 px the new-layout test expects (shell.rs:1556).
-  - `gui::tests::kit_drum_grid_has_one_row_per_piece_and_paints_piece_pitches` — a row click no longer paints the expected kit-piece pitch (tests.rs:1795).
-  These look like tests written against pre-polish UI semantics meeting the redesigned controls; they need a code owner, not a doc change.
-- **Packaging status is unchanged**: macOS bundles remain ad-hoc signed and Windows executables unsigned; no QA report yet shows a Windows run, so every "not run on Windows" statement in these docs still stands.
+- The QA pass fixed the integration failures found after merging (a clippy lint, a toast that swallowed input for one frame, the piano-roll height at 1360×860, a coordinate-bound test) plus nine smaller UI bugs, and rewrote the F1 help as the complete list of shortcuts and gestures.
+- Visual sweep: 30 scenes × 3 themes (Graphite, Midnight, Paper) screenshotted and reviewed on the native Windows build.
+- Offline renders of the demo and both example songs are bit-identical before and after the performance work (SHA-256 compared).
+- **Windows runtime — first native run:** `scripts/windows-package.ps1` built the MSVC package (`Cadence-1.1.0-windows-x64.zip`, 5.2 MB, containing `Cadence.exe` and `licenses/` with the Inter and DejaVu font licenses). The packaged exe was launched on Windows 11 with an isolated data dir: it opened the demo song with the audio engine ready, rendered correctly, and closed cleanly. The exe is still **unsigned** (SmartScreen will warn). Not verified on Windows: a full human acceptance pass, audio-device unplug/replug, and what SmartScreen shows to a downloader.
 
 ## November 15, 2026 — release 1.1.0 (historical)
 
@@ -81,7 +80,7 @@ The GNU-target Windows build was produced on this Mac:
 
 ## Not yet verified
 
-- **Windows runtime**: the x64 exe exists and is structurally sound, but nothing has executed it on Windows (or Wine). GUI behavior, audio device handling, and installer/SmartScreen prompts on Windows are all unverified.
+- **Windows runtime (partial)**: the native MSVC package has launched, played and closed cleanly on Windows 11 (see the polish-program entry above), and the GUI was screenshot-swept there. Still unverified on Windows: a full human acceptance pass, audio-device hot-plug, and installer/SmartScreen prompts. The historical GNU cross-built exe below has still never been run.
 - **Human GUI pass**: interactive editing feel, dialog flows, and mix judgment beyond the native observations and headless tests above — tracked in [acceptance-checklist.md](acceptance-checklist.md).
 - **Distribution prompts**: what Gatekeeper/SmartScreen actually show for these unsigned builds depends on how they're distributed; not asserted here.
 - The `cargo test` suite does not exercise a physical audio device (the one device-dependent test is ignored by default).
