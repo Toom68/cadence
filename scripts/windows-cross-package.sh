@@ -63,6 +63,11 @@ rm -rf "$STAGE" "$DIST/$BASE.zip"
 mkdir -p "$STAGE"
 cp "$SRC" "$STAGE/Cadence.exe"
 
+# Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans).
+mkdir -p "$STAGE/licenses"
+cp assets/fonts/OFL.txt "$STAGE/licenses/Inter-OFL.txt"
+cp assets/fonts/DejaVu-LICENSE.txt "$STAGE/licenses/DejaVu-LICENSE.txt"
+
 # Locate a mingw runtime DLL by name. Tries, in order:
 #   1. <triple>-gcc -print-file-name=<dll>   (gcc's own search logic)
 #   2. the directory containing <triple>-gcc

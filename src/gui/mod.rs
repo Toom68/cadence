@@ -12,6 +12,7 @@ mod files;
 mod history;
 mod mixer;
 mod ops;
+mod shell;
 mod sidebar;
 #[cfg(test)]
 mod tests;
@@ -21,10 +22,7 @@ mod transport;
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use egui::{
-    Color32, Context, CursorIcon, Event, Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText,
-    Stroke, StrokeKind, SurrenderFocusOn, ViewportCommand,
-};
+use egui::{Context, Event, Key, KeyboardShortcut, Modifiers, SurrenderFocusOn, ViewportCommand};
 
 use crate::audio::AudioEngine;
 use crate::model::{AudioClip, Clip, Instrument, Project, Track};
@@ -33,7 +31,7 @@ pub use history::History;
 
 use dialogs::Dialog;
 use files::{Document, ExportJob, PendingAction};
-use theme::{Icon, Palette, ThemeChoice};
+use theme::{Palette, ThemeChoice};
 use transport::TransportState;
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
@@ -60,6 +58,13 @@ pub(crate) const SC_EDITOR: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num1)
 pub(crate) const SC_MIXER: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num2);
 pub(crate) const SC_KEYS: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Num3);
 pub(crate) const SC_HELP: KeyboardShortcut = sc(Modifiers::NONE, Key::F1);
+pub(crate) const SC_PLAY: KeyboardShortcut = sc(Modifiers::NONE, Key::Space);
+pub(crate) const SC_HOME: KeyboardShortcut = sc(Modifiers::NONE, Key::Home);
+pub(crate) const SC_LOOP: KeyboardShortcut = sc(Modifiers::NONE, Key::L);
+/// Favor the editor (collapse the arranger) / the arranger (collapse the
+/// editor); the same shortcut again restores the split.
+pub(crate) const SC_MAX_EDITOR: KeyboardShortcut = sc(CMD_SHIFT, Key::ArrowUp);
+pub(crate) const SC_MAX_ARRANGER: KeyboardShortcut = sc(CMD_SHIFT, Key::ArrowDown);
 /// MIDI record toggle — the performance keys (Z X C V B N M, S D G H J) all
 /// sit in the rows below R, so plain R is free.
 pub(crate) const SC_RECORD: KeyboardShortcut = sc(Modifiers::NONE, Key::R);
@@ -186,6 +191,8 @@ pub struct CadenceApp {
     style_applied: bool,
     /// Selected UI theme (appearance only — never part of the song).
     theme: ThemeChoice,
+    /// Panel split, toast and other shell view state (never saved).
+    shell: shell::ShellState,
 }
 
 impl CadenceApp {
@@ -278,6 +285,7 @@ impl CadenceApp {
             window_title: String::new(),
             style_applied: false,
             theme: ThemeChoice::default(),
+            shell: shell::ShellState::default(),
         };
         app.fix_selection();
         app
@@ -1073,10 +1081,9 @@ impl CadenceApp {
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
-        self.status = Some(StatusLine {
-            kind,
-            text: text.into(),
-        });
+        let text = text.into();
+        self.shell.note(kind, &text);
+        self.status = Some(StatusLine { kind, text });
     }
 
     // ----- instrument packs ------------------------------------------------
@@ -1233,12 +1240,14 @@ impl CadenceApp {
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
 
+        self.fit_window(ctx);
         self.menu_bar(ctx);
         self.transport_bar(ctx);
         self.status_bar(ctx);
         self.sidebar(ctx);
         self.central(ctx);
         self.dialogs(ctx);
+        self.toast_ui(ctx);
         theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
@@ -1326,7 +1335,8 @@ impl CadenceApp {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         let typing = ctx.wants_keyboard_input();
         if self.dialog.is_open() {
-            if !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            // Even from a focused text field: Escape always backs out of a dialog.
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 self.dialog_escape();
             }
             return;
@@ -1364,6 +1374,8 @@ impl CadenceApp {
         if typing {
             return;
         }
+        // Before the arrow-key nudges: Ctrl+Shift+↑/↓ move the panel split.
+        self.handle_layout_shortcuts(ctx);
         if pressed(&SC_REDO) || pressed(&SC_REDO_ALT) {
             self.redo();
         } else if pressed(&SC_UNDO) {
@@ -1480,471 +1492,6 @@ impl CadenceApp {
 
     // ----- layout ----------------------------------------------------------
 
-    fn menu_bar(&mut self, ctx: &Context) {
-        let pal = self.palette();
-        let frame = Frame::new()
-            .fill(pal.bg)
-            .inner_margin(Margin::symmetric(8, 3));
-        egui::TopBottomPanel::top("menu_bar")
-            .frame(frame)
-            .show_separator_line(false)
-            .show(ctx, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
-                    let egui_ctx = ui.ctx().clone();
-                    let fmt = move |s: &KeyboardShortcut| egui_ctx.format_shortcut(s);
-                    let item = |text: &str, s: Option<&KeyboardShortcut>| {
-                        let b = egui::Button::new(text.to_owned()).min_size(egui::vec2(220.0, 0.0));
-                        match s {
-                            Some(s) => b.shortcut_text(fmt(s)),
-                            None => b,
-                        }
-                    };
-                    ui.menu_button("File", |ui| {
-                        if ui.add(item("New Song…", Some(&SC_NEW))).clicked() {
-                            self.request(PendingAction::New);
-                        }
-                        if ui.add(item("New from Demo", None)).clicked() {
-                            self.request(PendingAction::Demo);
-                        }
-                        if ui.add(item("Open…", Some(&SC_OPEN))).clicked() {
-                            self.request(PendingAction::Open);
-                        }
-                        ui.separator();
-                        if ui.add(item("Save", Some(&SC_SAVE))).clicked() {
-                            self.save();
-                        }
-                        if ui.add(item("Save As…", Some(&SC_SAVE_AS))).clicked() {
-                            self.save_as();
-                        }
-                        ui.separator();
-                        if ui.add(item("Import MIDI…", None)).clicked() {
-                            self.request(PendingAction::ImportMidi);
-                        }
-                        if ui.add(item("Import Sample…", None)).clicked() {
-                            self.import_sample_dialog();
-                        }
-                        if ui.add(item("Import Audio File…", None)).clicked() {
-                            self.import_audio_clip_dialog();
-                        }
-                        if ui.add(item("Export MIDI…", None)).clicked() {
-                            self.export_midi_dialog();
-                        }
-                        let exporting = self.export.is_some();
-                        if ui
-                            .add_enabled(
-                                !exporting,
-                                item(
-                                    if exporting {
-                                        "Exporting…"
-                                    } else {
-                                        "Export WAV…"
-                                    },
-                                    Some(&SC_EXPORT_WAV),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.export_wav_dialog();
-                        }
-                        if ui
-                            .add_enabled(
-                                !exporting,
-                                item(
-                                    if exporting {
-                                        "Exporting…"
-                                    } else {
-                                        "Export Stems…"
-                                    },
-                                    None,
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.export_stems_dialog();
-                        }
-                        ui.separator();
-                        if ui
-                            .add(item(
-                                if cfg!(target_os = "macos") {
-                                    "Quit Cadence"
-                                } else {
-                                    "Exit"
-                                },
-                                Some(&SC_QUIT),
-                            ))
-                            .clicked()
-                        {
-                            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                        }
-                    });
-                    ui.menu_button("Edit", |ui| {
-                        let undo = self
-                            .history
-                            .undo_label()
-                            .map_or("Undo".to_owned(), |l| format!("Undo {l}"));
-                        if ui
-                            .add_enabled(self.history.can_undo(), item(&undo, Some(&SC_UNDO)))
-                            .clicked()
-                        {
-                            self.undo();
-                        }
-                        let redo = self
-                            .history
-                            .redo_label()
-                            .map_or("Redo".to_owned(), |l| format!("Redo {l}"));
-                        if ui
-                            .add_enabled(self.history.can_redo(), item(&redo, Some(&SC_REDO)))
-                            .clicked()
-                        {
-                            self.redo();
-                        }
-                        ui.separator();
-                        let has_sel =
-                            !self.sel.notes.is_empty() || !self.selected_clip_ids().is_empty();
-                        if ui
-                            .add_enabled(has_sel, item("Duplicate", Some(&SC_DUPLICATE)))
-                            .clicked()
-                        {
-                            self.duplicate_selection();
-                        }
-                        if ui
-                            .add_enabled(has_sel, item("Delete", None).shortcut_text("Del"))
-                            .clicked()
-                        {
-                            self.delete_selection();
-                        }
-                        // While the menu is open the pointer is on the menu,
-                        // not the grid, so the enabled state reflects the
-                        // playhead/selection fallback.
-                        if ui
-                            .add_enabled(
-                                self.split_clip_target(ui.ctx()).is_some(),
-                                item("Split Clip at Playhead", None).shortcut_text("B"),
-                            )
-                            .on_disabled_hover_text(
-                                "Hover a clip, or select one the playhead crosses",
-                            )
-                            .clicked()
-                        {
-                            self.split_clip_at_playhead(ui.ctx());
-                        }
-                        if ui
-                            .add(item("Select All Notes", Some(&SC_SELECT_ALL)))
-                            .clicked()
-                        {
-                            self.select_all_notes();
-                        }
-                        if ui
-                            .add(item("Deselect", None).shortcut_text("Esc"))
-                            .clicked()
-                        {
-                            self.clear_selection();
-                        }
-                        if ui
-                            .add_enabled(self.can_copy(), item("Cut", Some(&SC_CUT)))
-                            .clicked()
-                        {
-                            self.cut_selection();
-                        }
-                        if ui
-                            .add_enabled(self.can_copy(), item("Copy", Some(&SC_COPY)))
-                            .clicked()
-                        {
-                            self.copy_selection();
-                        }
-                        if ui
-                            .add_enabled(
-                                !matches!(self.clipboard, Clipboard::None),
-                                item("Paste", Some(&SC_PASTE)),
-                            )
-                            .on_disabled_hover_text("Copy notes, clips or a track first")
-                            .clicked()
-                        {
-                            self.paste_clipboard(ctx);
-                        }
-                        if ui
-                            .add_enabled(self.can_arpeggiate(), item("Arpeggiator…", None))
-                            .on_disabled_hover_text(
-                                "Select a melodic track with a pattern to arpeggiate",
-                            )
-                            .clicked()
-                        {
-                            self.open_arpeggiator();
-                        }
-                        if ui
-                            .add_enabled(self.has_note_targets(), item("Humanize Notes", None))
-                            .on_disabled_hover_text("Select notes or open a pattern that has notes")
-                            .clicked()
-                        {
-                            if let Some((track_id, pid)) = self.editor_target() {
-                                self.humanize_notes(track_id, pid);
-                            }
-                        }
-                        ui.separator();
-                        ui.menu_button("Add Track", |ui| {
-                            for inst in Instrument::ALL {
-                                if ui
-                                    .add_enabled(
-                                        self.project.tracks.len() < ops::MAX_TRACKS,
-                                        egui::Button::new(inst.name()),
-                                    )
-                                    .clicked()
-                                {
-                                    self.add_track(inst);
-                                }
-                            }
-                            ui.separator();
-                            if ui
-                                .add_enabled(
-                                    self.project.tracks.len() < ops::MAX_TRACKS,
-                                    egui::Button::new("Audio Track"),
-                                )
-                                .on_hover_text("A lane for imported WAV clips")
-                                .clicked()
-                            {
-                                self.add_audio_track();
-                            }
-                        });
-                    });
-                    ui.menu_button("Transport", |ui| {
-                        let play = if self.transport.playing {
-                            "Pause"
-                        } else {
-                            "Play"
-                        };
-                        if ui.add(item(play, None).shortcut_text("Space")).clicked() {
-                            self.toggle_play();
-                        }
-                        if ui.add(item("Stop", None)).clicked() {
-                            self.stop();
-                        }
-                        if ui
-                            .add(item("Return to Start", None).shortcut_text("Home"))
-                            .clicked()
-                        {
-                            self.seek(0.0);
-                        }
-                        ui.separator();
-                        let mut looping = self.transport.looping;
-                        if ui.checkbox(&mut looping, "Loop song  (L)").changed() {
-                            self.toggle_loop();
-                        }
-                        let mut recording = self.transport.recording;
-                        if ui.checkbox(&mut recording, "Record  (R)").changed() {
-                            self.toggle_record();
-                        }
-                        let mut metro = self.transport.metronome;
-                        if ui.checkbox(&mut metro, "Metronome").changed() {
-                            self.toggle_metronome();
-                        }
-                    });
-                    ui.menu_button("View", |ui| {
-                        if ui.add(item("Pattern Editor", Some(&SC_EDITOR))).clicked() {
-                            self.tab = Tab::Editor;
-                        }
-                        if ui.add(item("Mixer", Some(&SC_MIXER))).clicked() {
-                            self.tab = Tab::Mixer;
-                        }
-                        if ui.add(item("Keyboard", Some(&SC_KEYS))).clicked() {
-                            self.tab = Tab::Keys;
-                        }
-                        ui.separator();
-                        if ui.add(item("Zoom In", None).shortcut_text("=")).clicked() {
-                            self.zoom(1.25);
-                        }
-                        if ui.add(item("Zoom Out", None).shortcut_text("-")).clicked() {
-                            self.zoom(0.8);
-                        }
-                        if ui.add(item("Fit Song in Arranger", None)).clicked() {
-                            self.arranger.fit_request = true;
-                        }
-                        ui.checkbox(&mut self.arranger.follow, "Follow playhead");
-                        ui.separator();
-                        ui.menu_button("Theme", |ui| {
-                            for choice in ThemeChoice::ALL {
-                                let on = self.theme == choice;
-                                let text = if on {
-                                    RichText::new(choice.label()).color(pal.text).strong()
-                                } else {
-                                    RichText::new(choice.label())
-                                };
-                                if ui
-                                    .selectable_label(on, text)
-                                    .on_hover_text(choice.description())
-                                    .clicked()
-                                {
-                                    self.set_theme(ui.ctx(), choice);
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                    ui.menu_button("Help", |ui| {
-                        if ui.add(item("Shortcuts & Tips", Some(&SC_HELP))).clicked() {
-                            self.dialog = Dialog::Help;
-                        }
-                        if ui.add(item("About Cadence", None)).clicked() {
-                            self.dialog = Dialog::About;
-                        }
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        let redo_tip = self.history.redo_label().map_or("Redo".to_owned(), |l| {
-                            format!("Redo {l} ({})", fmt(&SC_REDO))
-                        });
-                        if ui
-                            .add_enabled_ui(self.history.can_redo(), |ui| {
-                                theme::icon_button(
-                                    ui,
-                                    pal,
-                                    Icon::Redo,
-                                    24.0,
-                                    false,
-                                    pal.accent,
-                                    &redo_tip,
-                                )
-                            })
-                            .inner
-                            .clicked()
-                        {
-                            self.redo();
-                        }
-                        let undo_tip = self.history.undo_label().map_or("Undo".to_owned(), |l| {
-                            format!("Undo {l} ({})", fmt(&SC_UNDO))
-                        });
-                        if ui
-                            .add_enabled_ui(self.history.can_undo(), |ui| {
-                                theme::icon_button(
-                                    ui,
-                                    pal,
-                                    Icon::Undo,
-                                    24.0,
-                                    false,
-                                    pal.accent,
-                                    &undo_tip,
-                                )
-                            })
-                            .inner
-                            .clicked()
-                        {
-                            self.undo();
-                        }
-                        ui.add_space(8.0);
-                        let (text, color) = if self.dirty() {
-                            ("Unsaved changes", pal.warn)
-                        } else {
-                            ("All changes saved", pal.text_faint)
-                        };
-                        let shown = if self.doc.path.is_none() && !self.dirty() {
-                            "Not saved yet"
-                        } else {
-                            text
-                        };
-                        ui.label(RichText::new(shown).small().color(color));
-                    });
-                });
-            });
-    }
-
-    fn status_bar(&mut self, ctx: &Context) {
-        let pal = self.palette();
-        let frame = Frame::new()
-            .fill(pal.bg)
-            .inner_margin(Margin::symmetric(12, 4))
-            .stroke(Stroke::new(1.0_f32, pal.border_soft));
-        egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(28.0)
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    if let Some(status) = &self.status {
-                        let color = match status.kind {
-                            StatusKind::Info => pal.text_dim,
-                            StatusKind::Success => pal.accent,
-                            StatusKind::Warning => pal.warn,
-                            StatusKind::Error => pal.danger,
-                        };
-                        theme::color_dot(ui, color, 7.0);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&status.text).small().color(pal.text_dim),
-                            )
-                            .truncate(),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new("Ready · Press F1 for shortcuts")
-                                .small()
-                                .color(pal.text_faint),
-                        );
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        match (&self.engine, &self.audio_error) {
-                            (Some(_), _) => {
-                                let err = self.transport.engine_error.clone();
-                                let (c, t) = match err {
-                                    Some(e) => (pal.danger, format!("Audio error: {e}")),
-                                    None => (
-                                        pal.accent,
-                                        format!("Audio ready · {} voices", self.transport.voices),
-                                    ),
-                                };
-                                ui.label(RichText::new(t).small().color(pal.text_dim));
-                                theme::color_dot(ui, c, 7.0);
-                            }
-                            (None, err) => {
-                                if ui
-                                    .small_button("Retry audio")
-                                    .on_hover_text(err.clone().unwrap_or_default())
-                                    .clicked()
-                                {
-                                    self.retry_audio();
-                                }
-                                ui.label(
-                                    RichText::new(
-                                        "Offline (no audio output) · editing & export work",
-                                    )
-                                    .small()
-                                    .color(pal.text_dim),
-                                );
-                                theme::color_dot(ui, pal.danger, 7.0);
-                            }
-                        }
-                        ui.add_space(14.0);
-                        let total = self.project.total_steps();
-                        let secs = ops::steps_to_seconds(total, self.project.bpm);
-                        let t = self.project.tracks.len();
-                        ui.label(
-                            RichText::new(format!(
-                                "{t} track{} · {} bars · {}",
-                                if t == 1 { "" } else { "s" },
-                                self.project.bars,
-                                ops::format_time(secs)
-                            ))
-                            .small()
-                            .color(pal.text_faint),
-                        );
-                        if let Some(job) = &self.export {
-                            ui.add_space(14.0);
-                            let p = job.progress();
-                            ui.add(
-                                egui::ProgressBar::new(p)
-                                    .desired_width(140.0)
-                                    .desired_height(10.0)
-                                    .fill(pal.accent),
-                            );
-                            ui.label(
-                                RichText::new(format!("{} {:.0}%", job.verb(), p * 100.0))
-                                    .small()
-                                    .color(pal.accent),
-                            );
-                        }
-                    });
-                });
-            });
-    }
-
     fn retry_audio(&mut self) {
         match AudioEngine::new() {
             Ok(engine) => {
@@ -1959,147 +1506,6 @@ impl CadenceApp {
                 self.set_status(StatusKind::Warning, format!("Still no audio output: {err}"));
                 self.audio_error = Some(err);
             }
-        }
-    }
-
-    fn central(&mut self, ctx: &Context) {
-        let pal = self.palette();
-        let frame = Frame::new().fill(pal.bg).inner_margin(Margin {
-            left: 8,
-            right: 10,
-            top: 8,
-            bottom: 8,
-        });
-        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            if self.project.tracks.is_empty() {
-                self.empty_state(ui);
-                return;
-            }
-            let total = ui.available_height();
-            let max = (total - 250.0).max(200.0);
-            egui::TopBottomPanel::top("arranger_panel")
-                .resizable(true)
-                .show_separator_line(false)
-                .default_height((total * 0.43).clamp(200.0, max))
-                .height_range(170.0..=max)
-                .frame(Frame::new().inner_margin(Margin {
-                    bottom: 8,
-                    ..Margin::ZERO
-                }))
-                .show_inside(ui, |ui| {
-                    theme::card(pal)
-                        .inner_margin(Margin::same(0))
-                        .show(ui, |ui| {
-                            ui.set_min_size(ui.available_size());
-                            self.arranger_ui(ui);
-                        });
-                });
-            theme::card(pal)
-                .inner_margin(Margin::same(0))
-                .show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    self.bottom_tabs(ui);
-                    match self.tab {
-                        Tab::Editor => self.editor_ui(ui),
-                        Tab::Mixer => self.mixer_ui(ui),
-                        Tab::Keys => self.keys_ui(ui),
-                    }
-                });
-        });
-    }
-
-    fn bottom_tabs(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        Frame::new()
-            .inner_margin(Margin {
-                left: 12,
-                right: 12,
-                top: 8,
-                bottom: 0,
-            })
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (tab, label, s) in [
-                        (Tab::Editor, "Pattern Editor", &SC_EDITOR),
-                        (Tab::Mixer, "Mixer", &SC_MIXER),
-                        (Tab::Keys, "Keyboard", &SC_KEYS),
-                    ] {
-                        let on = self.tab == tab;
-                        let text =
-                            RichText::new(label).color(if on { pal.text } else { pal.text_dim });
-                        let b = egui::Button::new(text)
-                            .selected(on)
-                            .min_size(egui::vec2(120.0, 28.0))
-                            .corner_radius(egui::CornerRadius {
-                                nw: 7,
-                                ne: 7,
-                                sw: 0,
-                                se: 0,
-                            });
-                        let b = if on {
-                            b.fill(pal.control).stroke(Stroke::new(1.0_f32, pal.border))
-                        } else {
-                            b.fill(Color32::TRANSPARENT).stroke(Stroke::NONE)
-                        };
-                        if ui
-                            .add(b)
-                            .on_hover_text(format!("{label} ({})", ui.ctx().format_shortcut(s)))
-                            .clicked()
-                        {
-                            self.tab = tab;
-                        }
-                    }
-                });
-            });
-        let r = ui.cursor();
-        ui.painter()
-            .hline(r.x_range(), r.top(), Stroke::new(1.0_f32, pal.border));
-    }
-
-    fn empty_state(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        let card = theme::card(pal).show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() * 0.25).max(20.0));
-                ui.label(theme::kicker_text(pal, "EMPTY SONG"));
-                ui.label(RichText::new("Start by adding an instrument").size(22.0).color(pal.text));
-                ui.add_space(4.0);
-                ui.label(RichText::new("Each track gets its own patterns, clips and mixer channel. You can add up to 32 tracks.").color(pal.text_dim));
-                ui.add_space(18.0);
-                ui.horizontal(|ui| {
-                    let count = Instrument::ALL.len() as f32;
-                    let w = count * 128.0 + (count - 1.0) * 8.0;
-                    ui.add_space(((ui.available_width() - w) * 0.5).max(0.0));
-                    for inst in Instrument::ALL {
-                        let color = theme::rgb(sidebar::instrument_color(inst));
-                        let b = egui::Button::new(RichText::new(format!("+  {}", inst.name())).color(theme::ink_on(color)).strong()).fill(color).min_size(egui::vec2(128.0, 40.0));
-                        if ui.add(b).on_hover_text(inst.description()).clicked() {
-                            self.add_track(inst);
-                        }
-                    }
-                });
-            });
-        });
-        // A dragged library sound can start the song too: the arranger isn't
-        // shown while there are no tracks, so the empty canvas takes the
-        // drop and adds the first track.
-        if card
-            .response
-            .dnd_hover_payload::<sidebar::QuickSound>()
-            .is_some()
-        {
-            ui.painter().rect_stroke(
-                card.response.rect.shrink(1.0),
-                10.0,
-                Stroke::new(1.5_f32, pal.accent),
-                StrokeKind::Inside,
-            );
-            ui.ctx().set_cursor_icon(CursorIcon::Copy);
-        }
-        if let Some(sound) = card.response.dnd_release_payload::<sidebar::QuickSound>() {
-            self.add_sound_track_at(&sound, 0);
         }
     }
 }

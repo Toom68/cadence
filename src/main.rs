@@ -159,7 +159,7 @@ fn run_gui(path: Option<PathBuf>) -> Result<(), String> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
         .with_app_id("cadence")
-        .with_inner_size([1360.0, 860.0])
+        .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([1100.0, 760.0]);
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
@@ -168,6 +168,7 @@ fn run_gui(path: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport,
         centered: true,
+        persistence_path: storage_path(std::env::var_os(persistence::DATA_DIR_ENV)),
         ..Default::default()
     };
     eframe::run_native(
@@ -176,6 +177,16 @@ fn run_gui(path: Option<PathBuf>) -> Result<(), String> {
         Box::new(|cc| Ok(Box::new(cadence_studio::CadenceApp::new(cc)))),
     )
     .map_err(|err| format!("Could not start the {APP_NAME} window: {err}"))
+}
+
+/// Where eframe keeps its own storage (the selected theme, egui memory).
+/// With `CADENCE_DATA_DIR` set it lives beside the other app data, so test
+/// instances never share state with a real install; otherwise `None` keeps
+/// eframe's per-user default.
+fn storage_path(data_dir: Option<OsString>) -> Option<PathBuf> {
+    data_dir
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join("app.ron"))
 }
 
 fn seconds_per_step(project: &Project) -> f64 {
@@ -496,6 +507,16 @@ mod tests {
         assert!(parse(&["--new-pack", "id"]).is_err());
         assert!(parse(&["--validate-pack"]).is_err());
         assert!(parse(&["--list-instruments", "x"]).is_err());
+    }
+
+    #[test]
+    fn eframe_storage_follows_the_data_dir_override() {
+        assert_eq!(storage_path(None), None);
+        assert_eq!(storage_path(Some(OsString::new())), None);
+        assert_eq!(
+            storage_path(Some(OsString::from("data"))),
+            Some(PathBuf::from("data").join("app.ron"))
+        );
     }
 
     #[test]
