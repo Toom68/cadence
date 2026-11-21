@@ -654,7 +654,10 @@ fn mixer_fader(
         );
         let y = cap_y(v);
         p.rect_filled(
-            Rect::from_min_max(Pos2::new(track.left(), y), track.right_bottom()),
+            Rect::from_min_max(
+                Pos2::new(track.left() + 1.0, y.min(track.bottom() - 1.0)),
+                Pos2::new(track.right() - 1.0, track.bottom() - 1.0),
+            ),
             2.5,
             legible(color, mx.well, 3.0).gamma_multiply(0.9),
         );
@@ -704,48 +707,29 @@ fn mixer_fader(
     })
 }
 
-/// Recessed value box (a fader's dB or the master peak). The unit is dropped
-/// when the box is too narrow for it.
-fn paint_readout(ui: &Ui, look: Look, rect: Rect, value: &str, unit: &str, ink: Option<Color32>) {
+/// Recessed value box (a fader's dB or the master peak), centred; text that
+/// does not fit ends in an ellipsis.
+fn paint_readout(ui: &Ui, look: Look, rect: Rect, value: &str, ink: Option<Color32>) {
     if !ui.is_rect_visible(rect) {
         return;
     }
     let mx = look.mx;
-    let p = ui.painter();
-    p.rect(
+    ui.painter().rect(
         rect,
         4.0,
         mx.well,
         Stroke::new(1.0_f32, mx.border_soft),
         StrokeKind::Inside,
     );
-    let ink = ink.unwrap_or_else(|| theme::ink_on(mx.well));
-    let dim = theme::mix(ink, mx.well, 0.4);
-    let value = p.layout_no_wrap(value.to_owned(), theme::strong_font(ui, 11.0), ink);
-    let unit = p.layout_no_wrap(unit.to_owned(), theme::body_font(10.0), dim);
-    let room = rect.width() - 8.0;
-    let with_unit = value.size().x + 3.0 + unit.size().x <= room;
-    let total = if with_unit {
-        value.size().x + 3.0 + unit.size().x
-    } else {
-        value.size().x.min(room)
-    };
-    let x = rect.center().x - total * 0.5;
-    p.galley(
-        pos2(x, rect.center().y - value.size().y * 0.5),
-        value.clone(),
-        ink,
+    theme::paint_elided(
+        ui,
+        rect.center(),
+        Align2::CENTER_CENTER,
+        value,
+        theme::strong_font(ui, theme::TEXT_SMALL),
+        ink.unwrap_or_else(|| theme::ink_on(mx.well)),
+        rect.width() - 8.0,
     );
-    if with_unit {
-        p.galley(
-            pos2(
-                x + value.size().x + 3.0,
-                rect.center().y - unit.size().y * 0.5 + 0.5,
-            ),
-            unit,
-            dim,
-        );
-    }
 }
 
 /// Vertical segmented level meter on a dB scale, lit bottom-up with the
@@ -1334,7 +1318,6 @@ impl CadenceApp {
             look,
             readout,
             &db_text(fader_db(view.volume, 0.0)),
-            "dB",
             None,
         );
         let mut vol = view.volume;
@@ -1455,7 +1438,7 @@ impl CadenceApp {
 
     /// Output route selector: "Master" / "Bus A"… with the bus name in the list.
     fn route_combo(&mut self, mut ui: Ui, id: u64, bus: u8) {
-        let width = ui.available_width().max(48.0);
+        let width = ui.available_width().clamp(48.0, 104.0);
         let mut choice = bus;
         let buses = &self.project.buses;
         let selected = RichText::new(route_label(bus)).size(theme::TEXT_SMALL);
@@ -1715,7 +1698,6 @@ impl CadenceApp {
             look,
             Rect::from_min_size(zone.min, vec2(ro_w, READOUT_H)),
             &db_text(fader_db(volume, 0.0)),
-            "dB",
             None,
         );
         let mut vol = volume;
@@ -1825,7 +1807,6 @@ impl CadenceApp {
             look,
             Rect::from_min_size(pos2(gx, zone.top()), vec2(ro_w, READOUT_H)),
             &db_text(fader_db(volume, MASTER_TRIM_DB)),
-            "dB",
             None,
         );
         let fader_rect = Rect::from_min_size(
@@ -1841,7 +1822,7 @@ impl CadenceApp {
             &mut vol,
             0.8,
             MASTER_TRIM_DB,
-            mx.meter_peak,
+            legible(mx.text, mx.well, 4.5),
             "Master volume",
         )
         .changed()
@@ -1902,7 +1883,6 @@ impl CadenceApp {
             look,
             peak_rect,
             &level_db_text(peak),
-            "dB",
             clipped.then_some(mx.meter_clip),
         );
         resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Master peak"));
@@ -2326,5 +2306,54 @@ mod tests {
             tracks + ops::NUM_BUSES
         );
         assert!(strips.len() >= 3);
+    }
+}
+
+/// Run with `cargo test --release --locked --lib perf_bench_mixer -- --ignored --nocapture`.
+#[cfg(test)]
+mod perf_bench {
+    use crate::gui::{CadenceApp, Tab};
+    use crate::model::Project;
+    use egui::{vec2, Pos2, Rect};
+    use std::time::Instant;
+
+    fn median_frame_ms(tab: Tab, width: f32) -> f64 {
+        let song = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/songs/neon-circuits.cadence"
+        ))
+        .unwrap();
+        let project: Project = serde_json::from_str(&song).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CadenceApp::headless(project);
+        app.tab = tab;
+        let mut times = Vec::new();
+        for i in 0..400 {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 1000.0))),
+                time: Some(i as f64 / 60.0),
+                ..Default::default()
+            };
+            let start = Instant::now();
+            let _ = ctx.run(raw, |ctx| app.frame(ctx));
+            if i >= 40 {
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(|a, b| a.total_cmp(b));
+        times[times.len() / 2]
+    }
+
+    #[test]
+    #[ignore = "release-mode performance measurement"]
+    fn perf_bench_mixer() {
+        for width in [1100.0, 1600.0, 1920.0] {
+            let keys = median_frame_ms(Tab::Keys, width);
+            let mixer = median_frame_ms(Tab::Mixer, width);
+            println!(
+                "mixer,width={width},keys={keys:.3} ms,mixer={mixer:.3} ms,delta={:.3} ms",
+                mixer - keys
+            );
+        }
     }
 }
