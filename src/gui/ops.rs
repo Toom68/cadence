@@ -992,6 +992,9 @@ pub fn delete_chord_event(project: &mut Project, event_id: u64) -> bool {
 
 /// Chord symbol for a strip chip — "C", "Am7", "F#m7b5". Thin wrapper over
 /// [`ChordQuality::symbol`] so call sites never re-derive the root/suffix.
+/// This is the key-free (sharp) spelling; the arranger's chord strip shows
+/// [`ChordEvent::label_in`], spelled for the song key.
+#[allow(dead_code)]
 pub fn chord_event_label(ev: &ChordEvent) -> String {
     ev.label()
 }

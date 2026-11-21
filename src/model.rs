@@ -1136,6 +1136,12 @@ impl ChordEvent {
     pub fn label(&self) -> String {
         self.quality.symbol(self.root)
     }
+
+    /// Chord symbol spelled for the song `key` ("Bb9" in C minor) — what
+    /// the arranger's chord strip shows. See [`SongKey::spell`].
+    pub fn label_in(&self, key: SongKey) -> String {
+        self.quality.symbol_in(self.root, key)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1195,6 +1201,12 @@ snapshot_clone!(Project {
 /// Pitch-class names with ASCII sharps, indexed by `pitch % 12` (C = 0).
 pub const NOTE_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+/// Pitch-class names with ASCII flats, indexed by `pitch % 12` (C = 0) —
+/// the spelling [`SongKey::spell`] uses in flat keys.
+pub const NOTE_NAMES_FLAT: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
 ];
 
 /// Scale mode for the song key.
@@ -1296,6 +1308,29 @@ impl SongKey {
             pcs[self.degree_root(degree) as usize] = true;
         }
         pcs
+    }
+
+    /// Whether names in this key are spelled with flats: the flat key
+    /// signatures (F, Bb, Eb, Ab, Db major and their relative minors) plus
+    /// C major / A minor, whose chromatic chords are usually borrowed ones
+    /// (bVII, bVI, bIII) written with flats. Sharp keys (G, D, A, E, B, F#
+    /// major and relatives) spell sharps.
+    pub fn prefers_flats(&self) -> bool {
+        let relative_major = match self.mode {
+            KeyMode::Major => self.root % 12,
+            KeyMode::Minor => (self.root + 3) % 12,
+        };
+        matches!(relative_major, 0 | 1 | 3 | 5 | 8 | 10)
+    }
+
+    /// Name of pitch class `pc` spelled for this key: "Ab" in C minor,
+    /// "G#" in E major. Display only — stored data keeps pitch classes.
+    pub fn spell(&self, pc: u8) -> &'static str {
+        if self.prefers_flats() {
+            NOTE_NAMES_FLAT[pc as usize % 12]
+        } else {
+            NOTE_NAMES[pc as usize % 12]
+        }
     }
 }
 
@@ -1451,6 +1486,12 @@ impl ChordQuality {
     /// Chord symbol for a root pitch (class), e.g. `symbol(9)` on Minor7 = "Am7".
     pub fn symbol(self, root: u8) -> String {
         format!("{}{}", NOTE_NAMES[root as usize % 12], self.suffix())
+    }
+
+    /// [`Self::symbol`] with the root spelled for `key` — "Abmaj7" in
+    /// C minor where [`Self::symbol`] says "G#maj7".
+    pub fn symbol_in(self, root: u8, key: SongKey) -> String {
+        format!("{}{}", key.spell(root), self.suffix())
     }
 }
 
@@ -2895,6 +2936,44 @@ mod tests {
         assert_eq!(note_name(127), "G9");
         assert_eq!(drum_name(38), "Snare");
         assert!((pitch_hz(69.0) - 440.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn chord_symbols_follow_the_key_spelling() {
+        let c_minor = SongKey::new(0, KeyMode::Minor);
+        // The demo song: flats in C minor, matching its clip names.
+        assert!(c_minor.prefers_flats());
+        assert_eq!(ChordQuality::Major7.symbol_in(8, c_minor), "Abmaj7");
+        assert_eq!(ChordQuality::Major7.symbol_in(3, c_minor), "Ebmaj7");
+        assert_eq!(ChordQuality::Dominant9.symbol_in(10, c_minor), "Bb9");
+        let ev = ChordEvent::new(8, ChordQuality::Major7, 0.0);
+        assert_eq!(ev.label_in(c_minor), "Abmaj7");
+        assert_eq!(ev.label(), "G#maj7", "the key-free label keeps sharps");
+        // Sharp keys keep sharps.
+        for key in [
+            SongKey::new(4, KeyMode::Major),
+            SongKey::new(7, KeyMode::Major),
+            SongKey::new(4, KeyMode::Minor),
+            SongKey::new(11, KeyMode::Minor),
+        ] {
+            assert!(!key.prefers_flats(), "{}", key.name());
+            assert_eq!(key.spell(8), "G#");
+        }
+        // Flat keys and their relative minors use flats.
+        for key in [
+            SongKey::new(5, KeyMode::Major),
+            SongKey::new(10, KeyMode::Major),
+            SongKey::new(2, KeyMode::Minor),
+            SongKey::new(5, KeyMode::Minor),
+            SongKey::new(0, KeyMode::Major),
+            SongKey::new(9, KeyMode::Minor),
+        ] {
+            assert!(key.prefers_flats(), "{}", key.name());
+            assert_eq!(key.spell(1), "Db");
+        }
+        // Naturals never change.
+        assert_eq!(SongKey::new(4, KeyMode::Major).spell(9), "A");
+        assert_eq!(c_minor.spell(9), "A");
     }
 
     /// A two-piece kit preset whose pitches are deliberately out of order:
