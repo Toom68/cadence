@@ -103,8 +103,9 @@
 //!
 //! # Developer gallery
 //!
-//! Launch with `CADENCE_DESIGN_GALLERY=1` to open a window showing every
-//! icon, widget state and palette token in the active theme.
+//! Launch with `CADENCE_DESIGN_GALLERY=1` (or `=controls`, `=layout`,
+//! `=colors` to pick the first tab) to open a window showing every icon,
+//! widget state and palette token in the active theme.
 
 // The primitives here are a toolkit for the screen modules; not every helper
 // has a caller yet.
@@ -3182,9 +3183,10 @@ impl Toolbar<'_> {
     }
 
     /// Optional caption that only ever uses room left over by every other
-    /// item (never part of the overflow menu). Place it before a `spacer`.
+    /// item: hidden while labels are collapsed, never part of the overflow
+    /// menu. Place it before a `spacer`.
     pub fn hint(&mut self, text: &str) {
-        if self.menu || self.first_overflow.is_some() {
+        if self.menu || self.compact || self.first_overflow.is_some() {
             return;
         }
         let lead = self.cursor.lead();
@@ -3516,20 +3518,41 @@ impl Default for GalleryState {
     }
 }
 
-/// Shows the design gallery window when `CADENCE_DESIGN_GALLERY` is set
-/// (developer aid; costs one cached boolean check otherwise).
-pub fn gallery(ctx: &egui::Context, pal: Palette) {
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-        std::env::var_os("CADENCE_DESIGN_GALLERY").is_some_and(|v| !v.is_empty() && v != "0")
-    });
-    if *ENABLED {
-        gallery_window(ctx, pal);
+impl GalleryTab {
+    /// `CADENCE_DESIGN_GALLERY` value → first tab shown (`None` = gallery off).
+    fn from_env(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "0" => None,
+            "controls" => Some(Self::Controls),
+            "layout" => Some(Self::Layout),
+            "colors" => Some(Self::Colors),
+            _ => Some(Self::Icons),
+        }
     }
 }
 
-fn gallery_window(ctx: &egui::Context, pal: Palette) {
+/// Shows the design gallery window when `CADENCE_DESIGN_GALLERY` is set
+/// (developer aid; costs one cached check otherwise). The value picks the
+/// first tab: `icons` (or `1`), `controls`, `layout` or `colors`.
+pub fn gallery(ctx: &egui::Context, pal: Palette) {
+    static FIRST_TAB: LazyLock<Option<GalleryTab>> = LazyLock::new(|| {
+        std::env::var("CADENCE_DESIGN_GALLERY")
+            .ok()
+            .and_then(|v| GalleryTab::from_env(&v))
+    });
+    if let Some(tab) = *FIRST_TAB {
+        gallery_window(ctx, pal, tab);
+    }
+}
+
+fn gallery_window(ctx: &egui::Context, pal: Palette, first_tab: GalleryTab) {
     let id = egui::Id::new("cadence.theme.gallery");
-    let mut state: GalleryState = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+    let mut state: GalleryState = ctx
+        .data(|d| d.get_temp(id))
+        .unwrap_or_else(|| GalleryState {
+            tab: first_tab,
+            ..Default::default()
+        });
     egui::Window::new("Design system")
         .default_pos([24.0, 40.0])
         .default_size([900.0, 700.0])
@@ -4082,6 +4105,31 @@ mod tests {
             style.text_styles[&TextStyle::Body].family,
             FontFamily::Proportional
         );
+    }
+
+    #[test]
+    fn startup_order_of_the_real_app_ends_with_live_fonts() {
+        // `CadenceApp::new` styles the context before any pass has run;
+        // `frame()` keeps calling `apply` until it reports the fonts live.
+        let ctx = Context::default();
+        assert!(!apply(&ctx, ThemeChoice::Graphite));
+        let mut applied = false;
+        let mut runs = 0;
+        while !applied {
+            runs += 1;
+            assert!(runs <= 2, "fonts never became live");
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0))),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                if !applied {
+                    applied = apply(ctx, ThemeChoice::Graphite);
+                }
+                egui::CentralPanel::default().show(ctx, |ui| ui.heading("Heading"));
+            });
+        }
+        assert_eq!(ctx.style().text_styles[&strong()].family, strong_family());
     }
 
     #[test]
@@ -4970,6 +5018,14 @@ mod tests {
             if width <= 500.0 {
                 assert!(out.compact, "width {width} should collapse labels");
             }
+            if out.compact {
+                // Labels went first (the "Snap" caption too); the optional
+                // hint must not take their room.
+                assert!(
+                    out.placed.len() <= 10,
+                    "width {width}: hint shown while compact"
+                );
+            }
             if width <= 300.0 {
                 assert!(out.overflowed > 0, "width {width} should overflow");
             }
@@ -5084,7 +5140,9 @@ mod tests {
                     .ctx
                     .data_mut(|d| d.insert_temp(egui::Id::new("cadence.theme.gallery"), state));
                 for _ in 0..2 {
-                    harness.frame(Vec::new(), |ui| gallery_window(ui.ctx(), harness.pal()));
+                    harness.frame(Vec::new(), |ui| {
+                        gallery_window(ui.ctx(), harness.pal(), GalleryTab::Icons)
+                    });
                 }
             }
         }
