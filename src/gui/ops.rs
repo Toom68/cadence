@@ -1005,6 +1005,12 @@ pub fn key_label(key: SongKey) -> String {
     format!("{} {}", key.spell(key.root), key.mode.name())
 }
 
+/// Note name spelled for `key` ("Bb3" in C minor, "A#3" in E major).
+/// Display only.
+pub fn note_name_in(pitch: u8, key: SongKey) -> String {
+    format!("{}{}", key.spell(pitch % 12), i32::from(pitch) / 12 - 1)
+}
+
 /// The chord a plain click on the strip writes: the key's tonic (I in a
 /// major key, i in a minor one) — the first of [`diatonic_chords`].
 pub fn tonic_chord_spec(key: SongKey) -> ChordSpec {

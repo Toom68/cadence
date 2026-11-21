@@ -1464,9 +1464,11 @@ impl CadenceApp {
         );
         self.editor.roll_scroll_x = sx;
         let mut sy = self.editor.roll_scroll_y;
+        // Vertical scrollbar on the grid's right edge, like the drum grid and
+        // the arranger (it used to sit on top of the piano keys).
         let vbar = Rect::from_min_max(
-            pos2(area.left(), grid.top()),
-            pos2(area.left() + 8.0, grid.bottom()),
+            pos2(grid.right() - 8.0, grid.top()),
+            pos2(grid.right(), grid.bottom()),
         );
         theme::scrollbar(
             ui,
@@ -2042,10 +2044,11 @@ impl CadenceApp {
         } else {
             theme::mix(pal.canvas_alt, pal.grid_faint, 0.35)
         };
+        let key = self.project.key;
         let scale = self
             .editor
             .scale_highlight
-            .then(|| scale_pitch_classes(self.project.key));
+            .then(|| scale_pitch_classes(key));
         let rh = roll.row_h;
         // Row backgrounds: only the visible rows.
         let (first_row, last_row) = roll.visible_rows();
@@ -2149,7 +2152,7 @@ impl CadenceApp {
                 p.text(
                     pos2(r.left() + 5.0, r.center().y),
                     Align2::LEFT_CENTER,
-                    note_name(n.pitch),
+                    ops::note_name_in(n.pitch, key),
                     label_font.clone(),
                     ink,
                 );

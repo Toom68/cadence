@@ -19,7 +19,7 @@ use super::ops::{self, ArpDirection, ArpSpec};
 use super::theme::{self, Palette};
 use super::transport::paint_brand_mark;
 use super::{CadenceApp, StatusKind};
-use crate::model::{note_name, ChordQuality, KeyMode, Project, SongKey, MAX_NAME_CHARS};
+use crate::model::{ChordQuality, KeyMode, Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
 
 /// The currently open modal dialog, if any.
@@ -701,7 +701,10 @@ impl CadenceApp {
             ui.checkbox(&mut draft.replace, "Replace the pattern's notes");
             ui.add_space(theme::GAP_S);
             let spec = draft.spec(key);
-            let tones: Vec<String> = ops::arp_tones(&spec).into_iter().map(note_name).collect();
+            let tones: Vec<String> = ops::arp_tones(&spec)
+                .into_iter()
+                .map(|p| ops::note_name_in(p, key))
+                .collect();
             theme::hint(
                 ui,
                 pal,
