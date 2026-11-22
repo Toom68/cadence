@@ -9,6 +9,8 @@
 //! - [`font`]: SoundFont (`.sf2`) instruments — user font directory, GM program
 //!   names and the font catalog shared with the audio engine.
 //! - [`gui`]: the eframe/egui desktop interface.
+//! - [`update`]: signed in-app updates (release manifest, verification,
+//!   installer hand-off).
 
 pub mod audio;
 pub mod font;
@@ -17,6 +19,7 @@ pub mod midi;
 pub mod model;
 pub mod packs;
 pub mod persistence;
+pub mod update;
 
 pub use gui::CadenceApp;
 

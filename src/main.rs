@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cadence_studio::model::{Instrument, Project};
-use cadence_studio::{audio, font, packs, persistence, APP_NAME, APP_VERSION};
+use cadence_studio::{audio, font, packs, persistence, update, APP_NAME, APP_VERSION};
 
 const USAGE: &str = "\
 Cadence - native music sequencer
@@ -34,6 +34,7 @@ SOUNDFONTS (.sf2 sampled General MIDI, no rebuild needed):
     \"Reload Packs\" in the app (or restart) -> add the instrument from the library.
 
 OTHER:
+    cadence --check-update                 Ask the release feed for a newer version
     cadence --version                      Print the version
     cadence --help                         Print this help
 ";
@@ -49,6 +50,7 @@ enum Command {
     ValidatePack(PathBuf),
     InstallPack(PathBuf),
     ListInstruments,
+    CheckUpdate,
     Help,
     Version,
 }
@@ -87,6 +89,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Command, String> {
         "--validate-pack" => Command::ValidatePack(take("a pack .json file")?),
         "--install-pack" => Command::InstallPack(take("a pack .json file")?),
         "--list-instruments" => Command::ListInstruments,
+        "--check-update" => Command::CheckUpdate,
         flag if flag.starts_with('-') => {
             return Err(format!("Unknown option {flag}.\n\n{USAGE}"));
         }
@@ -142,6 +145,7 @@ fn main() -> ExitCode {
             list_instruments();
             Ok(())
         }
+        Command::CheckUpdate => check_update(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -447,6 +451,31 @@ fn list_instruments() {
     }
 }
 
+fn check_update() -> Result<(), String> {
+    match update::check()? {
+        Some(release) => {
+            println!(
+                "{APP_NAME} {} is available (this is {APP_VERSION}): {}",
+                release.version,
+                update::notes_url(&release.version)
+            );
+            match &release.asset {
+                Some(asset) => println!("  download for this computer: {asset}"),
+                None => println!("  that release has no download for this computer"),
+            }
+        }
+        None => println!("{APP_NAME} {APP_VERSION} is up to date."),
+    }
+    match update::install_mode() {
+        update::InstallMode::Manual(reason) => println!("  one-click install: no — {reason}"),
+        _ => println!("  one-click install: yes"),
+    }
+    if update::update_key().is_none() {
+        println!("  note: this build has no release key, so it can't verify updates");
+    }
+    Ok(())
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -516,6 +545,7 @@ mod tests {
             Ok(Command::InstallPack("p.json".into()))
         );
         assert_eq!(parse(&["--list-instruments"]), Ok(Command::ListInstruments));
+        assert_eq!(parse(&["--check-update"]), Ok(Command::CheckUpdate));
         assert_eq!(parse(&["--help"]), Ok(Command::Help));
         assert_eq!(parse(&["--version"]), Ok(Command::Version));
     }

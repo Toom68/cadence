@@ -858,6 +858,10 @@ impl CadenceApp {
         {
             self.dialog = Dialog::Help;
         }
+        if menu_item(ui, pal, "Check for Updates…", "", true, None).clicked() {
+            let ctx = ui.ctx().clone();
+            self.check_updates_now(&ctx);
+        }
         if menu_item(ui, pal, "About Cadence…", "", true, None).clicked() {
             self.dialog = Dialog::About;
         }
@@ -1029,6 +1033,7 @@ impl CadenceApp {
                 .on_hover_text(tip);
             theme::color_dot(ui, pal.warn, 8.0);
         }
+        self.update_status_item(ui, pal);
         ui.add_space(theme::GAP_M);
         let t = self.project.tracks.len();
         let secs = ops::steps_to_seconds(self.project.total_steps(), self.project.bpm);

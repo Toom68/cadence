@@ -64,10 +64,47 @@ jobs:
           UNIVERSAL: "1"
         run: scripts/mac-package.sh
 
-      - name: Package Windows exe
+      - name: Install Inno Setup
         if: runner.os == 'Windows'
         shell: pwsh
+        run: |
+          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Package Windows exe + installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          REQUIRE_INSTALLER: "1"
         run: scripts/windows-package.ps1
+
+      # Installs silently (per-user, the way the in-app updater runs it),
+      # checks the files, the version and the .cadence association, then
+      # uninstalls and checks that everything is gone again.
+      - name: Smoke-test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/*-setup.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:RUNNER_TEMP 'cadence-install'
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/norelaunch=1',"/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+          foreach ($f in 'Cadence.exe','unins000.exe','README.txt','THIRD-PARTY-NOTICES.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "installed copy is missing $f" }
+          }
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $v = Start-Process (Join-Path $dir 'Cadence.exe') -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out
+          if ($v.ExitCode -ne 0) { throw "installed Cadence.exe --version exited with $($v.ExitCode)" }
+          Get-Content $out
+          $assoc = 'HKCU:\Software\Classes\Cadence.Song\shell\open\command'
+          if (-not (Test-Path $assoc)) { throw '.cadence file association was not registered' }
+          Start-Process (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $dir 'Cadence.exe')); $i++) { Start-Sleep 1 }
+          if (Test-Path (Join-Path $dir 'Cadence.exe')) { throw 'uninstall left Cadence.exe behind' }
+          if (Test-Path $assoc) { throw 'uninstall left the .cadence association behind' }
+          Write-Host 'Installer smoke test passed'
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
@@ -84,5 +121,82 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cadence-windows
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
+
+  # Tags (v1.2.0) publish a GitHub release: every download signed with the
+  # release key (secret MINISIGN_SECRET_KEY) and checked against the public
+  # key the app embeds, plus the latest.json manifest the in-app updater
+  # reads. The trusted comment format must match `update::trusted_comment`.
+  release:
+    name: Publish signed release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-test-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $ver"
+            exit 1
+          fi
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+
+      - name: Install minisign
+        run: sudo apt-get update -q && sudo apt-get install -y -q minisign
+
+      - name: Sign downloads and write latest.json
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::the MINISIGN_SECRET_KEY secret is not set (README, Releasing)"
+            exit 1
+          fi
+          if grep -q placeholder packaging/update-key.pub; then
+            echo "::error::packaging/update-key.pub is still the placeholder (README, Releasing)"
+            exit 1
+          fi
+          key="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          chmod 600 "$key"
+          cd release
+          for f in "Cadence-$VERSION-windows-x64-setup.exe" "Cadence-$VERSION-windows-x64.zip" \
+                   "Cadence-$VERSION-macos-universal.zip" "Cadence-$VERSION-macos-universal.dmg"; do
+            if [ ! -f "$f" ]; then echo "::error::missing $f"; exit 1; fi
+            minisign -S -s "$key" -m "$f" -t "cadence-update $VERSION $f" < /dev/null
+            minisign -V -p ../packaging/update-key.pub -m "$f"
+          done
+          rm -f "$key"
+          cat > latest.json <<EOF
+          {
+            "version": "$VERSION",
+            "assets": {
+              "windows-x64": "Cadence-$VERSION-windows-x64-setup.exe",
+              "macos-universal": "Cadence-$VERSION-macos-universal.zip"
+            }
+          }
+          EOF
+          cat latest.json
+          ls -l
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sed "s/@VERSION@/$VERSION/g" packaging/release-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --title "Cadence $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag

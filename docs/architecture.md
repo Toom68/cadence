@@ -1,6 +1,6 @@
 # Architecture
 
-Cadence is a **single native Rust crate** — `cadence-studio` — producing a library (`cadence_studio`) and one binary (`cadence`). There is no Electron, no web runtime, and no backend: the interface is `eframe`/`egui`, audio is `CPAL`, MIDI is `midly`, files are `serde` JSON, and dialogs are native `rfd` pickers. Once built, the app works fully offline.
+Cadence is a **single native Rust crate** — `cadence-studio` — producing a library (`cadence_studio`) and one binary (`cadence`). There is no Electron, no web runtime, and no backend: the interface is `eframe`/`egui`, audio is `CPAL`, MIDI is `midly`, files are `serde` JSON, and dialogs are native `rfd` pickers. Once built, the app works fully offline; the only network use is the optional daily update check.
 
 ```
 ┌─ src/main.rs ─────────────────────────────────────────────────┐
@@ -76,6 +76,8 @@ Cadence is a **single native Rust crate** — `cadence-studio` — producing a l
 
 **Undo/redo in the GUI.** Edit actions go through a project-history layer in `CadenceApp` (snapshot-based undo/redo covering pattern edits, arrangement, and mixer moves). The GUI marks the document dirty and shows **Save / Don't Save / Cancel** before New/Open/MIDI-import/quit; the launch-time recovery offer (**Restore Work / Discard**) deliberately ignores Escape and backdrop clicks so the autosave can't be lost accidentally.
 
+**Signed, opt-out updates.** `src/update.rs` reads `latest.json` from the newest GitHub release through the OS-provided `curl` (https only, no bundled TLS stack), at most once a day in release builds (off switch in **Help → Check for Updates…**, which also checks on demand; `CADENCE_NO_UPDATE_CHECK` disables it). A newer version shows a status-bar button; downloading it fetches the platform file and its `.minisig`, and `minisign-verify` checks it against the public key compiled in from `packaging/update-key.pub` — the signature's trusted comment must read `cadence-update <version> <file>`, so swapped or replayed files are refused. Installing waits for the user: *Restart & Update* or *Install When I Quit* both go through the normal unsaved-changes guard, and the installer only starts as the window closes. Windows runs the per-user Inno Setup installer silently (no admin rights, so no prompt); macOS unpacks the new `Cadence.app` beside the old one and a small shell script swaps them once the app has exited (rolling back if the move fails). Portable zips, translocated or read-only bundles get the download page instead. The release job in `.github/workflows/ci.yml` signs the files and writes the manifest.
+
 **MIDI is notes, not audio.** `src/midi.rs` uses `midly` for Standard MIDI File exchange: multi-track export with tempo, programs, velocities and durations (drums on channel 10); import builds a fresh `Project` and rejects malformed or unsupported (e.g. SMPTE-time) files cleanly.
 
 ## Module map
@@ -91,13 +93,15 @@ Cadence is a **single native Rust crate** — `cadence-studio` — producing a l
 | `src/font.rs` | SoundFont `.sf2` instruments: user font dir, GM program names, catalog |
 | `src/gui/mod.rs` + `shell.rs`, `transport.rs`, `sidebar.rs`, `arranger.rs`, `editor.rs`, `mixer.rs`, `dialogs.rs`, `files.rs`, `history.rs`, `theme.rs`, `ops.rs` | `CadenceApp` and all egui UI: menus/status/toasts, transport bar, library/inspector, arranger, pattern editor/keyboard, mixer, dialogs, file flows, undo history, themes, edit ops |
 | `src/persistence.rs` | Load/save `.cadence`, atomic writes, recovery file, audio store (`audio/` dir), WAV decode |
+| `src/update.rs` + `src/gui/updates.rs` | Release manifest, minisign verification, download via system curl, installer hand-off; the status-bar button and Update dialog |
+| `packaging/` | Buyer `README.txt`, Inno Setup script (`windows/cadence.iss`), update public key, release-notes template |
 | `packs/` | Bundled JSON packs embedded via `include_str!` + `schema.json` + template |
 | `tools/instrument-packs/` | Agent/user guide for authoring packs as pure JSON |
 | `tests/**` | Integration tests (CLI, persistence, recovery, render, MIDI, packs) + headless GUI tests in `src/gui/tests.rs` |
-| `scripts/mac-package.sh`, `scripts/windows-package.ps1` | Native packaging |
+| `scripts/mac-package.sh`, `scripts/windows-package.ps1` | Native packaging (the Windows script also builds the installer) |
 
 ## What is deliberately absent
 
 - **No binary plugin host (yet).** Sounds come from the seven built-in synthesizers, data-driven JSON packs (bundled and user-installed), `.sf2` SoundFonts and embedded WAV samples — not VST3/AU binaries. A native plugin host is a roadmap item — see the Limitations section of the README.
-- **No network, accounts, or cloud.** Everything is local files and in-process DSP.
+- **No accounts, cloud, or telemetry.** Everything is local files and in-process DSP. The one network request is the update check above, which sends nothing but a plain HTTPS GET and can be switched off.
 - **No web technologies.** No HTML/JS/CSS ships in the final app; `egui` renders the whole interface.

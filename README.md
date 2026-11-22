@@ -19,6 +19,7 @@ Cadence is a multi-track music-making app for Windows and macOS, written in Rust
 - **Audio lanes** for your own WAV clips — move, loop, and fade them like pattern clips
 - **A real mixer** — per-track volume/pan/mute/solo, FX, subgroup buses, live peak meters
 - **Local-first and offline** — songs are plain `.cadence` JSON files; crash recovery and autosave protect your work. No account, no subscription, no telemetry
+- **Keeps itself up to date** — install once; new versions download, get signature-checked and install with one click
 - **Native and fast** — pure-Rust synthesis on a real-time audio engine; no Electron, no web runtime
 
 ## Download
@@ -27,8 +28,13 @@ Get the latest build from **[Releases](https://github.com/Toom68/cadence/release
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| Windows 10+ (x64) | `Cadence-*-windows-x64.zip` | Unzip and run `Cadence.exe`. Unsigned — SmartScreen warns once: **More info → Run anyway** |
-| macOS (universal) | `Cadence-*-macos-universal.dmg` (or `.zip`) | Ad-hoc signed — right-click **Open** the first time |
+| **Windows 10+ (x64)** | `Cadence-*-windows-x64-setup.exe` | Installs for your user account — no admin prompt. Start menu entry, double-click `.cadence` songs, uninstall from Settings → Apps |
+| **macOS 11+ (Apple Silicon + Intel)** | `Cadence-*-macos-universal.dmg` | Drag Cadence into **Applications** |
+| Windows, portable | `Cadence-*-windows-x64.zip` | Unzip anywhere and run `Cadence.exe` — no automatic updates |
+
+**First launch:** the builds are not code-signed yet. On Windows, SmartScreen may warn once — **More info → Run anyway**. On macOS, right-click Cadence and choose **Open** the first time.
+
+**Updates:** once installed, Cadence checks for a new version at most once a day and shows an update button in the status bar. One click downloads it, verifies its signature against the release key built into the app, and installs it when you restart (or when you quit). Turn the daily check off in **Help → Check for Updates…** — it only asks github.com for the newest version number; nothing about you or your songs is sent.
 
 An audio output device is needed to hear playback; editing, saving and WAV export work without one, and Cadence picks up a device that appears later. Pick your output from the audio indicator in the status bar.
 
@@ -66,10 +72,10 @@ On first launch Cadence opens the included demo song, *Afterglow*. If a valid re
 | `cargo fmt --all -- --check` | Verify formatting |
 | `cargo clippy --locked --all-targets -- -D warnings` | Lint |
 | `scripts/mac-package.sh` | macOS package: `Cadence.app`, `.zip`, and `.dmg` when `hdiutil` is available |
-| `scripts/windows-package.ps1` | Windows package on Windows: release `Cadence.exe` plus a portable `.zip` |
+| `scripts/windows-package.ps1` | Windows package on Windows: release `Cadence.exe`, a portable `.zip`, and the `-setup.exe` installer when [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed |
 | `scripts/windows-cross-package.sh` | Windows x64 package from macOS/Linux via the GNU target (needs `mingw-w64` and `rustup target add x86_64-pc-windows-gnu`; installs nothing itself) |
 
-`Cargo.lock` is committed — build and test with `--locked` for reproducible results (as CI does). Package artifacts land in `dist/`: `Cadence-<version>-macos-<arch>.{zip,dmg}` and `Cadence-<version>-windows-x64.{zip}` (containing `Cadence.exe`). Two Windows paths exist: `windows-package.ps1` builds the native MSVC binary on Windows (the CI path), while `windows-cross-package.sh` cross-builds the GNU-target exe on macOS/Linux. Both scripts honor `CARGO_TARGET_DIR` and copy the bundled font licenses into `licenses/` plus a buyer `README.txt`, `THIRD-PARTY-NOTICES.txt` (every crate and bundled font license, also browsable in-app via Help → About → Third-Party Notices) and `EULA.txt` when one exists at the repo root — the scripts warn when it is missing. Regenerate the notices after dependency changes with `python scripts/gen-third-party-notices.py`. Packages are **not distribution-signed** (macOS ad-hoc, Windows unsigned). The native MSVC Windows package has been launched on Windows 11 (demo opened with audio ready, clean exit); a full human acceptance pass on Windows is still outstanding — see Limitations and [docs/verification.md](docs/verification.md).
+`Cargo.lock` is committed — build and test with `--locked` for reproducible results (as CI does). Package artifacts land in `dist/`: `Cadence-<version>-macos-<arch>.{zip,dmg}`, `Cadence-<version>-windows-x64.zip` (containing `Cadence.exe`) and `Cadence-<version>-windows-x64-setup.exe`. Two Windows paths exist: `windows-package.ps1` builds the native MSVC binary on Windows (the CI path), while `windows-cross-package.sh` cross-builds the GNU-target exe on macOS/Linux. Both scripts honor `CARGO_TARGET_DIR` and copy the bundled font licenses into `licenses/` plus a buyer `README.txt`, `THIRD-PARTY-NOTICES.txt` (every crate and bundled font license, also browsable in-app via Help → About → Third-Party Notices) and `EULA.txt` when one exists at the repo root — the scripts warn when it is missing. Regenerate the notices after dependency changes with `python scripts/gen-third-party-notices.py`. Packages are **not distribution-signed** (macOS ad-hoc, Windows unsigned). The native MSVC Windows package has been launched on Windows 11 (demo opened with audio ready, clean exit); a full human acceptance pass on Windows is still outstanding — see Limitations and [docs/verification.md](docs/verification.md).
 
 `scripts/mac-package.sh` also accepts `UNIVERSAL=1` (arm64 + x86_64 universal binary via `lipo`) and `SKIP_DMG=1` (zip only).
 
@@ -83,6 +89,7 @@ cadence --render song.cadence output.wav      # render a saved project to WAV
 cadence --render-stems song.cadence out_dir/  # render every audible track to its own WAV
 cadence --check song.cadence                  # validate a project file and print a summary
 cadence song.cadence                          # open the app with a song
+cadence --check-update                        # ask the release feed for a newer version
 cadence --version / --help                    # version and usage
 
 # Instrument packs (JSON synth presets — see packs/README.md)
@@ -143,9 +150,30 @@ Details and limitations: [docs/export.md](docs/export.md).
 ## Packaging
 
 - `scripts/mac-package.sh` builds `dist/Cadence.app` (ad-hoc signed, icon included), a `.zip`, and a `.dmg` when `hdiutil` is present; `UNIVERSAL=1` produces a universal binary.
-- `scripts/windows-package.ps1` (or `pwsh scripts/windows-package.ps1`) builds `dist/Cadence-<version>-windows-x64/Cadence.exe` — a GUI-subsystem exe with the MSVC CRT statically linked, so the portable zip needs no redistributable — plus the `.zip`.
+- `scripts/windows-package.ps1` (or `pwsh scripts/windows-package.ps1`) builds `dist/Cadence-<version>-windows-x64/Cadence.exe` — a GUI-subsystem exe with the MSVC CRT statically linked, so the portable zip needs no redistributable — plus the `.zip` and, with Inno Setup 6, `Cadence-<version>-windows-x64-setup.exe` from [`packaging/windows/cadence.iss`](packaging/windows/cadence.iss): a per-user install into `%LOCALAPPDATA%\Programs\Cadence` (never an admin prompt, so updates install silently), Start menu entry, optional desktop icon, `.cadence` file association, and an uninstaller. CI installs and uninstalls it on every push as a smoke test.
 
-Packaging is honest: macOS bundles are **ad-hoc signed only** (no Developer ID, not notarized) and Windows executables are **unsigned** — no Authenticode certificate. Distributing these builds may trigger platform security prompts.
+Packaging is honest: macOS bundles are **ad-hoc signed only** (no Developer ID, not notarized) and Windows executables and the installer are **unsigned** — no Authenticode certificate. Distributing these builds may trigger platform security prompts. Updates are a separate matter: they are signed with the project's own release key (below), which Cadence checks before installing anything.
+
+## Releasing
+
+Pushing a version tag makes CI build and test both platforms, sign every download, and publish a GitHub release with the `latest.json` manifest that installed copies read ([`src/update.rs`](src/update.rs)).
+
+**One-time setup — the update signing key.** [minisign](https://jedisct1.github.io/minisign/) is free. In PowerShell (macOS: `brew install minisign`):
+
+```powershell
+winget install jedisct1.minisign          # then open a new terminal
+minisign -G -W -f -p packaging/update-key.pub -s "$HOME\cadence-release.key"
+Get-Content -Raw "$HOME\cadence-release.key" | gh secret set MINISIGN_SECRET_KEY -R Toom68/cadence
+git add packaging/update-key.pub; git commit -m "Add the update signing key"; git push
+```
+
+Keep `cadence-release.key` out of the repo and back it up (a password manager is ideal): every installed copy trusts only that key, so losing it means users must reinstall by hand to get later updates.
+
+**Each release:**
+
+1. Bump `version` in `Cargo.toml`, run `cargo check` (refreshes `Cargo.lock`), commit and push to `main`.
+2. `git tag v1.2.3` and `git push origin v1.2.3` — the tag must match `Cargo.toml`.
+3. CI publishes the release. Installed copies offer it within a day, or at once via **Help → Check for Updates…**.
 
 ## Project files
 
@@ -187,6 +215,8 @@ src/font.rs        SoundFont (.sf2) instruments: user font dir, GM program names
 src/gui/           eframe/egui interface: shell (menus/status/toasts), transport,
                    sidebar, arranger, editors, mixer, dialogs, theme
 src/persistence.rs .cadence save/load, atomic writes, recovery autosave, audio store
+src/update.rs      signed in-app updates: release manifest, minisign check, installer hand-off
+packaging/         buyer README, Windows installer script, update key, release notes
 packs/             bundled instrument packs (embedded via include_str!)
 tools/instrument-packs/  agent guide for authoring new packs as pure JSON
 ```

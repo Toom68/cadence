@@ -43,6 +43,8 @@ pub(super) enum Dialog {
     NewSong(NewSongDraft),
     /// Chord arpeggio generator for the selected track's current pattern.
     Arp(ArpDraft),
+    /// Update check result, download and install choice (see `updates.rs`).
+    Update,
 }
 
 /// Editable state of the New Song dialog.
@@ -189,7 +191,7 @@ impl Dialog {
 }
 
 /// Dialog widths: one size per kind so they feel like one family.
-const W_COMPACT: f32 = 440.0;
+pub(super) const W_COMPACT: f32 = 440.0;
 const W_FORM: f32 = 500.0;
 const W_LIST: f32 = 560.0;
 const W_HELP: f32 = 720.0;
@@ -218,6 +220,7 @@ impl CadenceApp {
             Dialog::PackErrors(errors) => self.pack_errors_dialog(ctx, errors),
             Dialog::NewSong(draft) => self.new_song_dialog(ctx, draft),
             Dialog::Arp(draft) => self.arp_dialog(ctx, draft),
+            Dialog::Update => self.update_dialog(ctx),
         };
         if keep {
             self.dialog = dialog;
@@ -853,7 +856,8 @@ impl CadenceApp {
                 RichText::new(
                     "Write drum patterns and melodies, arrange them across instrument tracks, \
                      mix with per-track effects and export WAV or MIDI. Everything is written \
-                     in Rust and runs fully offline — no account, no cloud, no internet connection.",
+                     in Rust and runs fully offline — no account, no cloud. The only network \
+                     use is the optional daily update check (Help → Check for Updates).",
                 )
                 .color(pal.text_dim),
             );
@@ -1042,7 +1046,7 @@ fn modal(id: &str, pal: Palette) -> egui::Modal {
 }
 
 /// A modal `width` px wide (never wider than the window) with `add` inside.
-fn show_dialog<T>(
+pub(super) fn show_dialog<T>(
     ctx: &Context,
     id: &str,
     pal: Palette,
@@ -1057,7 +1061,7 @@ fn show_dialog<T>(
 }
 
 /// Kicker + title header shared by all dialogs.
-fn header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
+pub(super) fn header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
     theme::section_header(ui, pal, kicker, title);
 }
 
@@ -1078,7 +1082,7 @@ pub(super) fn time_ago(t: std::time::SystemTime) -> String {
 
 /// The dialog's buttons, right-aligned. Add the primary action first: it
 /// ends up last (rightmost), with the secondary actions to its left.
-fn button_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(super) fn button_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     ui.add_space(theme::GAP_L);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = theme::GAP_S;

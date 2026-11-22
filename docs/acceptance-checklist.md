@@ -50,6 +50,15 @@ Run these on a release build of the machine you ship. **Windows has had a first 
 - [ ] Help → Shortcuts & Tips (F1) table matches the real shortcuts; About shows version and font credits (Inter, DejaVu Sans).
 - [ ] View → Theme: Graphite / Midnight / Paper recolor the whole app and persist across relaunch.
 
+### Install & update (~3 min, once the release key is set up)
+
+- [ ] Windows: `Cadence-*-windows-x64-setup.exe` installs without an admin prompt; Start menu entry launches Cadence; double-clicking a `.cadence` file opens it; Settings → Apps → Cadence uninstalls cleanly (songs and settings in your user folder stay).
+- [ ] macOS: the `.dmg` opens with Cadence and an Applications shortcut; dragged to Applications, it launches after right-click → Open.
+- [ ] Help → Check for Updates… on the newest version says "Cadence is up to date"; offline it explains it couldn't reach the server (Try Again / Download Page).
+- [ ] With an older installed version: the status bar shows "Update x.y.z available"; Download & Install verifies and shows Restart & Update; with unsaved changes the Save prompt appears first; Cadence reopens on the new version (Help → About).
+- [ ] Install When I Quit installs on the next quit without reopening; Skip This Version hides the button until a newer release; unticking "Check for updates automatically" stops the launch-time check.
+- [ ] The portable zip copy offers Open Download Page instead of installing.
+
 ### Known limitations to confirm (not bugs)
 
 - Sounds are built-in synths, JSON pack presets, `.sf2` SoundFonts, or embedded WAV samples — no VST3/AU/CLAP hosting.

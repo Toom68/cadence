@@ -16,7 +16,7 @@ cargo test --locked --all-targets                 # unit + integration tests
 cargo build --release --locked                    # target/release/cadence(.exe)
 cargo run --release -- --render-demo demo.wav     # headless audio acceptance check
 scripts/mac-package.sh                            # dist/Cadence.app + .zip (+ .dmg); UNIVERSAL=1 for arm64+x86_64
-pwsh scripts/windows-package.ps1                  # dist/Cadence-<ver>-windows-x64/Cadence.exe + .zip (Windows CI)
+pwsh scripts/windows-package.ps1                  # dist/Cadence-<ver>-windows-x64/Cadence.exe + .zip + -setup.exe (Inno Setup 6; REQUIRE_INSTALLER=1 in CI)
 scripts/windows-cross-package.sh                  # same zip via x86_64-pc-windows-gnu on macOS/Linux (needs mingw-w64 + rustup target)
 ```
 
@@ -26,7 +26,15 @@ hound 3.5, serde 1, directories 6). Do not bump major/minor versions casually: n
 releases change APIs. Prefer std over adding crates.
 
 Packaging is honest: macOS bundles are ad-hoc signed only (no Developer ID, not notarized);
-Windows executables are unsigned. Do not claim otherwise.
+Windows executables and the installer are unsigned. Do not claim otherwise.
+
+Releases and updates: pushing a `vX.Y.Z` tag (must equal `Cargo.toml`'s version) makes CI sign
+every download with minisign (secret `MINISIGN_SECRET_KEY`), verify it against
+`packaging/update-key.pub`, write `latest.json`, and publish the GitHub release. The app's
+updater (`src/update.rs`) only installs files whose signature trusted comment is exactly
+`cadence-update <version> <file>` — keep CI and `update::trusted_comment` in step. Never commit
+a secret key. Tests must not touch the network: headless `CadenceApp` refuses update checks,
+and `update.rs` tests use inline fixtures signed by a throwaway key.
 
 ## Layout
 
@@ -41,6 +49,8 @@ Windows executables are unsigned. Do not claim otherwise.
 | `src/packs.rs` | JSON instrument packs: schema types, validation, install, catalog |
 | `src/font.rs` | SoundFont (`.sf2`) instruments: user font dir, GM program names, catalog |
 | `src/gui/` | egui UI (`CadenceApp`) |
+| `src/update.rs` | signed in-app updates: manifest, minisign check, system-curl download, installer hand-off (GUI side: `src/gui/updates.rs`) |
+| `packaging/` | buyer `README.txt`, Inno Setup script `windows/cadence.iss`, `update-key.pub`, release-notes template |
 | `packs/` | bundled packs (embedded via `include_str!`), `schema.json`, template |
 | `tests/` | integration tests (persistence, recovery, render/WAV, CLI, MIDI, pack pipeline) |
 | `assets/` | app icons (`icon.icns`, `icon.ico`, `icon.png`, `icon-256.png` window icon) |
@@ -69,6 +79,7 @@ cadence --new-pack ID OUT.json         write a starter instrument pack
 cadence --validate-pack PACK.json      validate a pack (reports the bad field)
 cadence --install-pack PACK.json       validate + atomically install into <data dir>/packs/
 cadence --list-instruments             built-in + pack instruments, pack load problems
+cadence --check-update                 ask the release feed for a newer version (network)
 ```
 
 Exit codes: 0 success, 1 operation failed (`error: ...` on stderr), 2 bad arguments.

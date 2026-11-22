@@ -18,6 +18,7 @@ mod sidebar;
 mod tests;
 mod theme;
 mod transport;
+mod updates;
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -218,6 +219,8 @@ pub struct CadenceApp {
     theme: ThemeChoice,
     /// Panel split, toast and other shell view state (never saved).
     shell: shell::ShellState,
+    /// In-app update check / download / install-on-quit state.
+    update: updates::UpdateState,
 }
 
 impl CadenceApp {
@@ -247,6 +250,8 @@ impl CadenceApp {
             app.audio_error = Some(err);
         }
         app.startup(crate::launch_path().map(std::path::Path::to_path_buf));
+        app.update = updates::UpdateState::load();
+        app.auto_check_updates(&cc.egui_ctx);
         app
     }
 
@@ -329,6 +334,7 @@ impl CadenceApp {
             style_applied: false,
             theme: ThemeChoice::default(),
             shell: shell::ShellState::default(),
+            update: updates::UpdateState::default(),
         };
         app.fix_selection();
         app
@@ -1297,6 +1303,7 @@ impl CadenceApp {
             }
         }
         self.poll_export();
+        self.poll_updates();
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
 
@@ -1416,6 +1423,13 @@ impl CadenceApp {
             return;
         }
         if self.allow_close || !self.dirty() {
+            // A chosen update starts its installer now; if it can't even
+            // start, Cadence stays open and says why.
+            if !self.launch_pending_update() {
+                self.allow_close = false;
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                return;
+            }
             // An autosave that is still waiting for a Restore/Discard decision
             // is kept for the next launch.
             if let (Some(dir), false) = (&self.recovery_dir, self.recovery_offered) {

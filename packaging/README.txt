@@ -5,9 +5,19 @@ Cadence is a native music sequencer: write drum patterns and melodies on a
 piano roll, arrange clips on a timeline, mix with per-track effects, and
 export WAV or MIDI. Everything runs offline — no account, no cloud.
 
+Updates
+-------
+Installed copies (the Windows setup, or Cadence.app in your Applications
+folder) check for a new version at most once a day and show an update
+button in the status bar. Each update is checked against Cadence's release
+signature before it installs. Help > Check for Updates... checks right away
+and has the switch to turn the daily check off; it only asks github.com for
+the newest version number. The portable Windows zip doesn't update itself —
+use the setup from the download page instead.
+
 THIS BUILD IS UNSIGNED
 ----------------------
-Cadence.exe / Cadence.app is not code-signed, so Windows SmartScreen (or
+Cadence.exe / Cadence.app (and the Windows setup) is not code-signed, so Windows SmartScreen (or
 macOS Gatekeeper) may warn the first time you run it. That is expected for
 an indie release and does not mean the app is unsafe.
 
