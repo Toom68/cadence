@@ -452,6 +452,13 @@ fn list_instruments() {
 }
 
 fn check_update() -> Result<(), String> {
+    match update::install_mode() {
+        update::InstallMode::Manual(reason) => println!("one-click install: no — {reason}"),
+        _ => println!("one-click install: yes"),
+    }
+    if update::update_key().is_none() {
+        println!("note: this build has no release key, so it can't verify updates");
+    }
     match update::check()? {
         Some(release) => {
             println!(
@@ -465,13 +472,6 @@ fn check_update() -> Result<(), String> {
             }
         }
         None => println!("{APP_NAME} {APP_VERSION} is up to date."),
-    }
-    match update::install_mode() {
-        update::InstallMode::Manual(reason) => println!("  one-click install: no — {reason}"),
-        _ => println!("  one-click install: yes"),
-    }
-    if update::update_key().is_none() {
-        println!("  note: this build has no release key, so it can't verify updates");
     }
     Ok(())
 }

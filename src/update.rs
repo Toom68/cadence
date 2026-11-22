@@ -750,6 +750,44 @@ trusted comment: cadence-update 9.8.7 Cadence-9.8.7-windows-x64-setup.exe
         );
     }
 
+    /// The macOS swap script, run for real: the new bundle replaces the old
+    /// one, and a missing new bundle leaves the old one in place.
+    #[cfg(unix)]
+    #[test]
+    fn swap_script_replaces_the_bundle_or_rolls_back() {
+        let run = |app: &Path, new: &Path, stage: &Path| {
+            // A PID that is not running, so the script doesn't wait.
+            let status = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(MAC_SWAP_SCRIPT)
+                .args(["sh", "2147483646"])
+                .args([app, new, stage])
+                .arg("0")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Cadence.app");
+        let stage = dir.path().join(".cadence-update");
+        let new = stage.join("Cadence.app");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("v"), "old").unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("v"), "new").unwrap();
+        run(&app, &new, &stage);
+        assert_eq!(fs::read_to_string(app.join("v")).unwrap(), "new");
+        assert!(!stage.exists(), "staging folder cleaned up");
+
+        fs::create_dir_all(&stage).unwrap();
+        run(&app, &stage.join("missing.app"), &stage);
+        assert_eq!(
+            fs::read_to_string(app.join("v")).unwrap(),
+            "new",
+            "rolled back"
+        );
+    }
+
     #[test]
     fn portable_windows_copies_and_stray_binaries_update_manually() {
         let dir = tempfile::tempdir().unwrap();
