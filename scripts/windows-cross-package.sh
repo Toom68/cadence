@@ -75,6 +75,16 @@ mkdir -p "$STAGE/licenses"
 cp assets/fonts/OFL.txt "$STAGE/licenses/Inter-OFL.txt"
 cp assets/fonts/DejaVu-LICENSE.txt "$STAGE/licenses/DejaVu-LICENSE.txt"
 
+# Buyer-facing files: README, third-party notices, and the EULA when the
+# owner has provided one at the repo root.
+cp packaging/README.txt "$STAGE/README.txt"
+cp THIRD-PARTY-NOTICES.txt "$STAGE/THIRD-PARTY-NOTICES.txt"
+if [ -f EULA.txt ]; then
+  cp EULA.txt "$STAGE/EULA.txt"
+else
+  echo "warning: no EULA.txt at the repo root — add your end-user license before selling" >&2
+fi
+
 # Locate a mingw runtime DLL by name. Tries, in order:
 #   1. <triple>-gcc -print-file-name=<dll>   (gcc's own search logic)
 #   2. the directory containing <triple>-gcc

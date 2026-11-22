@@ -55,6 +55,15 @@ cp assets/icon.icns "$APP/Contents/Resources/Cadence.icns"
 mkdir -p "$APP/Contents/Resources/licenses"
 cp assets/fonts/OFL.txt "$APP/Contents/Resources/licenses/Inter-OFL.txt"
 cp assets/fonts/DejaVu-LICENSE.txt "$APP/Contents/Resources/licenses/DejaVu-LICENSE.txt"
+# Buyer-facing files live inside the bundle's Resources (the zip contains
+# only Cadence.app). EULA.txt ships when the owner provides one at repo root.
+cp packaging/README.txt "$APP/Contents/Resources/README.txt"
+cp THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+if [ -f EULA.txt ]; then
+  cp EULA.txt "$APP/Contents/Resources/EULA.txt"
+else
+  echo "warning: no EULA.txt at the repo root — add your end-user license before selling" >&2
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

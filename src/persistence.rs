@@ -356,7 +356,11 @@ pub fn save_recovery(project: &Project) -> Result<(), String> {
 /// Writes the autosave into `dir`, recording `source` (the song file the work
 /// belongs to) in a small `autosave.source` text file beside it. The
 /// `.cadence` autosave itself is a plain project file.
-pub fn save_recovery_in(dir: &Path, project: &Project, source: Option<&Path>) -> Result<(), String> {
+pub fn save_recovery_in(
+    dir: &Path,
+    project: &Project,
+    source: Option<&Path>,
+) -> Result<(), String> {
     fs::create_dir_all(dir)
         .map_err(|err| format!("Could not create recovery folder {}: {err}", dir.display()))?;
     save_project(project, &dir.join(RECOVERY_FILE))?;

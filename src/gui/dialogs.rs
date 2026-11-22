@@ -31,6 +31,8 @@ pub(super) enum Dialog {
     Help,
     /// About Cadence.
     About,
+    /// Scrollable third-party license notices (opened from About).
+    Notices,
     /// A file action waiting on a save / don't-save / cancel decision.
     Unsaved(PendingAction),
     /// Launch-time offer to restore the crash-recovery autosave.
@@ -210,6 +212,7 @@ impl CadenceApp {
             Dialog::None => false,
             Dialog::Help => self.help_dialog(ctx),
             Dialog::About => self.about_dialog(ctx),
+            Dialog::Notices => self.notices_dialog(ctx),
             Dialog::Unsaved(action) => self.unsaved_dialog(ctx, *action),
             Dialog::Recovery(work) => self.recovery_dialog(ctx, work),
             Dialog::PackErrors(errors) => self.pack_errors_dialog(ctx, errors),
@@ -878,12 +881,63 @@ impl CadenceApp {
             theme::hint(
                 ui,
                 pal,
-                "The font license texts are in the licenses folder of this download.",
+                "The font license texts are in the licenses folder of this download, and every crate and font license is in THIRD-PARTY-NOTICES.txt beside it.",
             );
+            ui.add_space(theme::GAP_XS);
+            if theme::secondary_button(ui, "Third-Party Notices…")
+                .on_hover_text(
+                    "Every Rust crate and bundled font Cadence ships, with license texts",
+                )
+                .clicked()
+            {
+                self.dialog = Dialog::Notices;
+            }
             if let Some(note) = UNSIGNED_NOTE {
                 ui.add_space(theme::GAP_S);
                 theme::hint(ui, pal, note);
             }
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Close").clicked() {
+                    closed = true;
+                }
+            });
+        });
+        closed |= enter_pressed(ctx);
+        !closed && !resp.should_close()
+    }
+
+    /// The generated third-party notices (crates + bundled fonts), embedded
+    /// at build time so the text is always available even when the package's
+    /// THIRD-PARTY-NOTICES.txt file is not at hand.
+    fn notices_dialog(&mut self, ctx: &Context) -> bool {
+        let pal = self.palette();
+        let mut closed = false;
+        const NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.txt");
+        let resp = show_dialog(ctx, "cadence-notices", pal, W_HELP, |ui| {
+            ui.label(
+                RichText::new("Third-Party Notices")
+                    .size(theme::TEXT_HEADING)
+                    .color(pal.text),
+            );
+            theme::hint(
+                ui,
+                pal,
+                "Licenses for every Rust crate and bundled font in this build.",
+            );
+            ui.add_space(theme::GAP_S);
+            egui::ScrollArea::vertical()
+                .id_salt("notices-body")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.label(
+                        RichText::new(NOTICES)
+                            .small()
+                            .color(pal.text_dim)
+                            .monospace(),
+                    );
+                });
+            ui.add_space(theme::GAP_S);
             button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Close").clicked() {
                     closed = true;
@@ -1677,12 +1731,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let song = tmp.path().join("song.cadence");
         persistence::save_project(&named("Saved"), &song).unwrap();
-        persistence::save_recovery_in(
-            &tmp.path().join("recovery"),
-            &named("Unsaved"),
-            Some(&song),
-        )
-        .unwrap();
+        persistence::save_recovery_in(&tmp.path().join("recovery"), &named("Unsaved"), Some(&song))
+            .unwrap();
 
         let mut app = with_recovery(tmp.path());
         app.startup(Some(song.clone()));
@@ -1787,7 +1837,11 @@ mod tests {
         assert!(app.autosave_retry_at.is_some());
         let warned = app.status.clone().unwrap();
         assert_eq!(warned.kind, StatusKind::Warning);
-        assert!(warned.text.starts_with("Autosave failed"), "{}", warned.text);
+        assert!(
+            warned.text.starts_with("Autosave failed"),
+            "{}",
+            warned.text
+        );
 
         // Inside the backoff window nothing is attempted.
         app.autosave(&ctx);

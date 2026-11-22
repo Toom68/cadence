@@ -41,6 +41,17 @@ New-Item -ItemType Directory -Force -Path $Licenses | Out-Null
 Copy-Item (Join-Path $Root 'assets/fonts/OFL.txt') (Join-Path $Licenses 'Inter-OFL.txt')
 Copy-Item (Join-Path $Root 'assets/fonts/DejaVu-LICENSE.txt') (Join-Path $Licenses 'DejaVu-LICENSE.txt')
 
+# Buyer-facing files: README, third-party notices, and the EULA when the
+# owner has provided one at the repo root.
+Copy-Item (Join-Path $Root 'packaging/README.txt') (Join-Path $Stage 'README.txt')
+Copy-Item (Join-Path $Root 'THIRD-PARTY-NOTICES.txt') (Join-Path $Stage 'THIRD-PARTY-NOTICES.txt')
+$Eula = Join-Path $Root 'EULA.txt'
+if (Test-Path $Eula) {
+    Copy-Item $Eula (Join-Path $Stage 'EULA.txt')
+} else {
+    Write-Warning 'No EULA.txt at the repo root — add your end-user license before selling.'
+}
+
 # Smoke test: the GUI-subsystem binary still answers CLI requests.
 $Out = Join-Path $Stage 'version.txt'
 $Proc = Start-Process -FilePath $Exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $Out
