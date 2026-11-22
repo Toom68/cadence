@@ -1084,10 +1084,16 @@ pub(super) fn time_ago(t: std::time::SystemTime) -> String {
 /// ends up last (rightmost), with the secondary actions to its left.
 pub(super) fn button_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     ui.add_space(theme::GAP_L);
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = theme::GAP_S;
-        add(ui);
-    });
+    // A fixed-height row: `with_layout` would claim all the height the modal
+    // offers and centre the buttons in it, stretching the dialog.
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), theme::CONTROL_L),
+        Layout::right_to_left(Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = theme::GAP_S;
+            add(ui);
+        },
+    );
 }
 
 /// Enter confirms a dialog unless a widget (a button reached with Tab, a
@@ -1682,6 +1688,58 @@ mod tests {
         assert!(app.recovery_offered);
         assert_eq!(app.project, project);
         assert_eq!(app.history.state(), state);
+    }
+
+    /// Dialogs size to their content, whatever the window height: the button
+    /// row once claimed all the height the modal offered, floating the
+    /// recovery offer's buttons in a gap above its footer.
+    #[test]
+    fn dialogs_size_to_their_content() {
+        fn recovery() -> Dialog {
+            Dialog::Recovery(Box::new(persistence::RecoveredWork {
+                project: Project::demo(),
+                source: Some("/songs/Neon Circuits.cadence".into()),
+                saved_at: None,
+            }))
+        }
+        /// Height of dialog `id` after a few frames in a `window_h` window.
+        fn height(id: &str, make: fn() -> Dialog, window_h: f32) -> f32 {
+            let mut app = headless();
+            app.dialog = make();
+            let ctx = Context::default();
+            for _ in 0..4 {
+                let input = RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1360.0, window_h),
+                    )),
+                    ..Default::default()
+                };
+                run_frame(&mut app, &ctx, input);
+            }
+            ctx.memory(|m| m.area_rect(egui::Id::new(id)))
+                .unwrap_or_else(|| panic!("{id} was not shown"))
+                .height()
+        }
+        fn check(id: &str, make: fn() -> Dialog) -> f32 {
+            let (short, tall) = (height(id, make, 860.0), height(id, make, 1400.0));
+            assert!(
+                (short - tall).abs() < 1.0,
+                "{id} is {short} px tall in an 860 px window but {tall} px in a 1400 px one"
+            );
+            short
+        }
+        // Content plus one 32 px button row: about 300 px. The stretched row
+        // made it 438 px with the buttons floating in a gap above the footer.
+        let recovery_h = check("cadence-recovery", recovery);
+        assert!(
+            recovery_h < 340.0,
+            "recovery dialog stretched to {recovery_h} px"
+        );
+        check("cadence-unsaved", || Dialog::Unsaved(PendingAction::Quit));
+        check("cadence-new-song", || {
+            Dialog::NewSong(NewSongDraft::default())
+        });
     }
 
     fn close_input() -> RawInput {
