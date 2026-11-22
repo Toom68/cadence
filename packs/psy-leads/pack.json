@@ -3,7 +3,7 @@
   "id": "psy-leads",
   "name": "Psy · Leads",
   "description": "Singable psychedelic leads: resonant filter squelch, detuned width, sync-style pitch chirps, vowel-like filter motion and vibrato. All synthesized, no samples and no arpeggiator - play the lines yourself.",
-  "author": "Devin",
+  "author": "Cadence",
   "instruments": [
     {
       "id": "psy-leads.squelch-lead",

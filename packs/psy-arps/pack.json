@@ -3,7 +3,7 @@
   "id": "psy-arps",
   "name": "Psy · Plucks & Arps",
   "description": "Percussive plucks, mallets, bells and metallic tones for programmed-feeling sequences. There is no arpeggiator - every sound is one played note; run 16ths or chords yourself.",
-  "author": "Devin",
+  "author": "Cadence",
   "instruments": [
     {
       "id": "psy-arps.glass-pluck",
