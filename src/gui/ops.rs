@@ -382,6 +382,11 @@ pub fn bus_members(project: &Project, bus: u8) -> usize {
 /// pattern is missing or the track is at its clip limit.
 pub fn add_clip(project: &mut Project, track_id: u64, pattern_id: u64, start: f64) -> Option<u64> {
     let t = track_mut(project, track_id)?;
+    // Audio lanes schedule `audio_clips`, never patterns — a pattern clip
+    // placed here would play silence.
+    if t.audio {
+        return None;
+    }
     let len = pattern(t, pattern_id)?.length.max(1) as f64;
     if t.clips.len() >= MAX_CLIPS_PER_TRACK {
         return None;
@@ -1673,9 +1678,11 @@ pub fn make_clip_unique(project: &mut Project, track_id: u64, clip_id: u64) -> O
     Some(new_id)
 }
 
-/// Creates an empty pattern. `None` at the per-track pattern limit.
+/// Creates an empty pattern. `None` on audio lanes (their clips schedule
+/// `audio_clips`, so a pattern could never play) and at the per-track
+/// pattern limit.
 pub fn new_pattern(track: &mut Track, length: u32) -> Option<u64> {
-    if track.patterns.len() >= MAX_PATTERNS_PER_TRACK {
+    if track.audio || track.patterns.len() >= MAX_PATTERNS_PER_TRACK {
         return None;
     }
     let mut p = create_pattern(track.instrument, length.clamp(1, MAX_PATTERN_STEPS));
@@ -2973,6 +2980,21 @@ mod tests {
         while add_track(&mut p, Instrument::Bass).is_some() {}
         assert_eq!(p.tracks.len(), MAX_TRACKS);
         assert!(duplicate_track(&mut p, b).is_none());
+    }
+
+    #[test]
+    fn audio_lane_rejects_note_content() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let id = add_audio_track(&mut p).unwrap();
+        let t = track_mut(&mut p, id).unwrap();
+        assert!(t.audio);
+        // Patterns and pattern clips never play on an audio lane — every
+        // creation path must refuse, not just the UI.
+        assert!(new_pattern(t, 16).is_none());
+        assert!(t.patterns.is_empty());
+        assert!(add_clip(&mut p, id, 1, 0.0).is_none());
+        assert!(add_audio_clip(&mut p, id, "a.wav", "A", 0.0, 16.0).is_some());
     }
 
     #[test]

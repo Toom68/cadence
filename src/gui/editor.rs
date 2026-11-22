@@ -994,10 +994,7 @@ impl CadenceApp {
 
     pub(super) fn editor_ui(&mut self, ui: &mut Ui) {
         let pal = self.palette();
-        let Some((tid, drum, pid)) = self
-            .selected_track()
-            .map(|t| (t.id, t.shows_drum_grid(), self.current_pattern_id(t)))
-        else {
+        let Some(track) = self.selected_track() else {
             centered_empty_state(
                 ui,
                 pal,
@@ -1008,6 +1005,24 @@ impl CadenceApp {
             );
             return;
         };
+        // Audio lanes never schedule patterns, so a piano roll here would
+        // invite edits that can never sound.
+        if track.audio {
+            centered_empty_state(
+                ui,
+                pal,
+                theme::Icon::Note,
+                "Audio track",
+                "Audio lanes hold imported WAV clips, not notes — right-click a lane in the arrangement to import a file.",
+                None,
+            );
+            return;
+        }
+        let (tid, drum, pid) = (
+            track.id,
+            track.shows_drum_grid(),
+            self.current_pattern_id(track),
+        );
         let Some(pid) = pid else {
             if centered_empty_state(
                 ui,
@@ -2448,8 +2463,7 @@ impl CadenceApp {
     /// Drum tracks get a responsive grid of pads, one per kit piece.
     pub(super) fn keys_ui(&mut self, ui: &mut Ui) {
         let pal = self.palette();
-        let Some((track_id, drum)) = self.selected_track().map(|t| (t.id, t.shows_drum_grid()))
-        else {
+        let Some(track) = self.selected_track() else {
             centered_empty_state(
                 ui,
                 pal,
@@ -2460,6 +2474,20 @@ impl CadenceApp {
             );
             return;
         };
+        // Playing keys on an audio lane would audition a sound the track
+        // can never produce in the song.
+        if track.audio {
+            centered_empty_state(
+                ui,
+                pal,
+                theme::Icon::Keyboard,
+                "Audio track",
+                "Audio lanes play imported WAV clips, not notes.",
+                None,
+            );
+            return;
+        }
+        let (track_id, drum) = (track.id, track.shows_drum_grid());
         self.keys_toolbar(ui, drum);
         if drum {
             self.keys_drum_ui(ui, track_id);
