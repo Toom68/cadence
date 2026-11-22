@@ -1,16 +1,51 @@
+<div align="center">
+
 # Cadence
 
-Cadence is a focused, multi-track songwriting studio for macOS and Windows — a native Rust desktop app. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs across multiple instrument tracks, drop imported WAV clips onto audio lanes, mix with per-track effects and subgroup buses, and export WAV, per-track stems, or MIDI.
+**A focused songwriting studio for electronic musicians — native, offline, and yours.**
 
-- **Native Rust desktop app** — an eframe/egui interface driven by a CPAL audio engine; no Electron, no web runtime, no Node.js needed to build or run
-- **203 bundled sounds, three ways to add more** — synthesized in Rust: 7 built-ins and 196 bundled pack presets across thirteen banks (chiptune `8-bit`, seven experimental `psy-*` banks, drum kits, guitars, neon leads, one-shot FX, and mallets & keys). Add user-installed JSON instrument packs (pure JSON, no rebuild), drop `.sf2` SoundFonts in for the full General MIDI program set, or import a `.wav` as a sampled instrument or a timeline clip
-- **Local-first** — projects are plain JSON `.cadence` files; an automatic recovery copy protects against lost work; the app works fully offline after building
+[![Download the latest release](https://img.shields.io/badge/download-latest%20release-brightgreen?style=for-the-badge&logo=github)](https://github.com/Toom68/cadence/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%2B%20x64-0078D4?style=flat-square&logo=windows&logoColor=white)](https://github.com/Toom68/cadence/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-000000?style=flat-square&logo=apple&logoColor=white)](https://github.com/Toom68/cadence/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Toom68/cadence/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Toom68/cadence/actions)
 
-## Requirements
+![Cadence arranger](.github/screenshots/midnight-main.png)
 
-- A stable Rust toolchain installed via [rustup](https://rustup.rs). If `cargo` isn't on your PATH: `export PATH="$HOME/.cargo/bin:$PATH"` (`cargo --version` should work)
-- macOS or Windows for the desktop app
-- An audio output device for playback (the app still launches, edits, and exports without one)
+</div>
+
+Cadence is a multi-track music-making app for Windows and macOS, written in Rust. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs on a timeline, drop imported WAVs onto audio lanes, mix with per-track effects and subgroup buses, and export WAV, per-track stems, or MIDI.
+
+- **203 bundled instruments** — chiptune, psy-experimental banks, drum kits, guitars, neon leads, one-shot FX, mallets & keys — plus JSON instrument packs, `.sf2` SoundFonts, and `.wav` sample import
+- **Audio lanes** for your own WAV clips — move, loop, and fade them like pattern clips
+- **A real mixer** — per-track volume/pan/mute/solo, FX, subgroup buses, live peak meters
+- **Local-first and offline** — songs are plain `.cadence` JSON files; crash recovery and autosave protect your work. No account, no subscription, no telemetry
+- **Native and fast** — pure-Rust synthesis on a real-time audio engine; no Electron, no web runtime
+
+## Download
+
+Get the latest build from **[Releases](https://github.com/Toom68/cadence/releases/latest)** — no build tools needed:
+
+| Platform | File | Notes |
+| --- | --- | --- |
+| Windows 10+ (x64) | `Cadence-*-windows-x64.zip` | Unzip and run `Cadence.exe`. Unsigned — SmartScreen warns once: **More info → Run anyway** |
+| macOS (universal) | `Cadence-*-macos-universal.dmg` (or `.zip`) | Ad-hoc signed — right-click **Open** the first time |
+
+An audio output device is needed to hear playback; editing, saving and WAV export work without one, and Cadence picks up a device that appears later. Pick your output from the audio indicator in the status bar.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src=".github/screenshots/midnight-mixer.png" alt="Mixer" /></td>
+    <td><img src=".github/screenshots/midnight-keys-melodic.png" alt="Keyboard" /></td>
+  </tr>
+</table>
+
+*One of three built-in themes (Midnight, Graphite, Paper).*
+
+## Build from source
+
+Requires a stable Rust toolchain via [rustup](https://rustup.rs). If `cargo` isn't on your PATH: `export PATH="$HOME/.cargo/bin:$PATH"` (`cargo --version` should work).
 
 ## Quick start
 
