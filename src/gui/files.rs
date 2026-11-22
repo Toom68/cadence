@@ -264,9 +264,16 @@ impl CadenceApp {
             Ok(()) => {
                 self.doc.path = Some(path.clone());
                 self.doc.saved_state = Some(self.history.state());
-                if self.io_enabled {
-                    let _ = persistence::clear_recovery();
+                // An autosave still awaiting its Restore/Discard decision is
+                // another session's work: saving this song must not delete it.
+                if let (Some(dir), false) = (&self.recovery_dir, self.recovery_offered) {
+                    let _ = persistence::clear_recovery_in(dir);
                 }
+                // The song is safe on disk: a failing autosave streak ends
+                // here (the next edit tries again and warns afresh).
+                self.autosave_failures = 0;
+                self.autosave_retry_at = None;
+                self.autosave_error = None;
                 // The file name is enough here (the toast repeats it); the
                 // full path is in the transport's saved-state tooltip.
                 self.set_status(StatusKind::Success, format!("Saved {}.", file_label(&path)));
@@ -281,17 +288,21 @@ impl CadenceApp {
 
     // ----- recovery --------------------------------------------------------
 
-    /// On launch, offer the crash-recovery autosave when a valid one exists.
-    /// A damaged autosave is never loaded: persistence moves it aside and the
-    /// reason is shown as a status warning instead.
+    /// On launch, offer the crash-recovery autosave when a valid one exists —
+    /// also when Cadence was started with a song file (the offer then opens
+    /// on top of that song). A damaged autosave is never loaded: persistence
+    /// moves it aside and the reason is shown as a status warning instead.
     pub(super) fn check_recovery(&mut self) {
-        if !self.io_enabled || self.recovery_offered {
+        let Some(dir) = self.recovery_dir.clone() else {
+            return;
+        };
+        if self.recovery_offered {
             return;
         }
-        match persistence::load_recovery() {
-            Ok(Some(project)) => {
+        match persistence::load_recovery_in(&dir) {
+            Ok(Some(work)) => {
                 self.recovery_offered = true;
-                self.dialog = Dialog::Recovery(Box::new(project));
+                self.dialog = Dialog::Recovery(Box::new(work));
             }
             Ok(None) => {}
             Err(err) => self.set_status(StatusKind::Warning, err),
@@ -870,7 +881,7 @@ fn sample_instrument(name: &str, spec: crate::packs::SampleSpec) -> crate::packs
 
 /// A song's file name for status messages ("neon-circuits.cadence"), or the
 /// whole path when it has none.
-fn file_label(path: &Path) -> String {
+pub(super) fn file_label(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),

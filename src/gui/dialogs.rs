@@ -34,7 +34,7 @@ pub(super) enum Dialog {
     /// A file action waiting on a save / don't-save / cancel decision.
     Unsaved(PendingAction),
     /// Launch-time offer to restore the crash-recovery autosave.
-    Recovery(Box<Project>),
+    Recovery(Box<persistence::RecoveredWork>),
     /// Non-fatal instrument-pack load problems.
     PackErrors(Vec<String>),
     /// Name + key for a new song (after any unsaved-changes decision).
@@ -211,7 +211,7 @@ impl CadenceApp {
             Dialog::Help => self.help_dialog(ctx),
             Dialog::About => self.about_dialog(ctx),
             Dialog::Unsaved(action) => self.unsaved_dialog(ctx, *action),
-            Dialog::Recovery(project) => self.recovery_dialog(ctx, project),
+            Dialog::Recovery(work) => self.recovery_dialog(ctx, work),
             Dialog::PackErrors(errors) => self.pack_errors_dialog(ctx, errors),
             Dialog::NewSong(draft) => self.new_song_dialog(ctx, draft),
             Dialog::Arp(draft) => self.arp_dialog(ctx, draft),
@@ -329,7 +329,7 @@ impl CadenceApp {
     /// choice. `handle_close_request` preserves the file while
     /// `recovery_offered` is set, so the user can also simply close the
     /// app and decide next launch.
-    fn recovery_dialog(&mut self, ctx: &Context, project: &Project) -> bool {
+    fn recovery_dialog(&mut self, ctx: &Context, work: &persistence::RecoveredWork) -> bool {
         let pal = self.palette();
         #[derive(Clone, Copy)]
         enum Choice {
@@ -337,16 +337,43 @@ impl CadenceApp {
             Discard,
         }
         let mut choice = None;
+        let project = &work.project;
         let tracks = project.tracks.len();
+        let source = work
+            .source
+            .as_deref()
+            .map_or_else(|| "an untitled song".to_owned(), super::files::file_label);
+        let when = work
+            .saved_at
+            .map(|t| format!("Autosaved {}", time_ago(t)))
+            .unwrap_or_else(|| "Autosaved".to_owned());
+        let same_song = work.source.is_some() && work.source == self.doc.path;
+        let replaces = match (&self.doc.path, same_song) {
+            (Some(_), true) => "Newer than the saved file you just opened. Restoring loads it in the editor; the file on disk changes only when you save.".to_owned(),
+            (Some(open), false) => format!(
+                "Restoring replaces the open song ({}) in the editor; its file stays unchanged.",
+                super::files::file_label(open)
+            ),
+            (None, _) => "Restoring replaces the song currently open.".to_owned(),
+        };
         let _resp = show_dialog(ctx, "cadence-recovery", pal, W_COMPACT, |ui| {
             header(ui, pal, "RECOVERY", "Restore unsaved work?");
             ui.add_space(theme::GAP_S);
             ui.label(
-                RichText::new("Cadence found an autosave from a previous session:")
+                RichText::new("Cadence found unsaved work from a previous session:")
                     .color(pal.text_dim),
             );
             ui.add_space(theme::GAP_S);
             ui.add(egui::Label::new(theme::strong_text(&project.name).color(pal.text)).truncate());
+            let from = ui.add(
+                egui::Label::new(
+                    RichText::new(format!("From {source} · {when}")).color(pal.text_dim),
+                )
+                .truncate(),
+            );
+            if let Some(path) = &work.source {
+                from.on_hover_text(path.display().to_string());
+            }
             ui.label(
                 RichText::new(format!(
                     "{tracks} track{} · {} bars · {:.0} BPM",
@@ -357,7 +384,7 @@ impl CadenceApp {
                 .color(pal.text_dim),
             );
             ui.add_space(theme::GAP_S);
-            theme::hint(ui, pal, "Restoring replaces the song currently open.");
+            theme::hint(ui, pal, &replaces);
             button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Restore Work").clicked() {
                     choice = Some(Choice::Restore);
@@ -382,17 +409,26 @@ impl CadenceApp {
         match choice {
             Some(Choice::Restore) => {
                 let project = project.clone();
+                let source = work.source.clone();
                 self.recovery_offered = false;
-                self.replace_project(project, None, false);
-                self.set_status(
-                    StatusKind::Success,
-                    "Restored the recovered autosave — Save As… to keep it.",
-                );
+                // Reattach the song file the work came from, so Save writes
+                // the recovered work back where it belongs. The song stays
+                // dirty (and autosaved) until the user saves.
+                let message = match &source {
+                    Some(path) => format!(
+                        "Restored unsaved work for {} — Save ({}) to keep it.",
+                        super::files::file_label(path),
+                        ctx.format_shortcut(&super::SC_SAVE)
+                    ),
+                    None => "Restored the recovered autosave — Save As… to keep it.".to_owned(),
+                };
+                self.replace_project(project, source, false);
+                self.set_status(StatusKind::Success, message);
                 false
             }
             Some(Choice::Discard) => {
-                if self.io_enabled {
-                    match persistence::clear_recovery() {
+                if let Some(dir) = self.recovery_dir.clone() {
+                    match persistence::clear_recovery_in(&dir) {
                         Ok(()) => {
                             self.recovery_offered = false;
                             self.set_status(StatusKind::Info, "Discarded the recovery autosave.");
@@ -969,6 +1005,21 @@ fn show_dialog<T>(
 /// Kicker + title header shared by all dialogs.
 fn header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
     theme::section_header(ui, pal, kicker, title);
+}
+
+/// "just now", "5 minutes ago", "3 hours ago", "2 days ago" — relative, so no
+/// time-zone handling is needed.
+pub(super) fn time_ago(t: std::time::SystemTime) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(t)
+        .map_or(0, |d| d.as_secs());
+    let (n, unit) = match secs {
+        0..60 => return "just now".to_owned(),
+        60..3_600 => (secs / 60, "minute"),
+        3_600..86_400 => (secs / 3_600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
 /// The dialog's buttons, right-aligned. Add the primary action first: it
@@ -1552,7 +1603,11 @@ mod tests {
     #[test]
     fn recovery_offer_survives_frames_and_escape() {
         let mut app = headless();
-        app.dialog = Dialog::Recovery(Box::new(Project::demo()));
+        app.dialog = Dialog::Recovery(Box::new(persistence::RecoveredWork {
+            project: Project::demo(),
+            source: None,
+            saved_at: None,
+        }));
         app.recovery_offered = true;
         let project = app.project.clone();
         let state = app.history.state();
@@ -1569,6 +1624,194 @@ mod tests {
         assert!(app.recovery_offered);
         assert_eq!(app.project, project);
         assert_eq!(app.history.state(), state);
+    }
+
+    fn close_input() -> RawInput {
+        let mut input = RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        input
+    }
+
+    fn enter_input() -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+        input
+    }
+
+    fn named(name: &str) -> Project {
+        let mut p = Project::demo();
+        p.name = name.to_owned();
+        p
+    }
+
+    /// A headless app whose recovery I/O goes to `dir/recovery`.
+    fn with_recovery(dir: &std::path::Path) -> CadenceApp {
+        let mut app = CadenceApp::headless(Project::empty());
+        app.recovery_dir = Some(dir.join("recovery"));
+        app
+    }
+
+    fn autosaved_name(dir: &std::path::Path) -> Option<String> {
+        persistence::load_recovery_in(&dir.join("recovery"))
+            .unwrap()
+            .map(|w| w.project.name)
+    }
+
+    /// clm_0016: launching with a song file still offers the autosave (on top
+    /// of the opened song), and neither a clean close, a save of the opened
+    /// song nor an autosave tick deletes or overwrites it before the user
+    /// decides. Restore reattaches the file the work came from.
+    #[test]
+    fn launch_file_still_offers_recovery_and_keeps_autosave() {
+        let tmp = tempfile::tempdir().unwrap();
+        let song = tmp.path().join("song.cadence");
+        persistence::save_project(&named("Saved"), &song).unwrap();
+        persistence::save_recovery_in(
+            &tmp.path().join("recovery"),
+            &named("Unsaved"),
+            Some(&song),
+        )
+        .unwrap();
+
+        let mut app = with_recovery(tmp.path());
+        app.startup(Some(song.clone()));
+        assert_eq!(app.project.name, "Saved");
+        assert_eq!(app.doc.path.as_deref(), Some(song.as_path()));
+        assert!(app.recovery_offered);
+        match &app.dialog {
+            Dialog::Recovery(work) => {
+                assert_eq!(work.project.name, "Unsaved");
+                assert_eq!(work.source.as_deref(), Some(song.as_path()));
+                assert!(work.saved_at.is_some());
+            }
+            other => panic!("expected the recovery offer, got {other:?}"),
+        }
+
+        // A clean close while the offer is pending keeps the autosave.
+        let ctx = Context::default();
+        run_frame(&mut app, &ctx, close_input());
+        assert_eq!(autosaved_name(tmp.path()).as_deref(), Some("Unsaved"));
+        // So does saving the opened song, and an autosave tick.
+        assert!(app.save_current());
+        app.edit("Rename", None, |p| p.name = "Edited".into());
+        app.last_edit = None;
+        app.autosave(&ctx);
+        assert_eq!(autosaved_name(tmp.path()).as_deref(), Some("Unsaved"));
+        assert!(matches!(app.dialog, Dialog::Recovery(_)));
+
+        // Enter restores: the recovered work, attached to its song file, dirty.
+        run_frame(&mut app, &ctx, enter_input());
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(!app.recovery_offered);
+        assert_eq!(app.project.name, "Unsaved");
+        assert_eq!(app.doc.path.as_deref(), Some(song.as_path()));
+        assert!(app.dirty());
+        assert_eq!(autosaved_name(tmp.path()).as_deref(), Some("Unsaved"));
+    }
+
+    /// A launch file that fails to open still gets the recovery offer.
+    #[test]
+    fn failed_launch_open_still_offers_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        persistence::save_recovery_in(&tmp.path().join("recovery"), &named("Lost"), None).unwrap();
+        let mut app = with_recovery(tmp.path());
+        app.startup(Some(tmp.path().join("missing.cadence")));
+        assert!(app.recovery_offered);
+        match &app.dialog {
+            Dialog::Recovery(work) => {
+                assert_eq!(work.project.name, "Lost");
+                assert_eq!(work.source, None);
+            }
+            other => panic!("expected the recovery offer, got {other:?}"),
+        }
+    }
+
+    /// Without an autosave nothing is offered; once the user decided
+    /// (Discard), a clean close clears as before.
+    #[test]
+    fn discard_then_clean_close_clears_autosave() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = with_recovery(tmp.path());
+        app.startup(None);
+        assert!(!app.recovery_offered);
+        assert!(matches!(app.dialog, Dialog::None));
+
+        persistence::save_recovery_in(&tmp.path().join("recovery"), &named("Old"), None).unwrap();
+        app.check_recovery();
+        assert!(app.recovery_offered);
+        app.dialog = Dialog::None;
+        app.recovery_offered = false;
+        let ctx = Context::default();
+        run_frame(&mut app, &ctx, close_input());
+        assert_eq!(autosaved_name(tmp.path()), None);
+    }
+
+    #[test]
+    fn autosave_backoff_doubles_to_a_cap() {
+        let secs: Vec<u64> = (1..=8)
+            .map(|n| super::super::autosave_backoff(n).as_secs())
+            .collect();
+        assert_eq!(secs, [2, 4, 8, 16, 32, 60, 60, 60]);
+    }
+
+    /// clm_0018: a failed autosave is retried (after a backoff) for the same
+    /// document state, warns once per failure streak, keeps an indicator up
+    /// and recovers on its own once the folder is writable again.
+    #[test]
+    fn failed_autosave_is_retried_and_warns_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A plain file where the recovery folder's parent should be makes
+        // every write fail until it is removed.
+        let blocker = tmp.path().join("blocked");
+        std::fs::write(&blocker, b"not a folder").unwrap();
+        let mut app = with_recovery(&blocker);
+        let ctx = Context::default();
+        app.edit("Rename", None, |p| p.name = "Precious".into());
+        let state = app.history.state();
+        app.last_edit = None;
+
+        app.autosave(&ctx);
+        assert_eq!(app.autosave_failures, 1);
+        assert_ne!(app.autosaved_state, state, "a failed write must not count");
+        assert!(app.autosave_retry_at.is_some());
+        let warned = app.status.clone().unwrap();
+        assert_eq!(warned.kind, StatusKind::Warning);
+        assert!(warned.text.starts_with("Autosave failed"), "{}", warned.text);
+
+        // Inside the backoff window nothing is attempted.
+        app.autosave(&ctx);
+        assert_eq!(app.autosave_failures, 1);
+
+        // A second failure does not flood the status line.
+        app.set_status(StatusKind::Info, "Other news");
+        app.autosave_retry_at = None;
+        app.autosave(&ctx);
+        assert_eq!(app.autosave_failures, 2);
+        assert_eq!(app.status.as_ref().unwrap().text, "Other news");
+        assert!(app.autosave_error.is_some());
+
+        // The folder becomes writable: the same state is saved on retry.
+        std::fs::remove_file(&blocker).unwrap();
+        app.autosave_retry_at = None;
+        app.autosave(&ctx);
+        assert_eq!(app.autosave_failures, 0);
+        assert_eq!(app.autosaved_state, state);
+        assert_eq!(autosaved_name(&blocker).as_deref(), Some("Precious"));
+        assert_eq!(
+            app.status.as_ref().unwrap().text,
+            "Autosave is working again."
+        );
     }
 
     /// Merely rendering a modal must not mutate the song or its undo history.

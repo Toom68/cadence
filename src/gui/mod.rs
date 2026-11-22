@@ -172,6 +172,15 @@ pub struct CadenceApp {
     io_enabled: bool,
     allow_close: bool,
     recovery_offered: bool,
+    /// Folder of the crash-recovery autosave; `None` (headless tests unless
+    /// a test points it at a temp dir) disables every recovery read/write.
+    recovery_dir: Option<std::path::PathBuf>,
+    /// Consecutive failed autosave attempts (0 = autosave healthy).
+    autosave_failures: u32,
+    /// Earliest time of the next autosave retry after a failure.
+    autosave_retry_at: Option<Instant>,
+    /// Why the last autosave failed (status-bar indicator tooltip).
+    autosave_error: Option<String>,
     side_tab: sidebar::SideTab,
     library_filter: String,
     /// Bank filter for the instrument library (view state only, never saved).
@@ -218,12 +227,19 @@ impl CadenceApp {
             );
             app.audio_error = Some(err);
         }
-        if let Some(path) = crate::launch_path() {
-            app.open_path(path.to_path_buf());
-        } else {
-            app.check_recovery();
-        }
+        app.startup(crate::launch_path().map(std::path::Path::to_path_buf));
         app
+    }
+
+    /// Opens the launch file (if any), then offers a valid crash-recovery
+    /// autosave on top of it. The offer never depends on how Cadence was
+    /// started, and until the user decides, nothing deletes or overwrites the
+    /// autosave (see `recovery_offered`).
+    fn startup(&mut self, launch: Option<std::path::PathBuf>) {
+        if let Some(path) = launch {
+            self.open_path(path);
+        }
+        self.check_recovery();
     }
 
     fn build(project: Project, engine: Option<AudioEngine>, io_enabled: bool) -> Self {
@@ -269,6 +285,10 @@ impl CadenceApp {
             io_enabled,
             allow_close: false,
             recovery_offered: false,
+            recovery_dir: io_enabled.then(crate::persistence::recovery_dir),
+            autosave_failures: 0,
+            autosave_retry_at: None,
+            autosave_error: None,
             side_tab: sidebar::SideTab::default(),
             library_filter: String::new(),
             library_bank: sidebar::LibraryBank::default(),
@@ -1271,13 +1291,16 @@ impl CadenceApp {
             .is_some_and(|engine| !engine.try_set_project(&self.project));
     }
 
+    /// Writes the crash-recovery autosave 1.5 s after the last edit. A failed
+    /// write is retried with exponential backoff (2 s, 4 s … 60 s) until it
+    /// succeeds; the first failure of a streak warns once and the status bar
+    /// keeps an "Autosave paused" indicator until a write succeeds again.
     fn autosave(&mut self, ctx: &Context) {
         let state = self.history.state();
-        if !self.io_enabled
-            || !self.dirty()
-            || state == self.autosaved_state
-            || self.recovery_offered
-        {
+        let Some(dir) = self.recovery_dir.clone() else {
+            return;
+        };
+        if !self.dirty() || state == self.autosaved_state || self.recovery_offered {
             return;
         }
         let elapsed = self.last_edit.map_or(AUTOSAVE_DELAY, |t| t.elapsed());
@@ -1285,9 +1308,37 @@ impl CadenceApp {
             ctx.request_repaint_after(AUTOSAVE_DELAY - elapsed);
             return;
         }
-        self.autosaved_state = state;
-        if let Err(err) = crate::persistence::save_recovery(&self.project) {
-            self.set_status(StatusKind::Warning, format!("Autosave failed: {err}"));
+        if let Some(at) = self.autosave_retry_at {
+            let now = Instant::now();
+            if now < at {
+                ctx.request_repaint_after(at - now);
+                return;
+            }
+        }
+        match crate::persistence::save_recovery_in(&dir, &self.project, self.doc.path.as_deref()) {
+            Ok(()) => {
+                self.autosaved_state = state;
+                self.autosave_retry_at = None;
+                self.autosave_error = None;
+                if std::mem::take(&mut self.autosave_failures) > 0 {
+                    self.set_status(StatusKind::Success, "Autosave is working again.");
+                }
+            }
+            Err(err) => {
+                self.autosave_failures += 1;
+                let backoff = autosave_backoff(self.autosave_failures);
+                self.autosave_retry_at = Some(Instant::now() + backoff);
+                ctx.request_repaint_after(backoff);
+                if self.autosave_failures == 1 {
+                    self.set_status(
+                        StatusKind::Warning,
+                        format!(
+                            "Autosave failed — Cadence keeps retrying; save the song to be safe. ({err})"
+                        ),
+                    );
+                }
+                self.autosave_error = Some(err);
+            }
         }
     }
 
@@ -1323,8 +1374,10 @@ impl CadenceApp {
             return;
         }
         if self.allow_close || !self.dirty() {
-            if self.io_enabled && !self.recovery_offered {
-                let _ = crate::persistence::clear_recovery();
+            // An autosave that is still waiting for a Restore/Discard decision
+            // is kept for the next launch.
+            if let (Some(dir), false) = (&self.recovery_dir, self.recovery_offered) {
+                let _ = crate::persistence::clear_recovery_in(dir);
             }
             return;
         }
@@ -1513,6 +1566,11 @@ impl CadenceApp {
             }
         }
     }
+}
+
+/// Wait before autosave attempt `failures + 1`: 2 s doubling to a 60 s cap.
+fn autosave_backoff(failures: u32) -> Duration {
+    Duration::from_secs((2u64 << failures.saturating_sub(1).min(5)).min(60))
 }
 
 struct CatalogWatch {

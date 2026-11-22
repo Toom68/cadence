@@ -27,6 +27,8 @@ pub const DATA_DIR_ENV: &str = "CADENCE_DATA_DIR";
 
 const RECOVERY_FILE: &str = "autosave.cadence";
 const DAMAGED_RECOVERY_FILE: &str = "autosave.damaged.cadence";
+/// Plain-text sidecar naming the song file the autosave belongs to.
+const RECOVERY_SOURCE_FILE: &str = "autosave.source";
 
 /// Parses and validates a project from JSON text.
 pub fn project_from_json(text: &str) -> Result<Project, String> {
@@ -110,9 +112,14 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("cadence-studio"))
 }
 
+/// Folder holding the crash-recovery autosave.
+pub fn recovery_dir() -> PathBuf {
+    data_dir().join("recovery")
+}
+
 /// Location of the crash-recovery autosave.
 pub fn recovery_path() -> PathBuf {
-    data_dir().join("recovery").join(RECOVERY_FILE)
+    recovery_dir().join(RECOVERY_FILE)
 }
 
 // ----- audio store ---------------------------------------------------------
@@ -329,14 +336,44 @@ fn decode_channels<S: hound::Sample>(
     Ok((left, right))
 }
 
+/// The crash-recovery autosave as offered at launch: the project plus which
+/// song file it was autosaved from and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveredWork {
+    /// The autosaved project (already validated).
+    pub project: Project,
+    /// The `.cadence` file the work belonged to; `None` for an untitled song.
+    pub source: Option<PathBuf>,
+    /// When the autosave was written (the file's modification time).
+    pub saved_at: Option<std::time::SystemTime>,
+}
+
 /// Writes the crash-recovery autosave atomically.
 pub fn save_recovery(project: &Project) -> Result<(), String> {
-    let path = recovery_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|err| format!("Could not create recovery folder {}: {err}", dir.display()))?;
+    save_recovery_in(&recovery_dir(), project, None)
+}
+
+/// Writes the autosave into `dir`, recording `source` (the song file the work
+/// belongs to) in a small `autosave.source` text file beside it. The
+/// `.cadence` autosave itself is a plain project file.
+pub fn save_recovery_in(dir: &Path, project: &Project, source: Option<&Path>) -> Result<(), String> {
+    fs::create_dir_all(dir)
+        .map_err(|err| format!("Could not create recovery folder {}: {err}", dir.display()))?;
+    save_project(project, &dir.join(RECOVERY_FILE))?;
+    let sidecar = dir.join(RECOVERY_SOURCE_FILE);
+    // The source label is a convenience: failing to record it never fails
+    // the autosave, but a stale label is removed rather than left behind.
+    match source.and_then(Path::to_str) {
+        Some(text) => {
+            if write_file_atomic(&sidecar, text.as_bytes()).is_err() {
+                let _ = fs::remove_file(&sidecar);
+            }
+        }
+        None => {
+            let _ = fs::remove_file(&sidecar);
+        }
     }
-    save_project(project, &path)
+    Ok(())
 }
 
 /// Loads the autosave if present. Returns `Ok(None)` when there is none.
@@ -345,17 +382,37 @@ pub fn save_recovery(project: &Project) -> Result<(), String> {
 /// `autosave.damaged.cadence` (so it is not offered again on every launch) and
 /// an error describing the problem is returned.
 pub fn load_recovery() -> Result<Option<Project>, String> {
-    let path = recovery_path();
-    match fs::symlink_metadata(&path) {
+    Ok(load_recovery_in(&recovery_dir())?.map(|work| work.project))
+}
+
+/// [`load_recovery`] for an explicit recovery folder, with the source file
+/// and autosave time.
+pub fn load_recovery_in(dir: &Path) -> Result<Option<RecoveredWork>, String> {
+    let path = dir.join(RECOVERY_FILE);
+    let meta = match fs::symlink_metadata(&path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("Could not check {}: {err}", path.display())),
-        Ok(_) => {}
-    }
+        Ok(meta) => meta,
+    };
     match load_project(&path) {
-        Ok(project) => Ok(Some(project)),
+        Ok(project) => {
+            let source = fs::read(dir.join(RECOVERY_SOURCE_FILE))
+                .ok()
+                .filter(|bytes| bytes.len() <= 32 * 1024)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .map(|text| text.trim().to_owned())
+                .filter(|text| !text.is_empty())
+                .map(PathBuf::from);
+            Ok(Some(RecoveredWork {
+                project,
+                source,
+                saved_at: meta.modified().ok(),
+            }))
+        }
         Err(err) => {
             let damaged = path.with_file_name(DAMAGED_RECOVERY_FILE);
             let moved = fs::rename(&path, &damaged).is_ok();
+            let _ = fs::remove_file(dir.join(RECOVERY_SOURCE_FILE));
             let note = if moved {
                 format!(" It was moved to {}.", damaged.display())
             } else {
@@ -370,7 +427,13 @@ pub fn load_recovery() -> Result<Option<Project>, String> {
 
 /// Deletes the autosave (after a clean save or an explicit discard).
 pub fn clear_recovery() -> Result<(), String> {
-    let path = recovery_path();
+    clear_recovery_in(&recovery_dir())
+}
+
+/// [`clear_recovery`] for an explicit recovery folder.
+pub fn clear_recovery_in(dir: &Path) -> Result<(), String> {
+    let path = dir.join(RECOVERY_FILE);
+    let _ = fs::remove_file(dir.join(RECOVERY_SOURCE_FILE));
     match fs::remove_file(&path) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(format!(
             "Could not remove recovery file {}: {err}",

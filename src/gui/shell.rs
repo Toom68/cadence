@@ -991,6 +991,16 @@ impl CadenceApp {
                 theme::color_dot(ui, pal.danger, 8.0);
             }
         }
+        if self.autosave_failures > 0 {
+            ui.add_space(theme::GAP_M);
+            let tip = format!(
+                "Crash-recovery autosave could not be written; Cadence retries automatically. Save the song to keep your work safe meanwhile.\n\n{}",
+                self.autosave_error.as_deref().unwrap_or_default()
+            );
+            ui.label(small("Autosave paused".to_owned(), pal.text))
+                .on_hover_text(tip);
+            theme::color_dot(ui, pal.warn, 8.0);
+        }
         ui.add_space(theme::GAP_M);
         let t = self.project.tracks.len();
         let secs = ops::steps_to_seconds(self.project.total_steps(), self.project.bpm);
