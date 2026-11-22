@@ -566,11 +566,12 @@ impl CadenceApp {
         self.import_sample_file(path);
     }
 
-    /// Decodes `path` into an embedded-sample preset and puts it on the
-    /// selected track (or a new track when nothing is selected / the song is
-    /// empty). Helper path usable without dialogs. Anything unreadable,
-    /// oversize or invalid is a status-bar error, not a partial edit; the
-    /// placement itself is one undoable `self.edit`.
+    /// Decodes `path` into an embedded-sample preset and adds it as a NEW
+    /// track — importing never overwrites the selected track's instrument
+    /// (replacing a sound is what the track's sound picker is for). Helper
+    /// path usable without dialogs. Anything unreadable, oversize or invalid
+    /// is a status-bar error, not a partial edit; the placement itself is
+    /// one undoable `self.edit`.
     pub(super) fn import_sample_file(&mut self, path: PathBuf) {
         let (spec, truncated) = match crate::packs::SampleSpec::from_wav(&path, 60) {
             Ok(result) => result,
@@ -587,22 +588,9 @@ impl CadenceApp {
         let label = preset.name.clone();
         let rate = preset.sample.as_ref().map_or(0, |s| s.sample_rate);
         let audition = preset.audition_note.min(127);
-        // Prefer the selected track; fall back to the first track, then to a
-        // fresh track when the song is empty.
-        let target = self
-            .sel
-            .track
-            .or_else(|| self.project.tracks.first().map(|t| t.id));
         let mut placed = None;
         self.edit("Import sample", None, |p| {
-            placed = if let Some(track) = target.and_then(|id| ops::track_mut(p, id)) {
-                track.preset = Some(preset.clone());
-                // A SoundFont would still shadow the preset — clear it.
-                track.font = None;
-                Some(track.id)
-            } else {
-                ops::add_preset_track(p, &preset)
-            };
+            placed = ops::add_preset_track(p, &preset);
         });
         let Some(id) = placed else {
             self.set_status(
