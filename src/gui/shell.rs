@@ -25,6 +25,7 @@ use super::{
     SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO,
     SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
 };
+use crate::audio::AudioEngine;
 use crate::model::Instrument;
 
 /// Menu bar height.
@@ -969,7 +970,7 @@ impl CadenceApp {
                 .color(color)
         };
         match (&self.engine, &self.audio_error) {
-            (Some(_), _) => {
+            (Some(engine), _) => {
                 let (color, text, tip) = match &self.transport.engine_error {
                     Some(e) => (pal.danger, "Audio error".to_owned(), e.clone()),
                     None => (
@@ -978,13 +979,40 @@ impl CadenceApp {
                         format!("{} voice(s) sounding", self.transport.voices),
                     ),
                 };
-                ui.label(small(text, pal.text_dim)).on_hover_text(tip);
+                let device = engine.device_name();
+                let label = if device.is_empty() {
+                    text
+                } else {
+                    format!("{text} · {device}")
+                };
+                // The audio state label doubles as the output picker —
+                // the same status footprint, one click to switch device.
+                ui.menu_button(RichText::new(label).size(theme::TEXT_SMALL + 1.0), |ui| {
+                    ui.set_min_width(200.0);
+                    ui.label(RichText::new("Audio output").small().color(pal.text_faint));
+                    if ui
+                        .selectable_label(self.audio_device_pref.is_none(), "System default")
+                        .clicked()
+                    {
+                        self.set_audio_device(None);
+                        ui.close();
+                    }
+                    for name in AudioEngine::output_devices() {
+                        let picked = self.audio_device_pref.as_deref() == Some(name.as_str());
+                        if ui.selectable_label(picked, &name).clicked() {
+                            self.set_audio_device(Some(name));
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tip);
                 theme::color_dot(ui, color, 8.0);
             }
             (None, err) => {
                 let tip = err.clone().unwrap_or_default();
                 if theme::text_button(ui, pal, "Retry audio", theme::CONTROL_S, &tip).clicked() {
-                    self.retry_audio();
+                    self.retry_audio(true);
                 }
                 ui.label(small("No audio output".to_owned(), pal.text_dim))
                     .on_hover_text("Editing, saving and WAV export still work");

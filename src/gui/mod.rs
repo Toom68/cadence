@@ -35,6 +35,9 @@ use theme::{Palette, ThemeChoice};
 use transport::TransportState;
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
+/// How often the app retries opening audio after a no-device startup —
+/// the retry itself fails fast, so a short interval is cheap.
+const AUDIO_RETRY_INTERVAL: Duration = Duration::from_secs(3);
 
 const fn sc(modifiers: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(modifiers, key)
@@ -152,6 +155,14 @@ pub struct CadenceApp {
     doc: Document,
     engine: Option<AudioEngine>,
     audio_error: Option<String>,
+    /// The user's picked output device (`None` = host default); persisted
+    /// to the data dir so the choice survives a restart.
+    audio_device_pref: Option<String>,
+    /// True while the last engine error was "no device at all" — the cheap
+    /// fast-fail case where an automatic retry can't stall the UI.
+    audio_auto_retry: bool,
+    /// Earliest automatic [`AudioEngine::new`] retry while `engine` is None.
+    next_audio_retry: Instant,
     transport: TransportState,
     sel: Selection,
     clipboard: Clipboard,
@@ -217,12 +228,14 @@ impl CadenceApp {
         // Styles the very first frame; `frame()` finishes the job (bundled
         // fonts, focus options) once the fonts are live.
         theme::apply(&cc.egui_ctx, theme);
-        let (engine, audio_error) = match AudioEngine::new() {
+        let device_pref = crate::persistence::preferred_audio_device();
+        let (engine, audio_error) = match AudioEngine::new_with_device(device_pref.clone()) {
             Ok(engine) => (Some(engine), None),
             Err(err) => (None, Some(err)),
         };
         let mut app = Self::build(Project::demo(), engine, true);
         app.theme = theme;
+        app.audio_device_pref = device_pref;
         if let Some(err) = audio_error {
             app.set_status(
                 StatusKind::Warning,
@@ -230,6 +243,7 @@ impl CadenceApp {
                     "Audio output unavailable ({err}). Editing, saving and WAV export still work."
                 ),
             );
+            app.audio_auto_retry = err.contains("No audio output device");
             app.audio_error = Some(err);
         }
         app.startup(crate::launch_path().map(std::path::Path::to_path_buf));
@@ -273,6 +287,9 @@ impl CadenceApp {
             },
             engine,
             audio_error: None,
+            audio_device_pref: None,
+            audio_auto_retry: false,
+            next_audio_retry: Instant::now(),
             transport: TransportState::default(),
             sel: Selection::default(),
             clipboard: Clipboard::default(),
@@ -1269,6 +1286,16 @@ impl CadenceApp {
             });
         }
         self.poll_engine();
+        // Auto-reconnect when launched with no output device at all: the
+        // "no device" error fails fast, so retrying on a timer can plug in
+        // headphones later without ever stalling the UI.
+        if self.engine.is_none() && self.io_enabled && self.audio_auto_retry {
+            let now = Instant::now();
+            if now >= self.next_audio_retry {
+                self.next_audio_retry = now + AUDIO_RETRY_INTERVAL;
+                self.retry_audio(false);
+            }
+        }
         self.poll_export();
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
@@ -1364,6 +1391,8 @@ impl CadenceApp {
             || (self.engine_dirty && self.engine.as_ref().is_some_and(AudioEngine::is_connected))
         {
             ctx.request_repaint_after(Duration::from_millis(33));
+        } else if self.engine.is_none() && self.audio_auto_retry {
+            ctx.request_repaint_after(AUDIO_RETRY_INTERVAL);
         }
     }
 
@@ -1563,20 +1592,47 @@ impl CadenceApp {
 
     // ----- layout ----------------------------------------------------------
 
-    fn retry_audio(&mut self) {
-        match AudioEngine::new() {
+    /// (Re)opens the audio engine on the preferred device. `announce`
+    /// reports failures in the status bar (manual retries); automatic
+    /// retries fail quietly so a sleeping laptop doesn't spam it.
+    fn retry_audio(&mut self, announce: bool) {
+        match AudioEngine::new_with_device(self.audio_device_pref.clone()) {
             Ok(engine) => {
                 engine.set_project(&self.project);
                 engine.set_fonts(std::sync::Arc::new(self.fonts.clone()));
                 engine.set_metronome(self.transport.metronome);
                 self.engine = Some(engine);
                 self.audio_error = None;
+                self.audio_auto_retry = false;
+                self.engine_dirty = true;
                 self.set_status(StatusKind::Success, "Audio output connected.");
             }
             Err(err) => {
-                self.set_status(StatusKind::Warning, format!("Still no audio output: {err}"));
+                if announce {
+                    self.set_status(StatusKind::Warning, format!("Still no audio output: {err}"));
+                }
+                self.audio_auto_retry = err.contains("No audio output device");
                 self.audio_error = Some(err);
             }
+        }
+    }
+
+    /// Picks the output device (`None` = host default): remembered across
+    /// launches and applied to the live engine, which reopens its stream.
+    fn set_audio_device(&mut self, name: Option<String>) {
+        self.audio_device_pref = name.clone();
+        crate::persistence::save_audio_device_pref(name.as_deref());
+        if let Some(engine) = &self.engine {
+            engine.set_output_device(name.clone());
+            match &name {
+                Some(name) => self.set_status(
+                    StatusKind::Info,
+                    format!("Switching audio output to \"{name}\"…"),
+                ),
+                None => self.set_status(StatusKind::Info, "Audio output: system default."),
+            }
+        } else {
+            self.retry_audio(true);
         }
     }
 }

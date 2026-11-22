@@ -225,6 +225,57 @@ pub fn missing_audio_refs(project: &crate::model::Project) -> Vec<String> {
     missing_audio_refs_in(project, &audio_dir())
 }
 
+/// Total bytes in the audio store — files are never reaped (deleting a
+/// clip or song keeps its WAV, since another song may reference it), so
+/// the import path warns once this passes a generous bound.
+pub fn audio_store_bytes() -> u64 {
+    fs::read_dir(audio_dir())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Store size at which importing more audio starts warning — staged WAVs
+/// are deduplicated by content but never deleted, and few indie sessions
+/// legitimately need more than this.
+pub const AUDIO_STORE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// File remembering the user's picked output device across launches — a
+/// plain device name, one line, same names `AudioEngine::output_devices`
+/// lists.
+fn audio_device_path() -> PathBuf {
+    data_dir().join("audio-device.txt")
+}
+
+/// The saved output-device pick, if any.
+pub fn preferred_audio_device() -> Option<String> {
+    fs::read_to_string(audio_device_path())
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+/// Persists (or clears, on `None`) the output-device pick. Best effort —
+/// a write failure only means the choice doesn't survive a restart.
+pub fn save_audio_device_pref(name: Option<&str>) {
+    match name {
+        Some(name) => {
+            if fs::create_dir_all(data_dir()).is_ok() {
+                let _ = fs::write(audio_device_path(), name);
+            }
+        }
+        None => {
+            let _ = fs::remove_file(audio_device_path());
+        }
+    }
+}
+
 /// Reads a staged file by its store-relative `name` for decoding. Returns
 /// `None` for anything unsafe, missing, unreadable or oversize — a missing
 /// clip file is a documented tolerance (the clip plays silence), never a

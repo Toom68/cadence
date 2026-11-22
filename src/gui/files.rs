@@ -740,13 +740,25 @@ impl CadenceApp {
         } else {
             ""
         };
-        self.set_status(
-            StatusKind::Success,
-            format!(
-                "Imported “{name}”{grown} ({:.1}s). The file lives in the app's audio store.",
-                staged.seconds
-            ),
-        );
+        let store = persistence::audio_store_bytes();
+        if store > persistence::AUDIO_STORE_WARN_BYTES {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Imported “{name}”{grown}. The audio store now holds {:.1} GB — \
+                     old imports are never deleted, so clear it in your app-data folder if disk runs low.",
+                    store as f64 / (1024.0 * 1024.0 * 1024.0)
+                ),
+            );
+        } else {
+            self.set_status(
+                StatusKind::Success,
+                format!(
+                    "Imported “{name}”{grown} ({:.1}s). The file lives in the app's audio store.",
+                    staged.seconds
+                ),
+            );
+        }
     }
 
     // ----- instrument packs -------------------------------------------------

@@ -52,6 +52,9 @@ struct Shared {
     voices: AtomicUsize,
     mixer: SharedMeter,
     error: Mutex<Option<String>>,
+    /// Name of the device the live stream is on; updated on every
+    /// (re)connect so the UI reflects the actual output.
+    device_name: Mutex<String>,
     device_wakeup: OnceLock<Box<dyn Fn() + Send + Sync>>,
     connected: AtomicBool,
     shutdown: AtomicBool,
@@ -71,7 +74,13 @@ impl Shared {
 
 enum ThreadMsg {
     Shutdown,
-    StreamFailed { generation: u64, error: StreamError },
+    StreamFailed {
+        generation: u64,
+        error: StreamError,
+    },
+    /// Switch output to the named device (`None` = host default). Dropped
+    /// while a switch is already pending — the latest pick wins anyway.
+    SetDevice(Option<String>),
 }
 
 #[derive(Default)]
@@ -301,15 +310,32 @@ struct DeviceInfo {
     sample_rate: u32,
 }
 
+/// Resolves the device `open_stream` uses: the requested name when that
+/// device is still present, else the host default. A saved pick that was
+/// unplugged falls back instead of leaving the app silent.
+fn pick_output(requested: Option<&str>) -> Option<cpal::Device> {
+    let host = cpal::default_host();
+    if let Some(name) = requested {
+        if let Some(device) = host
+            .output_devices()
+            .ok()
+            .and_then(|mut ds| ds.find(|d| d.name().ok().as_deref() == Some(name)))
+        {
+            return Some(device);
+        }
+    }
+    host.default_output_device()
+}
+
 fn open_stream(
     state: &Arc<Mutex<RealTime>>,
     preparation: &Mutex<Preparation>,
     control: &Sender<ThreadMsg>,
     generation: u64,
+    device_pref: &Mutex<Option<String>>,
 ) -> Result<(cpal::Stream, DeviceInfo), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
+    let wanted = device_pref.lock().map(|g| g.clone()).unwrap_or(None);
+    let device = pick_output(wanted.as_deref())
         .ok_or_else(|| "No audio output device is available.".to_string())?;
     let name = device.name().unwrap_or_else(|_| "Audio output".to_string());
     let supported = device
@@ -366,6 +392,7 @@ fn fatal_stream_error(error: &StreamError) -> bool {
     cfg!(windows) || matches!(error, StreamError::DeviceNotAvailable)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn audio_thread(
     state: Arc<Mutex<RealTime>>,
     shared: Arc<Shared>,
@@ -374,13 +401,16 @@ fn audio_thread(
     control_rx: Receiver<ThreadMsg>,
     control_tx: Sender<ThreadMsg>,
     ready: Sender<Result<DeviceInfo, String>>,
+    device_pref: Arc<Mutex<Option<String>>>,
 ) {
     let mut generation = 0;
-    let mut stream = match open_stream(&state, &preparation, &control_tx, generation) {
+    let mut stream = match open_stream(&state, &preparation, &control_tx, generation, &device_pref)
+    {
         Ok((stream, info)) => {
             shared
                 .sample_rate
                 .store(info.sample_rate, Ordering::Relaxed);
+            *shared.device_name.lock().unwrap_or_else(|p| p.into_inner()) = info.name.clone();
             shared.connected.store(true, Ordering::Release);
             let _ = ready.send(Ok(info));
             Some(stream)
@@ -402,6 +432,12 @@ fn audio_thread(
         };
         match control_rx.recv_timeout(wait) {
             Ok(ThreadMsg::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+            Ok(ThreadMsg::SetDevice(name)) => {
+                *device_pref.lock().unwrap_or_else(|p| p.into_inner()) = name;
+                drop(stream.take());
+                generation += 1;
+                next_retry = Instant::now();
+            }
             Ok(ThreadMsg::StreamFailed {
                 generation: failed,
                 error,
@@ -429,16 +465,21 @@ fn audio_thread(
             && Instant::now() >= next_retry
         {
             generation += 1;
-            if let Ok((s, info)) = open_stream(&state, &preparation, &control_tx, generation) {
-                stream = Some(s);
-                shared
-                    .sample_rate
-                    .store(info.sample_rate, Ordering::Relaxed);
-                shared.connected.store(true, Ordering::Release);
-                shared.set_error(Some(format!(
-                    "Audio reconnected to \"{}\" ({} Hz).",
-                    info.name, info.sample_rate
-                )));
+            match open_stream(&state, &preparation, &control_tx, generation, &device_pref) {
+                Ok((s, info)) => {
+                    stream = Some(s);
+                    shared
+                        .sample_rate
+                        .store(info.sample_rate, Ordering::Relaxed);
+                    *shared.device_name.lock().unwrap_or_else(|p| p.into_inner()) =
+                        info.name.clone();
+                    shared.connected.store(true, Ordering::Release);
+                    shared.set_error(Some(format!(
+                        "Audio reconnected to \"{}\" ({} Hz).",
+                        info.name, info.sample_rate
+                    )));
+                }
+                Err(e) => shared.set_error(Some(e)),
             }
             next_retry = Instant::now() + RETRY_INTERVAL;
         }
@@ -454,13 +495,19 @@ pub struct AudioEngine {
     shared: Arc<Shared>,
     control: Sender<ThreadMsg>,
     thread: Option<JoinHandle<()>>,
-    device_name: String,
 }
 
 impl AudioEngine {
     /// Opens the default output device. Returns a readable error (and leaves nothing running)
     /// when no device is usable, so the app can still edit and export offline.
     pub fn new() -> Result<Self, String> {
+        Self::new_with_device(None)
+    }
+
+    /// [`Self::new`] preferring a named output device; when that device is
+    /// absent the host default is used instead (a saved pick that was
+    /// unplugged must not leave the app silent).
+    pub fn new_with_device(requested: Option<String>) -> Result<Self, String> {
         let (commands, command_rx) = bounded(COMMAND_CAPACITY);
         let (garbage_tx, garbage) = bounded(GARBAGE_CAPACITY);
         let (control, control_rx) = bounded(16);
@@ -474,10 +521,12 @@ impl AudioEngine {
             Arc::clone(&shared),
         )));
         let preparation = Arc::new(Mutex::new(Preparation::new(initial_rate)));
+        let device_pref = Arc::new(Mutex::new(requested));
         let thread_shared = Arc::clone(&shared);
         let thread_control = control.clone();
         let thread_prep = Arc::clone(&preparation);
         let thread_garbage = garbage.clone();
+        let thread_pref = Arc::clone(&device_pref);
         let thread = std::thread::Builder::new()
             .name("cadence-audio".into())
             .spawn(move || {
@@ -489,18 +538,18 @@ impl AudioEngine {
                     control_rx,
                     thread_control,
                     ready_tx,
+                    thread_pref,
                 )
             })
             .map_err(|e| format!("Could not start the audio thread: {e}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(info)) => Ok(AudioEngine {
+            Ok(Ok(_info)) => Ok(AudioEngine {
                 commands,
                 garbage,
                 preparation,
                 shared,
                 control,
                 thread: Some(thread),
-                device_name: info.name,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -518,8 +567,39 @@ impl AudioEngine {
         self.shared.sample_rate.load(Ordering::Relaxed)
     }
 
-    pub fn device_name(&self) -> &str {
-        &self.device_name
+    /// Names of output devices the host can see right now, default first —
+    /// the values [`Self::set_output_device`] accepts.
+    pub fn output_devices() -> Vec<String> {
+        let host = cpal::default_host();
+        let mut names: Vec<String> = Vec::new();
+        if let Some(name) = host.default_output_device().and_then(|d| d.name().ok()) {
+            names.push(name);
+        }
+        if let Ok(devices) = host.output_devices() {
+            for name in devices.filter_map(|d| d.name().ok()) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
+    /// Reopens the output on the named device (`None` = host default). The
+    /// switch happens on the audio thread; [`Self::device_name`] reflects
+    /// the new device once its stream is live.
+    pub fn set_output_device(&self, name: Option<String>) {
+        let _ = self.control.try_send(ThreadMsg::SetDevice(name));
+    }
+
+    /// The device the stream is currently on, live-updated as the engine
+    /// reconnects or is switched.
+    pub fn device_name(&self) -> String {
+        self.shared
+            .device_name
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn is_connected(&self) -> bool {
@@ -727,6 +807,7 @@ impl AudioEngine {
         let shared = Arc::new(Shared::default());
         shared.sample_rate.store(48_000, Ordering::Relaxed);
         shared.connected.store(true, Ordering::Relaxed);
+        *shared.device_name.lock().unwrap_or_else(|p| p.into_inner()) = "Benchmark".into();
         let engine = Self {
             commands,
             garbage,
@@ -734,7 +815,6 @@ impl AudioEngine {
             shared: Arc::clone(&shared),
             control,
             thread: None,
-            device_name: "Benchmark".into(),
         };
         (engine, move |step: f64, playing| {
             let _keep_channels_connected = (&garbage_tx, &control_rx);
