@@ -3398,6 +3398,7 @@ pub fn toolbar(
     let content = memo.map_or(width, |m| if compact { m.compact } else { m.full });
     let mut child = ui.new_child(
         UiBuilder::new()
+            .id_salt(id)
             .max_rect(row)
             .layout(Layout::left_to_right(Align::Center)),
     );
@@ -5034,6 +5035,26 @@ mod tests {
                 "{context}: a custom item may paint outside its slot ({clip:?})"
             );
         }
+    }
+
+    #[test]
+    fn sibling_toolbars_give_their_items_distinct_ids() {
+        let harness = Harness::new(900.0);
+        let pal = harness.pal();
+        let mut ids = Vec::new();
+        harness.frame(Vec::new(), |ui| {
+            ids.clear();
+            for salt in ["first", "second"] {
+                toolbar(ui, pal, salt, |tb| {
+                    ids.push(tb.icon_button(Icon::ZoomOut, "Zoom out", "Zoom out").id);
+                });
+            }
+        });
+        assert_eq!(ids.len(), 2);
+        assert_ne!(
+            ids[0], ids[1],
+            "items at the same index in two toolbars clash"
+        );
     }
 
     #[test]

@@ -3709,3 +3709,37 @@ fn scratch_dnd_row_click_probe() {
         "the post-drag-source interact receives the click"
     );
 }
+
+/// egui paints "🔥 First/Second use of widget ID …" over widgets that share an
+/// id (debug builds only — the clash itself is real in every build and mixes
+/// up hover, press and tooltip state). No screen may produce one.
+#[test]
+fn no_screen_paints_widget_id_clash_warnings() {
+    let mut ui = Ui::demo();
+    ui.ctx.options_mut(|o| o.warn_on_id_clash = true);
+    let tracks: Vec<u64> = ui.app.project.tracks.iter().map(|t| t.id).collect();
+    let mut clashes = BTreeSet::new();
+    for tab in [super::Tab::Editor, super::Tab::Mixer, super::Tab::Keys] {
+        for side in [SideTab::Library, SideTab::Track] {
+            for &track in &tracks {
+                ui.app.tab = tab;
+                ui.app.side_tab = side;
+                ui.app.sel.track = Some(track);
+                // Toolbars settle their measured layout over a few frames.
+                ui.steps(3);
+                ui.next.time = Some(ui.time);
+                let input = std::mem::replace(&mut ui.next, base_input());
+                let out = ui.ctx.run(input, |ctx| ui.app.frame(ctx));
+                for clipped in &out.shapes {
+                    if let egui::Shape::Text(text) = &clipped.shape {
+                        let s = text.galley.text();
+                        if s.contains(" use of ") && s.contains(" ID ") {
+                            clashes.insert(format!("{tab:?}/{side:?}/track {track}: {s}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(clashes.is_empty(), "id clashes:\n{clashes:#?}");
+}

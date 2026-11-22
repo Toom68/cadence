@@ -231,6 +231,11 @@ impl CadenceApp {
         // Styles the very first frame; `frame()` finishes the job (bundled
         // fonts, focus options) once the fonts are live.
         theme::apply(&cc.egui_ctx, theme);
+        // egui persists its options with the window state, so a debug build
+        // run against the same data dir would leave id-clash overlays on in
+        // release builds too.
+        cc.egui_ctx
+            .options_mut(|o| o.warn_on_id_clash = cfg!(debug_assertions));
         let device_pref = crate::persistence::preferred_audio_device();
         let (engine, audio_error) = match AudioEngine::new_with_device(device_pref.clone()) {
             Ok(engine) => (Some(engine), None),
