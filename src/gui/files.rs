@@ -156,18 +156,20 @@ impl CadenceApp {
                 let shown = file_label(&path);
                 self.replace_project(project, Some(path), true);
                 self.set_status(StatusKind::Success, format!("Opened {shown}."));
-                self.warn_missing_fonts();
+                self.warn_missing_refs();
             }
             Err(err) => self.set_status(StatusKind::Error, err),
         }
     }
 
-    /// After opening a song: when it references SoundFonts this machine
-    /// doesn't have, say how many tracks fall back to their built-in/preset
-    /// sounds. Playback already falls back silently at note-on; this is the
-    /// one status-line follow-up on the open path so the user knows why the
+    /// After opening a song: warn about content the file references that
+    /// this machine doesn't have — SoundFonts (tracks fall back to
+    /// built-in/preset sounds) and imported audio (clips stay silent, in
+    /// the arranger, on export and in renders). Both are silent playback
+    /// tolerances, so the status line is the one place that says why the
     /// song sounds different.
-    fn warn_missing_fonts(&mut self) {
+    fn warn_missing_refs(&mut self) {
+        let mut parts = Vec::new();
         let mut missing: Vec<String> = self
             .project
             .tracks
@@ -175,38 +177,42 @@ impl CadenceApp {
             .filter_map(|t| t.font.as_ref().map(|f| f.name.clone()))
             .filter(|name| !self.fonts.fonts.iter().any(|i| &i.name == name))
             .collect();
-        if missing.is_empty() {
-            return;
-        }
-        missing.sort();
-        missing.dedup();
-        let tracks = self
-            .project
-            .tracks
-            .iter()
-            .filter(|t| t.font.as_ref().is_some_and(|f| missing.contains(&f.name)))
-            .count();
-        let names = if missing.len() == 1 {
-            format!("\"{}\"", missing[0])
-        } else {
-            missing
+        if !missing.is_empty() {
+            missing.sort();
+            missing.dedup();
+            let tracks = self
+                .project
+                .tracks
+                .iter()
+                .filter(|t| t.font.as_ref().is_some_and(|f| missing.contains(&f.name)))
+                .count();
+            let names = missing
                 .iter()
                 .map(|n| format!("\"{n}\""))
                 .collect::<Vec<_>>()
-                .join(", ")
-        };
-        self.set_status(
-            StatusKind::Warning,
-            format!(
-                "SoundFont{} {names} not installed here — {} track{} play{} {} fallback sound{}.",
+                .join(", ");
+            parts.push(format!(
+                "SoundFont{} {names} not installed here — {} track{} play{} {} fallback sound{}",
                 super::sidebar::plural(missing.len()),
                 tracks,
                 super::sidebar::plural(tracks),
                 if tracks == 1 { "s" } else { "" },
                 if tracks == 1 { "its" } else { "their" },
                 super::sidebar::plural(tracks),
-            ),
-        );
+            ));
+        }
+        if !self.missing_audio.is_empty() {
+            let n = self.missing_audio.len();
+            parts.push(format!(
+                "{} audio clip file{} missing from this PC's audio store — \
+                 those clips are silent; re-import the original WAVs",
+                n,
+                super::sidebar::plural(n),
+            ));
+        }
+        if !parts.is_empty() {
+            self.set_status(StatusKind::Warning, format!("{}.", parts.join(". ")));
+        }
     }
 
     /// Open…: pick a `.cadence` file. Cancelling changes nothing.

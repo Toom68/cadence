@@ -3370,6 +3370,7 @@ impl CadenceApp {
                     clip,
                     style,
                     tl.pps,
+                    self.missing_audio.contains(&clip.file),
                 );
             }
         }
@@ -4545,7 +4546,15 @@ fn paint_thumb(
 /// [`paint_clip`], but the body shows diagonal hatching and the file name —
 /// a waveform is out of scope for the MVP, so the clip reads as audio
 /// content without pretending to show one.
-fn paint_audio_clip(p: &Painter, pal: Palette, r: Rect, clip: &AudioClip, s: ClipStyle, pps: f32) {
+fn paint_audio_clip(
+    p: &Painter,
+    pal: Palette,
+    r: Rect,
+    clip: &AudioClip,
+    s: ClipStyle,
+    pps: f32,
+    missing: bool,
+) {
     if r.width() < 1.0 {
         return;
     }
@@ -4587,6 +4596,18 @@ fn paint_audio_clip(p: &Painter, pal: Palette, r: Rect, clip: &AudioClip, s: Cli
         clip.length.max(0.0) as f32 * pps,
         (clip.fade_in as f32 * pps, clip.fade_out as f32 * pps),
     );
+    // A clip whose staged WAV is absent (song moved to another machine)
+    // gets a centered "missing file" tag in the content area — the clip
+    // still exists, but plays and exports as silence.
+    if missing && inner.is_positive() {
+        let font = theme::body_font(theme::TEXT_KICKER);
+        let g = cp.layout_no_wrap("missing file".to_owned(), font, theme::ink_on(pal.danger));
+        let tag = Rect::from_center_size(inner.center(), g.size() + vec2(10.0, 5.0));
+        if tag.width() < inner.width() {
+            cp.rect_filled(tag, theme::RADIUS_S, pal.danger);
+            cp.galley(tag.center() - g.size() * 0.5, g, theme::ink_on(pal.danger));
+        }
+    }
 }
 
 #[cfg(test)]

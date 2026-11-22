@@ -197,6 +197,7 @@ fn render(project: &Project, out: &Path) -> Result<(), String> {
     project
         .validate()
         .map_err(|err| format!("Cannot render an invalid project: {err}"))?;
+    warn_missing_audio(project);
     let duration = project.total_steps() * seconds_per_step(project);
     eprintln!(
         "Rendering \"{}\" ({:.1} s) to {}",
@@ -229,6 +230,7 @@ fn render_stems(project: &Project, dir: &Path) -> Result<(), String> {
     project
         .validate()
         .map_err(|err| format!("Cannot render an invalid project: {err}"))?;
+    warn_missing_audio(project);
     eprintln!(
         "Rendering stems of \"{}\" ({} tracks) to {}",
         project.name,
@@ -321,7 +323,32 @@ fn check(song: &Path) -> Result<(), String> {
         events.len(),
         audible.len()
     );
+    let missing_audio = persistence::missing_audio_refs(&project);
+    if !missing_audio.is_empty() {
+        println!(
+            "  WARNING: {} audio clip file{} not in this PC's audio store; \
+             those clips play and export as silence: {}",
+            missing_audio.len(),
+            if missing_audio.len() == 1 { "" } else { "s" },
+            missing_audio.join(", ")
+        );
+    }
     Ok(())
+}
+
+/// stderr warning for audio clips whose files are not in this PC's audio
+/// store — the render itself stays silent on them, so say it up front.
+fn warn_missing_audio(project: &Project) {
+    let missing = persistence::missing_audio_refs(project);
+    if !missing.is_empty() {
+        eprintln!(
+            "WARNING: {} audio clip file{} missing from the audio store; those \
+             clips will be silent: {}",
+            missing.len(),
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", ")
+        );
+    }
 }
 
 /// "my-synths" / "retro.chip_kit" -> "My Synths" / "Retro Chip Kit".

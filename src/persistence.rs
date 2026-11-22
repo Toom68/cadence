@@ -201,6 +201,30 @@ fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, Strin
     })
 }
 
+/// Store-relative names of audio files `project` references that are not
+/// staged in `dir`. Used to warn when a song travels between machines: a
+/// missing clip file plays and exports as silence.
+pub fn missing_audio_refs_in(project: &crate::model::Project, dir: &Path) -> Vec<String> {
+    let mut missing: Vec<String> = project
+        .tracks
+        .iter()
+        .flat_map(|track| track.audio_clips.iter().map(|clip| clip.file.clone()))
+        .filter(|name| {
+            fs::metadata(dir.join(name))
+                .map(|m| !m.is_file())
+                .unwrap_or(true)
+        })
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+/// [`missing_audio_refs_in`] for the user audio store.
+pub fn missing_audio_refs(project: &crate::model::Project) -> Vec<String> {
+    missing_audio_refs_in(project, &audio_dir())
+}
+
 /// Reads a staged file by its store-relative `name` for decoding. Returns
 /// `None` for anything unsafe, missing, unreadable or oversize — a missing
 /// clip file is a documented tolerance (the clip plays silence), never a
@@ -628,6 +652,36 @@ mod tests {
 
         let _ = fs::remove_dir_all(&src);
         let _ = fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn missing_audio_refs_lists_only_absent_staged_files() {
+        let store = temp_dir("refs");
+        let src = temp_dir("refs-src");
+        let (wav, _bytes) = write_test_wav(&src, "Take.wav");
+        let staged = stage_audio_file_into(&store, &wav).unwrap();
+
+        let mut project = crate::model::Project::demo();
+        let mut track = crate::model::create_audio_track("Audio");
+        track.audio_clips.push(crate::model::AudioClip::new(
+            &staged.file,
+            "Take",
+            0.0,
+            16.0,
+        ));
+        track
+            .audio_clips
+            .push(crate::model::AudioClip::new("gone.wav", "Gone", 16.0, 16.0));
+        track.audio_clips.push(crate::model::AudioClip::new(
+            "gone.wav", "Gone 2", 32.0, 16.0,
+        ));
+        project.tracks.push(track);
+
+        let missing = missing_audio_refs_in(&project, &store);
+        assert_eq!(missing, vec!["gone.wav".to_owned()]);
+
+        let _ = fs::remove_dir_all(&store);
+        let _ = fs::remove_dir_all(&src);
     }
 
     #[test]

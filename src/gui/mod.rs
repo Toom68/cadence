@@ -193,6 +193,11 @@ pub struct CadenceApp {
     /// Installed SoundFont catalog for the sound picker; the parsed fonts are
     /// also pushed to the audio engine so `Track::font` references play.
     fonts: crate::font::FontLibrary,
+    /// Store-relative names of audio files this song references that are not
+    /// staged in this PC's audio store — refreshed by `replace_project` and
+    /// drives the arranger "missing file" mark. A song moved between
+    /// machines otherwise plays and exports those clips as silence.
+    missing_audio: std::collections::BTreeSet<String>,
     /// Fingerprint of the fonts dir at the last catalog refresh.
     font_stamp: u64,
     catalog_watch: Option<CatalogWatch>,
@@ -300,6 +305,7 @@ impl CadenceApp {
             },
             pack_stamp,
             fonts,
+            missing_audio: Default::default(),
             font_stamp,
             catalog_watch: None,
             window_title: String::new(),
@@ -393,6 +399,13 @@ impl CadenceApp {
         self.arranger.scroll_y = 0.0;
         self.arranger.reset_gesture();
         self.editor.reset_view();
+        self.missing_audio = if self.io_enabled {
+            crate::persistence::missing_audio_refs(&self.project)
+                .into_iter()
+                .collect()
+        } else {
+            Default::default()
+        };
         self.engine_dirty = true;
         self.last_edit = (!clean).then(Instant::now);
         self.fix_selection();
