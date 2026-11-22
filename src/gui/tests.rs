@@ -3743,3 +3743,14 @@ fn no_screen_paints_widget_id_clash_warnings() {
     }
     assert!(clashes.is_empty(), "id clashes:\n{clashes:#?}");
 }
+
+#[test]
+fn roll_notes_light_up_only_while_the_playhead_is_inside_them() {
+    use super::editor::note_is_live;
+    let n = Note::new(60, 4.0, 2.5, 0.8);
+    assert!(!note_is_live(&n, None), "stopped: nothing lights");
+    assert!(!note_is_live(&n, Some(3.99)));
+    assert!(note_is_live(&n, Some(4.0)), "lights on its start");
+    assert!(note_is_live(&n, Some(6.49)));
+    assert!(!note_is_live(&n, Some(6.5)), "off again at its end");
+}

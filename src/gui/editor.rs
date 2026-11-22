@@ -187,6 +187,13 @@ pub(super) fn covering_pattern(track: &Track, pos: f64) -> Option<(u64, f64)> {
     })
 }
 
+/// Whether the playing transport (pattern-relative step, `None` when
+/// stopped or outside this pattern) is inside `n` — piano-roll notes light
+/// up like beat-grid hits while they sound.
+pub(super) fn note_is_live(n: &Note, playing_at: Option<f64>) -> bool {
+    playing_at.is_some_and(|t| t >= n.start && t < n.start + n.duration)
+}
+
 /// Recorded note start: the song step floored onto the snap grid.
 pub(super) fn record_start(pos: f64, snap: f64) -> f64 {
     snap_floor(pos.max(0.0), snap)
@@ -2129,6 +2136,9 @@ impl CadenceApp {
         let visible_lo = roll.pitch_at(roll.grid.bottom() - 0.5).unwrap_or(0);
         let visible_hi = roll.pitch_at(roll.grid.top()).unwrap_or(LAST_PITCH);
         let label_font = theme::body_font(9.5);
+        let playing_at = self
+            .pattern_playhead(track, pid)
+            .filter(|_| self.transport.playing);
         for n in &pat.notes {
             if n.pitch < visible_lo || n.pitch > visible_hi {
                 continue;
@@ -2138,7 +2148,12 @@ impl CadenceApp {
                 continue;
             }
             let selected = self.sel.notes.contains(&n.id);
-            let body = note_fill(pal, color, n.velocity);
+            // Notes under the playing playhead light up like beat-grid hits.
+            let live = note_is_live(n, playing_at);
+            let mut body = note_fill(pal, color, n.velocity);
+            if live {
+                body = theme::mix(body, pal.text, 0.25);
+            }
             p.rect_filled(r, 3.0, body);
             p.rect_stroke(
                 r,
@@ -2153,6 +2168,8 @@ impl CadenceApp {
                     Stroke::new(2.0_f32, pal.accent),
                     StrokeKind::Outside,
                 );
+            } else if live {
+                p.rect_stroke(r, 3.0, Stroke::new(1.5_f32, pal.accent), StrokeKind::Inside);
             }
             let ink = theme::ink_on(body);
             // Resize affordance on the right edge
