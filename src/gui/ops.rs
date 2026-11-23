@@ -3026,6 +3026,10 @@ pub fn length_label(steps: u32) -> String {
     }
 }
 
+// Chord lane → parts, drum grooves and song templates live in their own file.
+mod songwriting;
+pub use songwriting::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;

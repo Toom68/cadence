@@ -548,6 +548,10 @@ pub(super) struct ArrangerView {
     region_press: Option<f64>,
     context: Option<ContextTarget>,
     marker_rename: Option<MarkerRename>,
+    /// The chord chip under the pointer last frame as `(id, root,
+    /// quality)`: a chip auditions once when the pointer enters it, and
+    /// again when a click changes its chord.
+    chord_hover: Option<(u64, u8, ChordQuality)>,
     grid_width: f32,
     /// Last frame's timeline grid rect (also used by headless tests).
     pub(super) grid: Rect,
@@ -581,6 +585,7 @@ impl Default for ArrangerView {
             region_press: None,
             context: None,
             marker_rename: None,
+            chord_hover: None,
             grid_width: 800.0,
             grid: Rect::NOTHING,
             auto_lanes: HashMap::new(),
@@ -2833,6 +2838,21 @@ impl CadenceApp {
         } else if matches!(self.arranger.context, Some(ContextTarget::Ruler { .. })) {
             resp.context_menu(|ui| self.arranger_context_menu(ui));
         }
+        // Hovering a chord chip auditions it through the selected track
+        // (the chord strip's voicing) — once per chip entered, not per frame.
+        let pointer_free = self.arranger.drag.is_none() && !ui.input(|i| i.pointer.any_down());
+        let chip = resp
+            .hover_pos()
+            .filter(|_| pointer_free)
+            .and_then(|pos| self.chord_event_at(ui.ctx(), pos, ruler, tl))
+            .and_then(|id| self.project.chord_events.iter().find(|e| e.id == id))
+            .map(|e| (e.id, e.root, e.quality));
+        if chip != self.arranger.chord_hover {
+            self.arranger.chord_hover = chip;
+            if let Some((id, _, _)) = chip {
+                self.audition_chord_event(id);
+            }
+        }
         // One short tip per strip; marker flags and the loop band's ✕
         // explain themselves, so the ruler stays quiet over them.
         if let Some(pos) = resp.hover_pos() {
@@ -2927,6 +2947,21 @@ impl CadenceApp {
                 }
             }
         });
+        // Turn the whole lane into a part on the selected track.
+        ui.separator();
+        let tid = self.sel.track;
+        let name = self
+            .selected_track()
+            .map_or("no track selected".to_string(), |t| t.name.clone());
+        ui.label(
+            RichText::new(format!("Selected track: {name}"))
+                .small()
+                .color(pal.text_faint),
+        );
+        let blocker = self.lane_part_blocker(tid);
+        if let (Some(pick), Some(tid)) = (super::editor::lane_part_menu(ui, blocker), tid) {
+            self.apply_lane_part(tid, pick);
+        }
     }
 
     /// The chord a plain click on the strip's empty area writes on the bar
@@ -5388,6 +5423,47 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::NONE,
         }]
+    }
+
+    #[test]
+    fn hovering_a_chord_chip_auditions_it_once_through_the_selected_track() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        let melodic = app
+            .project
+            .tracks
+            .iter()
+            .find(|t| !t.shows_drum_grid())
+            .unwrap()
+            .id;
+        app.select_track(melodic);
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let grid = app.arranger.grid;
+        let ruler = Rect::from_min_max(pos2(grid.left(), grid.top() - RULER_H), grid.right_top());
+        let tl = app.arranger.timeline(grid);
+        let ev = app.project.chord_events[0].clone();
+        let next = app.project.chord_events.get(1).map(|e| e.step);
+        let chip = chord_chip(&ctx, &ev, next, app.project.key, ruler, tl).expect("on screen");
+        let hover = vec![egui::Event::PointerMoved(chip.center())];
+        run_frames(&ctx, &mut app, size, 2, hover, Modifiers::NONE);
+        assert_eq!(app.arranger.chord_hover, Some((ev.id, ev.root, ev.quality)));
+        assert!(app.audition_chord_event(ev.id), "a melodic track plays it");
+        // Leaving the chip re-arms it.
+        let away = vec![egui::Event::PointerMoved(grid.center())];
+        run_frames(&ctx, &mut app, size, 2, away, Modifiers::NONE);
+        assert_eq!(app.arranger.chord_hover, None);
+        // Drum tracks stay silent.
+        let drums = app
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.shows_drum_grid())
+            .unwrap()
+            .id;
+        app.select_track(drums);
+        assert!(!app.audition_chord_event(ev.id));
+        assert!(!app.dirty(), "auditioning is not an edit");
     }
 
     /// Esc cancels an inline marker rename (it used to commit it: the app's

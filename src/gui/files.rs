@@ -138,10 +138,16 @@ impl CadenceApp {
         }
     }
 
-    /// Replaces the song with a blank one named `name` (trimmed; blank falls
-    /// back to the default name) in `key`. Used by the New Song dialog.
-    pub(super) fn create_new_song(&mut self, name: &str, key: SongKey) {
-        let mut project = Project::empty();
+    /// Replaces the song with a new one named `name` (trimmed; blank falls
+    /// back to the default name) in `key`, built from `template` (Empty is
+    /// the blank one-drum-track song). Used by the New Song dialog.
+    pub(super) fn create_new_song(
+        &mut self,
+        name: &str,
+        key: SongKey,
+        template: ops::SongTemplate,
+    ) {
+        let mut project = ops::template_project(template, key);
         let name: String = name.trim().chars().take(MAX_NAME_CHARS).collect();
         let name = name.trim_end();
         if !name.is_empty() {
@@ -149,10 +155,15 @@ impl CadenceApp {
         }
         project.key = SongKey::new(key.root, key.mode);
         self.replace_project(project, None, true);
-        self.set_status(
-            StatusKind::Success,
-            format!("Started a new song in {}.", ops::key_label(key)),
-        );
+        let text = match template {
+            ops::SongTemplate::Empty => format!("Started a new song in {}.", ops::key_label(key)),
+            t => format!(
+                "Started a new {} song in {} — press Space to hear it.",
+                t.label(),
+                ops::key_label(key)
+            ),
+        };
+        self.set_status(StatusKind::Success, text);
     }
 
     // ----- open / save -----------------------------------------------------

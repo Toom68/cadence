@@ -58,6 +58,8 @@ pub(super) enum Dialog {
 pub(super) struct NewSongDraft {
     pub(super) name: String,
     pub(super) key: SongKey,
+    /// What the song starts from: blank, or a template built in that key.
+    pub(super) template: ops::SongTemplate,
 }
 
 impl Default for NewSongDraft {
@@ -65,6 +67,7 @@ impl Default for NewSongDraft {
         NewSongDraft {
             name: Project::empty().name,
             key: SongKey::default(),
+            template: ops::SongTemplate::default(),
         }
     }
 }
@@ -158,6 +161,34 @@ fn mode_label(mode: KeyMode) -> &'static str {
 }
 
 /// Root-note chips plus Major/Minor chips. Returns true when `key` changed.
+/// One chip per [`ops::SongTemplate`] for the New Song dialog, in a
+/// single row. Returns whether the choice changed.
+fn template_picker(ui: &mut Ui, pal: Palette, template: &mut ops::SongTemplate) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for t in ops::SongTemplate::ALL {
+            let on = *template == t;
+            if theme::chip(
+                ui,
+                pal,
+                t.label(),
+                on,
+                pal.accent,
+                vec2(62.0, 24.0),
+                t.hint(),
+            )
+            .clicked()
+                && !on
+            {
+                *template = t;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
 fn key_picker(ui: &mut Ui, pal: Palette, key: &mut SongKey) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
@@ -492,15 +523,20 @@ impl CadenceApp {
             ui.label(theme::kicker_text(pal, "KEY"));
             ui.add_space(theme::GAP_XS);
             key_picker(ui, pal, &mut draft.key);
+            ui.add_space(theme::GAP_M);
+            ui.label(theme::kicker_text(pal, "START FROM"));
+            ui.add_space(theme::GAP_XS);
+            template_picker(ui, pal, &mut draft.template);
             ui.add_space(theme::GAP_S);
-            theme::hint(
-                ui,
-                pal,
-                &format!(
-                    "{} — the Arpeggiator offers this key's chords. You can change it later.",
+            let hint = match draft.template {
+                ops::SongTemplate::Empty => format!(
+                    "{} — the chord strip and Arpeggiator offer this key's chords. You can \
+                     change it later.",
                     ops::key_label(draft.key)
                 ),
-            );
+                t => format!("{} In {}.", t.hint(), ops::key_label(draft.key)),
+            };
+            theme::hint(ui, pal, &hint);
             button_row(ui, |ui| {
                 if theme::primary_button(ui, pal, "Create").clicked() {
                     create = true;
@@ -515,7 +551,7 @@ impl CadenceApp {
         }
         if create {
             let (name, key) = (draft.name.clone(), draft.key);
-            self.create_new_song(&name, key);
+            self.create_new_song(&name, key, draft.template);
             return false;
         }
         !cancel && !resp.should_close()
@@ -1485,7 +1521,10 @@ const SHORTCUT_SECTIONS: &[Section] = &[
     Section {
         title: "FILE",
         rows: &[
-            ("New song", Shortcut(&super::SC_NEW)),
+            (
+                "New song, blank or from a template",
+                Shortcut(&super::SC_NEW),
+            ),
             ("Open", Shortcut(&super::SC_OPEN)),
             ("Save", Shortcut(&super::SC_SAVE)),
             ("Save as", Shortcut(&super::SC_SAVE_AS)),
@@ -1620,10 +1659,15 @@ const ARRANGER_SECTIONS: &[Section] = &[
         title: "CHORD LANE (BOTTOM OF THE RULER)",
         rows: &[
             ("Add the key's chord", Mouse("Click the lane")),
+            ("Hear a chord on the selected track", Mouse("Hover a chord")),
             ("Change the chord quality", Mouse("Click a chord")),
             ("Change the chord root", Mouse("{shift}+click a chord")),
             ("Move a chord", Mouse("Drag it")),
             ("Delete a chord", Mouse("Right-click it")),
+            (
+                "Play the chords or a bassline on the selected track",
+                Mouse("Right-click the empty lane"),
+            ),
         ],
     },
     Section {
@@ -1662,7 +1706,10 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Accent: 100 → 70 → 40%", Mouse("{shift}+click a hit")),
             ("Erase", Mouse("Right-click / right-drag")),
             ("Hear a piece", Mouse("Click its name")),
-            ("Four on the floor on the top row", Mouse("Click Fill")),
+            (
+                "Stamp a groove (rock, house, trap…) or a fill",
+                Mouse("Click Fill"),
+            ),
         ],
     },
     Section {
@@ -1688,6 +1735,10 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Switch pattern", Mouse("Click the pattern name")),
             ("Rename the pattern", Mouse("Double-click the pattern name")),
             ("Rename, clear notes, delete pattern", Mouse("Click ⋯")),
+            (
+                "Play the song's chords or a bassline here",
+                Mouse("Click ⋯"),
+            ),
             (
                 "Place it at the playhead",
                 Mouse("Click Add to arrangement"),
@@ -2201,8 +2252,13 @@ mod tests {
         }
         /// Area id, dialog, and whether its body is long enough to scroll.
         type Case = (&'static str, fn() -> Dialog, bool);
-        let dialogs: [Case; 5] = [
+        let dialogs: [Case; 6] = [
             ("cadence-notices", || Dialog::Notices, true),
+            (
+                "cadence-new-song",
+                || Dialog::NewSong(NewSongDraft::default()),
+                false,
+            ),
             ("cadence-help", || Dialog::Help, true),
             ("cadence-pack-errors", pack_errors, true),
             ("cadence-about", || Dialog::About, false),

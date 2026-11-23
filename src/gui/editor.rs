@@ -419,6 +419,15 @@ enum HitZone {
     Resize,
 }
 
+/// A chord-lane part chosen from a menu (see `CadenceApp::lane_part_menu`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LanePartPick {
+    /// Play the chord lane as block chords.
+    Chords,
+    /// A bassline from the chord lane in this style.
+    Bass(ops::BassStyle),
+}
+
 /// What the pattern header asked for this frame (applied after painting).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum HeaderAction {
@@ -432,6 +441,7 @@ enum HeaderAction {
     ClearNotes,
     DeletePattern,
     AddToArrangement,
+    LanePart(LanePartPick),
 }
 
 /// Inline pattern rename in progress: the header shows a text field in
@@ -452,7 +462,8 @@ enum ToolAction {
     Humanize,
     ScaleVelocity(f32),
     DeleteNotes,
-    Fill,
+    /// Stamp a named groove from the drum toolbar's Fill menu.
+    Groove(ops::Groove),
     ScaleSnap,
     ScaleHighlight,
 }
@@ -1152,6 +1163,7 @@ impl CadenceApp {
             let has_notes = !pat.notes.is_empty();
             let add_tip =
                 "Add this pattern to the arrangement at the playhead (snapped to the bar)";
+            let lane_blocker = self.lane_part_blocker(Some(tid));
             let rename = &mut self.editor.rename;
             let out = toolbar_row(ui, pal, ("editor-header", tid), |tb| {
                 let in_menu = tb.in_menu();
@@ -1285,6 +1297,10 @@ impl CadenceApp {
                             action = Some(HeaderAction::ClearNotes);
                         }
                         ui.separator();
+                        if let Some(pick) = lane_part_menu(ui, lane_blocker) {
+                            action = Some(HeaderAction::LanePart(pick));
+                        }
+                        ui.separator();
                         let ink = if many { pal.danger } else { pal.text_disabled };
                         if ui
                             .add_enabled(
@@ -1413,6 +1429,7 @@ impl CadenceApp {
                 let start = snap_floor(self.transport.position, 16.0);
                 self.place_clip(tid, Some(pid), start);
             }
+            HeaderAction::LanePart(pick) => self.apply_lane_part(tid, pick),
         }
     }
 
@@ -1695,20 +1712,7 @@ impl CadenceApp {
             ToolAction::Humanize => self.humanize_notes(tid, pid),
             ToolAction::ScaleVelocity(gain) => self.scale_velocities(tid, pid, gain),
             ToolAction::DeleteNotes => self.delete_selection(),
-            ToolAction::Fill => {
-                let pitch = self
-                    .track_ref(tid)
-                    .and_then(|t| t.drum_rows().first().map(|(p, _)| *p))
-                    .unwrap_or(36);
-                let vel = self.editor.velocity;
-                self.edit("Fill pattern", None, |p| {
-                    if let Some(pat) = ops::pattern_mut(p, tid, pid) {
-                        for s in (0..pat.length).step_by(4) {
-                            ops::set_drum(pat, pitch, s, true, vel);
-                        }
-                    }
-                });
-            }
+            ToolAction::Groove(groove) => self.stamp_groove(tid, pid, groove),
             ToolAction::ScaleSnap | ToolAction::ScaleHighlight => {}
         }
     }
@@ -3474,6 +3478,24 @@ impl CadenceApp {
         );
     }
 
+    /// Hover audition for an arranger chord-lane chip: plays chord event
+    /// `id` once through the selected track, voiced like the chord strip.
+    /// Silent without a melodic track selected. Returns whether a track was
+    /// asked to play it (headless apps have no audio engine to hear it).
+    pub(super) fn audition_chord_event(&self, id: u64) -> bool {
+        let Some(ev) = self.project.chord_events.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let Some(track) = self.selected_track() else {
+            return false;
+        };
+        if track.audio || track.shows_drum_grid() {
+            return false;
+        }
+        self.audition_chord_spec(track, &ops::ChordSpec::new(ev.root, ev.quality));
+        true
+    }
+
     /// Hover audition for the chord strip: plays the chord's tones once.
     fn audition_chord_spec(&self, track: &Track, spec: &ops::ChordSpec) {
         if track.shows_drum_grid() {
@@ -3483,6 +3505,115 @@ impl CadenceApp {
             for &pitch in pitches.iter().take(4) {
                 self.preview(track.id, pitch, 0.7);
             }
+        }
+    }
+
+    /// Why the chord-lane parts ("Play song chords", "Bassline from
+    /// chords") can't write into `tid` right now, or `None` when they can.
+    pub(super) fn lane_part_blocker(&self, tid: Option<u64>) -> Option<&'static str> {
+        let Some(track) = tid.and_then(|id| ops::track(&self.project, id)) else {
+            return Some(ops::LanePartError::NoTrack.message());
+        };
+        if track.audio {
+            Some(ops::LanePartError::AudioTrack.message())
+        } else if track.shows_drum_grid() {
+            Some(ops::LanePartError::DrumTrack.message())
+        } else if self.project.chord_events.is_empty() {
+            Some(ops::LanePartError::NoChords.message())
+        } else {
+            None
+        }
+    }
+
+    /// Reports a chord-lane part: selects its new pattern and says what
+    /// went in, or explains the refusal.
+    fn finish_lane_part(
+        &mut self,
+        tid: u64,
+        what: &str,
+        result: Result<ops::LanePart, ops::LanePartError>,
+    ) {
+        match result {
+            Ok(part) => {
+                self.select_pattern(tid, part.pattern_id);
+                let name = self
+                    .track_ref(tid)
+                    .map_or_else(String::new, |t| t.name.clone());
+                self.set_status(
+                    StatusKind::Success,
+                    format!(
+                        "{what} on {name}: {} chord{}, {} note{}.",
+                        part.chords,
+                        sidebar::plural(part.chords),
+                        part.notes,
+                        sidebar::plural(part.notes)
+                    ),
+                );
+            }
+            Err(e) => self.set_status(StatusKind::Warning, e.message()),
+        }
+    }
+
+    /// "Play song chords": writes the chord lane into track `tid` as block
+    /// chords — each for its whole span, re-struck every bar — voiced with
+    /// the chord strip's inversion and slash-bass options and rolled when
+    /// its strum spacing is set. The part gets its own pattern and a clip
+    /// from the first chord's bar to the song end, replacing an earlier
+    /// run. One undo step; drum/audio tracks and an empty lane are refused.
+    pub(super) fn play_song_chords(&mut self, tid: u64) {
+        let voiced: Vec<(ops::ChordSpec, Vec<u8>)> = match ops::track(&self.project, tid) {
+            Some(track) if !track.shows_drum_grid() && !track.audio => {
+                ops::chord_lane_spans(&self.project)
+                    .iter()
+                    .map(|s| {
+                        let pitches = self.spec_pitches(track, &s.spec).map(|(p, _)| p);
+                        (s.spec, pitches.unwrap_or_default())
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let spacing = self.editor.chord_spacing;
+        let strum = (spacing > 0.0).then_some((spacing, self.editor.chord_direction));
+        let velocity = self.editor.velocity;
+        let mut result = Err(ops::LanePartError::NoTrack);
+        self.edit("Play song chords", None, |p| {
+            result = ops::play_chords_on_track(
+                p,
+                tid,
+                |spec| {
+                    voiced
+                        .iter()
+                        .find(|(s, _)| s == spec)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default()
+                },
+                strum,
+                velocity,
+            );
+        });
+        self.finish_lane_part(tid, "Played the song chords", result);
+    }
+
+    /// "Bassline from chords": writes a `style` bassline following the
+    /// chord lane into track `tid` (roots in C2–B2; the chord strip's
+    /// slash-bass degree, when set, becomes a pedal). Placement, undo and
+    /// refusals as [`Self::play_song_chords`].
+    pub(super) fn bassline_from_chords(&mut self, tid: u64, style: ops::BassStyle) {
+        let bass = self.editor.chord_bass;
+        let velocity = self.editor.velocity;
+        let mut result = Err(ops::LanePartError::NoTrack);
+        self.edit(&format!("Bassline ({})", style.label()), None, |p| {
+            result = ops::bassline_from_chords(p, tid, style, bass, velocity);
+        });
+        self.finish_lane_part(tid, &format!("Wrote a {} bassline", style.label()), result);
+    }
+
+    /// Runs a [`LanePartPick`] on track `tid`.
+    pub(super) fn apply_lane_part(&mut self, tid: u64, pick: LanePartPick) {
+        match pick {
+            LanePartPick::Chords => self.play_song_chords(tid),
+            LanePartPick::Bass(style) => self.bassline_from_chords(tid, style),
         }
     }
 
@@ -3840,6 +3971,54 @@ impl CadenceApp {
 
     // ----- drum grid --------------------------------------------------------
 
+    /// Stamps `groove` into drum pattern `pid` of track `tid`, mapping its
+    /// pieces onto the track's kit rows (pieces the kit lacks are skipped
+    /// and named in the status line). Hit velocities follow the toolbar
+    /// velocity. One undo step.
+    pub(super) fn stamp_groove(&mut self, tid: u64, pid: u64, groove: ops::Groove) {
+        let Some(track) = self.track_ref(tid) else {
+            return;
+        };
+        let rows: Vec<(u8, String)> = track
+            .drum_rows()
+            .into_iter()
+            .map(|(p, n)| (p, n.to_string()))
+            .collect();
+        let rows: Vec<(u8, &str)> = rows.iter().map(|(p, n)| (*p, n.as_str())).collect();
+        let velocity = self.editor.velocity;
+        let mut out = ops::GrooveOutcome::default();
+        self.edit(groove.label(), None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                out = ops::stamp_groove(pat, &rows, groove, velocity);
+            }
+        });
+        // Replaced hits may have been selected.
+        if let Some(pat) = self.pat_ref(tid, pid) {
+            let live: BTreeSet<u64> = pat.notes.iter().map(|n| n.id).collect();
+            self.sel.notes.retain(|id| live.contains(id));
+        }
+        if out.hits == 0 {
+            self.set_status(
+                StatusKind::Warning,
+                format!("This kit has none of the pieces {} needs.", groove.label()),
+            );
+            return;
+        }
+        let mut text = format!(
+            "{} — {} hit{}.",
+            groove.label(),
+            out.hits,
+            sidebar::plural(out.hits)
+        );
+        if !out.missing.is_empty() {
+            text.push_str(&format!(
+                " This kit has no {}, so those were skipped.",
+                out.missing.join(" or ")
+            ));
+        }
+        self.set_status(StatusKind::Success, text);
+    }
+
     /// Step-sequencer toolbar: velocity, Fill, the shared Edit group, an
     /// off-kit warning when imported notes miss the kit rows, and the
     /// selection on the right.
@@ -3880,15 +4059,28 @@ impl CadenceApp {
         let out = toolbar_row(ui, pal, ("drum-tools", tid), |tb| {
             velocity_item(tb, pal, &mut ed.velocity);
             tb.separator();
-            if tb
-                .button(
+            // Fill opens the groove menu: a popup under the row button, or
+            // a submenu when the button sits in the toolbar's ⋯ overflow.
+            if tb.in_menu() {
+                tb.item(0.0, |ui| {
+                    ui.menu_button("Fill", |ui| {
+                        if let Some(g) = groove_menu(ui) {
+                            act = Some(ToolAction::Groove(g));
+                        }
+                    })
+                });
+            } else {
+                let resp = tb.button(
                     Some(theme::Icon::Wand),
                     "Fill",
-                    "Four-on-the-floor on the top row (the kick for the built-in kit)",
-                )
-                .clicked()
-            {
-                act = Some(ToolAction::Fill);
+                    "Stamp a groove into this pattern — four on the floor, rock, boom bap, \
+                     trap, house, dembow, a fill…",
+                );
+                egui::Popup::menu(&resp).show(|ui| {
+                    if let Some(g) = groove_menu(ui) {
+                        act = Some(ToolAction::Groove(g));
+                    }
+                });
             }
             tb.separator();
             if let Some(a) = note_edit_items(tb, targets, &quantize_tip) {
@@ -4467,6 +4659,64 @@ impl CadenceApp {
             paint_playhead_marker(&p, pal, g.x(local), g.ruler, self.transport.playing);
         }
     }
+}
+
+/// The chord-lane part actions as menu rows — shared by the pattern ⋯
+/// menu and the arranger's chord-lane menu. `blocker` (from
+/// `CadenceApp::lane_part_blocker`) disables them with the reason on hover.
+/// Returns what was picked.
+pub(super) fn lane_part_menu(ui: &mut Ui, blocker: Option<&'static str>) -> Option<LanePartPick> {
+    let ok = blocker.is_none();
+    let why = blocker.unwrap_or_default();
+    let mut pick = None;
+    if ui
+        .add_enabled(ok, egui::Button::new("Play song chords on this track"))
+        .on_hover_text(
+            "Write the chord lane into this track as block chords across the song \
+             (uses the chord strip's inversion, slash bass and strum)",
+        )
+        .on_disabled_hover_text(why)
+        .clicked()
+    {
+        pick = Some(LanePartPick::Chords);
+    }
+    ui.add_enabled_ui(ok, |ui| {
+        ui.menu_button("Bassline from chords", |ui| {
+            for style in ops::BassStyle::ALL {
+                if ui
+                    .button(style.label())
+                    .on_hover_text(style.hint())
+                    .clicked()
+                {
+                    pick = Some(LanePartPick::Bass(style));
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text(why);
+    });
+    pick
+}
+
+/// The drum toolbar's Fill menu: the named grooves (which replace the
+/// pattern), then the additive tools. Returns the pick.
+fn groove_menu(ui: &mut Ui) -> Option<ops::Groove> {
+    ui.set_min_width(200.0);
+    let mut pick = None;
+    for g in ops::Groove::ALL {
+        if g == ops::Groove::FillLastBar {
+            ui.separator();
+        }
+        let tip = if g.replaces() {
+            format!("{} · replaces this pattern's hits", g.hint())
+        } else {
+            g.hint().to_string()
+        };
+        if ui.button(g.label()).on_hover_text(tip).clicked() {
+            pick = Some(g);
+        }
+    }
+    pick
 }
 
 fn note_len_label(steps: f64) -> String {
@@ -5356,6 +5606,48 @@ mod tests {
             }
             f.app.editor.chord_open = false;
         }
+    }
+
+    #[test]
+    fn fill_button_opens_the_groove_menu() {
+        let mut f = Frames::demo(1360.0, 860.0);
+        f.step();
+        f.select(0);
+        f.steps(2);
+        assert!(!egui::Popup::is_any_open(&f.ctx));
+        // Velocity, then Fill.
+        let fill = f.app.editor.layout.tools.1[1];
+        f.click(fill.center());
+        f.steps(2);
+        assert!(egui::Popup::is_any_open(&f.ctx), "Fill opens its menu");
+    }
+
+    #[test]
+    fn grooves_stamp_onto_the_kit_rows_as_one_undo_step() {
+        let (mut app, tid, pid) = app_with(Instrument::Drums, &[(51, 3.0, 1.0, 0.8)]);
+        app.stamp_groove(tid, pid, ops::Groove::BackbeatRock);
+        let pat = pattern_of(&app, tid, pid);
+        let on = |pitch: u8| {
+            pat.notes
+                .iter()
+                .filter(|n| n.pitch == pitch)
+                .map(|n| n.start)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(on(36), vec![0.0, 8.0, 10.0]);
+        assert_eq!(on(38), vec![4.0, 12.0]);
+        assert_eq!(on(42).len(), 8);
+        assert!(on(51).is_empty(), "a groove replaces the pattern");
+        assert_eq!(app.history.undo_label(), Some("Backbeat rock"));
+        assert!(status_text(&app).starts_with("Backbeat rock — 13 hits"));
+        app.undo();
+        assert_eq!(pattern_of(&app, tid, pid).notes.len(), 1);
+        // "Kick on every beat" keeps the old Fill: kicks added, nothing removed.
+        app.stamp_groove(tid, pid, ops::Groove::KickEveryBeat);
+        assert_eq!(pattern_of(&app, tid, pid).notes.len(), 5);
+        // The built-in kit has every piece House needs.
+        app.stamp_groove(tid, pid, ops::Groove::House);
+        assert!(!status_text(&app).contains("skipped"));
     }
 
     #[test]
