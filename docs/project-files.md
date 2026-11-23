@@ -78,7 +78,7 @@ A track may carry `"preset"` — a full copy of a JSON instrument-pack preset (`
 
 **File → Save Copy with Audio…** writes the song to a new `.cadence` file *and* a sibling folder named `<file name> Audio/` (for `Demo.cadence`: `Demo Audio/`) holding every WAV the song's clips use, under the same staged names. The open song (its file and unsaved state) is not changed. Move or share the `.cadence` file together with its folder.
 
-When a song is opened, every referenced audio file missing from this computer's store is looked up first in that sibling `<file name> Audio/` folder, then in the song's own folder. A file found there is checked (it must decode as a WAV, and a `<content-hash>.wav` name only accepts content with that hash) and **copied into the audio store**, so the song keeps playing even after the folder is moved away. Anything still missing stays a silent clip with the usual warning. (The CLI `--render`/`--check` paths read only the store.)
+When a song is opened, every referenced audio file missing from this computer's store is looked up first in that sibling `<file name> Audio/` folder, then in the song's own folder. A file found there is checked (it must decode as a WAV, and a `<content-hash>.wav` name only accepts content with that hash) and **copied into the audio store**, so the song keeps playing even after the folder is moved away. Anything still missing stays a silent clip with the usual warning. The CLI `--render`/`--render-stems` do the same before rendering. `--check` is read-only: it reports audio it finds beside the song (on stderr) and warns only about files missing everywhere, but copies nothing into the store.
 
 ## Validation limits
 

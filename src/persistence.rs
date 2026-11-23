@@ -360,6 +360,30 @@ pub fn import_song_audio(project: &Project, song: &Path) -> SongAudioImport {
 
 /// [`import_song_audio`] into an explicit audio store.
 pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> SongAudioImport {
+    resolve_song_audio(store, project, song, true)
+}
+
+/// Read-only [`import_song_audio`] (for `cadence --check`): reports which
+/// missing files the song's `<stem> Audio` folder or own folder could
+/// supply (in `staged`) without copying anything into the store.
+pub fn find_song_audio(project: &Project, song: &Path) -> SongAudioImport {
+    find_song_audio_in(&audio_dir(), project, song)
+}
+
+/// [`find_song_audio`] against an explicit audio store.
+pub fn find_song_audio_in(store: &Path, project: &Project, song: &Path) -> SongAudioImport {
+    resolve_song_audio(store, project, song, false)
+}
+
+/// Shared core of [`import_song_audio_into`] / [`find_song_audio_in`]:
+/// `stage` copies each usable file into `store`, otherwise it is only
+/// checked.
+fn resolve_song_audio(
+    store: &Path,
+    project: &Project,
+    song: &Path,
+    stage: bool,
+) -> SongAudioImport {
     let mut result = SongAudioImport::default();
     let beside = song_audio_dir(song);
     let own = beside.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -368,10 +392,14 @@ pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> S
             result.missing.push(name);
             continue;
         }
-        let staged = [beside.join(&name), own.join(&name)]
+        let usable = [beside.join(&name), own.join(&name)]
             .iter()
-            .any(|candidate| stage_named_audio(store, candidate, &name).is_ok());
-        if staged {
+            .any(|candidate| match checked_named_audio(candidate, &name) {
+                Ok(bytes) if stage => stage_bytes(store, &name, &bytes).is_ok(),
+                Ok(_) => true,
+                Err(_) => false,
+            });
+        if usable {
             result.staged.push(name);
         } else {
             result.missing.push(name);
@@ -380,9 +408,9 @@ pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> S
     result
 }
 
-/// Copies the WAV at `source` into `store` as `name` after checking it
+/// Reads the WAV at `source` for the store name `name` after checking it
 /// decodes (and, for `<hash>.wav` names, that the content hash matches).
-fn stage_named_audio(store: &Path, source: &Path, name: &str) -> Result<(), String> {
+fn checked_named_audio(source: &Path, name: &str) -> Result<Vec<u8>, String> {
     let bytes = read_capped(source, MAX_AUDIO_FILE_BYTES)
         .ok_or_else(|| format!("Could not read {}", source.display()))?;
     decode_wav_f32(&bytes)?;
@@ -395,13 +423,18 @@ fn stage_named_audio(store: &Path, source: &Path, name: &str) -> Result<(), Stri
             source.display()
         ));
     }
+    Ok(bytes)
+}
+
+/// Writes checked audio `bytes` into `store` as `name`.
+fn stage_bytes(store: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     fs::create_dir_all(store).map_err(|err| {
         format!(
             "Could not create the audio store {}: {err}",
             store.display()
         )
     })?;
-    write_file_atomic(&store.join(name), &bytes)
+    write_file_atomic(&store.join(name), bytes)
 }
 
 /// Reads a regular file of at most `max` bytes; `None` for anything else.
@@ -1195,6 +1228,38 @@ mod tests {
         assert!(!bundle.folder.exists());
 
         for dir in [src, store, out, other, third, fourth] {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    /// `find_song_audio_in` reports what an open would stage, copying
+    /// nothing; a bogus file beside the song still counts as missing.
+    #[test]
+    fn find_song_audio_reports_without_copying() {
+        let out = temp_dir("find-out");
+        let store = temp_dir("find-store");
+        let song = out.join("Song.cadence");
+        let folder = song_audio_dir(&song);
+        fs::create_dir_all(&folder).unwrap();
+        write_test_wav(&folder, "take.wav");
+        fs::write(folder.join("bad.wav"), b"not a wav").unwrap();
+        let mut project = crate::model::Project::empty();
+        let mut track = crate::model::create_audio_track("Audio");
+        for name in ["take.wav", "bad.wav", "gone.wav"] {
+            track
+                .audio_clips
+                .push(crate::model::AudioClip::new(name, "Clip", 0.0, 16.0));
+        }
+        project.tracks.push(track);
+
+        let found = find_song_audio_in(&store, &project, &song);
+        assert_eq!(found.staged, ["take.wav"]);
+        assert_eq!(found.missing, ["bad.wav", "gone.wav"]);
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 0);
+        // The staging variant agrees, and does copy.
+        assert_eq!(import_song_audio_into(&store, &project, &song), found);
+        assert!(store.join("take.wav").is_file());
+        for dir in [out, store] {
             let _ = fs::remove_dir_all(dir);
         }
     }

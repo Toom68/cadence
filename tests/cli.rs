@@ -162,10 +162,26 @@ fn check_and_render_pick_up_the_songs_audio_folder() {
         text(&out.stdout)
     );
     assert!(text(&out.stderr).contains("Found 1 audio file"));
-    assert!(data.join("audio").join("take.wav").is_file());
+    // --check is read-only: it reports the folder's audio but copies nothing.
+    let store = data.join("audio");
+    assert!(
+        !store.exists() || std::fs::read_dir(&store).unwrap().next().is_none(),
+        "--check wrote to the audio store"
+    );
 
-    // A fresh store (another computer) also renders the clip audibly.
-    std::fs::remove_dir_all(&data).unwrap();
+    // A file the folder doesn't have is still a warning.
+    std::fs::rename(folder.join("take.wav"), dir.path().join("away.wav")).unwrap();
+    let out = run(&["--check".as_ref(), song.as_os_str()]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("WARNING"),
+        "{}",
+        text(&out.stdout)
+    );
+    std::fs::rename(dir.path().join("away.wav"), folder.join("take.wav")).unwrap();
+
+    // Rendering stages it (so the store keeps it), and a fresh store
+    // (another computer) also renders the clip audibly.
     let wav = dir.path().join("travel.wav");
     let out = run(&["--render".as_ref(), song.as_os_str(), wav.as_os_str()]);
     assert!(out.status.success(), "{}", text(&out.stderr));
@@ -175,4 +191,5 @@ fn check_and_render_pick_up_the_songs_audio_folder() {
         text(&out.stderr)
     );
     assert!(common::read_wav(&wav).peak() > 0.05, "the clip is audible");
+    assert!(store.join("take.wav").is_file());
 }
