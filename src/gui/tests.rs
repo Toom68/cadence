@@ -733,6 +733,53 @@ fn piano_alt_drag_copies_the_selected_notes() {
 }
 
 #[test]
+fn piano_alt_drag_on_a_full_pattern_keeps_the_selection_and_warns() {
+    for filler in [
+        crate::model::MAX_NOTES_PER_PATTERN - 2,
+        crate::model::MAX_NOTES_PER_PATTERN - 3,
+    ] {
+        let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+        ui.step();
+        ui.app.add_track(Instrument::Piano);
+        ui.step();
+        let idx = ui.app.project.tracks.len() - 1;
+        let id = ui.app.project.tracks[idx].id;
+        show_pitch(&mut ui, id, 63);
+        {
+            let pat = &mut ui.app.project.tracks[idx].patterns[0];
+            pat.notes = vec![Note::new(60, 2.0, 2.0, 0.8), Note::new(64, 6.0, 2.0, 0.8)];
+        }
+        let originals: BTreeSet<u64> = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+        {
+            let pat = &mut ui.app.project.tracks[idx].patterns[0];
+            for i in 0..filler {
+                pat.notes.push(Note::new(5, (i % 16) as f64, 0.25, 0.5));
+            }
+        }
+        let count = ui.pattern(idx, 0).notes.len();
+        ui.app.sel.notes = originals.clone();
+        ui.app.focus = super::Focus::Editor;
+        ui.step();
+        let before = ui.app.history.state();
+        let snapshot = ui.app.project.clone();
+
+        let grab = ui.app.roll_cell_center(64, 6.0).unwrap();
+        let to = ui.app.roll_cell_center(67, 10.0).unwrap();
+        ui.drag_mod(grab, to, Modifiers::ALT);
+        assert_eq!(ui.pattern(idx, 0).notes.len(), count, "nothing copied");
+        assert_eq!(ui.app.project, snapshot, "nothing moved");
+        assert_eq!(ui.app.history.state(), before, "no edit");
+        assert_eq!(ui.app.sel.notes, originals, "selection kept");
+        let status = ui.app.status.as_ref().expect("full-pattern warning");
+        assert!(
+            matches!(status.kind, StatusKind::Warning),
+            "{}",
+            status.text
+        );
+    }
+}
+
+#[test]
 fn velocity_lane_sets_velocity_of_selected_notes() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

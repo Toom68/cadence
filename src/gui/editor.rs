@@ -2289,7 +2289,24 @@ impl CadenceApp {
                             0,
                         ),
                     };
-                    if ds != d.dstep || dp != d.dpitch {
+                    let moved = ds != d.dstep || dp != d.dpitch;
+                    let full = d.copy
+                        && pat.notes.len() + d.originals.len()
+                            > crate::model::MAX_NOTES_PER_PATTERN;
+                    if moved && full {
+                        // All or nothing: a partial copy would silently drop
+                        // notes. The originals stay put and stay selected.
+                        self.editor.drag = None;
+                        let n = d.originals.len();
+                        self.set_status(
+                            StatusKind::Warning,
+                            format!(
+                                "Can't copy {n} note{} — the pattern is at its {}-note limit.",
+                                if n == 1 { "" } else { "s" },
+                                crate::model::MAX_NOTES_PER_PATTERN
+                            ),
+                        );
+                    } else if moved {
                         let dp_changed = dp != d.dpitch;
                         let mut drag = d;
                         drag.dstep = ds;
