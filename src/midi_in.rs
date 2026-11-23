@@ -381,24 +381,24 @@ pub fn plan_connections(
 /// What the input thread reports to the GUI.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MidiInputEvent {
-    Message(MidiMessage),
+    /// A message from the connection numbered `conn` (unique for the life
+    /// of the input thread; a reopened port gets a new number).
+    Message { conn: u64, message: MidiMessage },
     /// A port was opened. `initial` marks the connections made right at
     /// startup, which the GUI doesn't announce.
-    Connected {
-        name: String,
-        initial: bool,
-    },
+    Connected { name: String, initial: bool },
     /// An open port was closed. Unless the preference deselected it, any
     /// note it was holding can no longer be released by the device.
+    ///
+    /// The connection's callback may still deliver a message or two after
+    /// this report; the GUI ignores messages from a closed `conn`.
     Disconnected {
         name: String,
+        conn: u64,
         reason: CloseReason,
     },
     /// A port could not be opened (reported once until it succeeds).
-    Failed {
-        name: String,
-        error: String,
-    },
+    Failed { name: String, error: String },
     /// The system MIDI service could not be reached at all.
     Unavailable(String),
 }
@@ -499,6 +499,7 @@ fn emit(tx: &Sender<MidiInputEvent>, wake: &(dyn Fn() + Send + Sync), event: Mid
 /// An open input port.
 struct Live {
     entry: PortEntry,
+    conn: u64,
     _conn: midir::MidiInputConnection<()>,
 }
 
@@ -519,6 +520,7 @@ fn run(
         }
     };
     let mut live: Vec<Live> = Vec::new();
+    let mut next_conn: u64 = 1;
     let mut failed: BTreeSet<String> = BTreeSet::new();
     let mut fast = false;
     let mut initial = true;
@@ -530,6 +532,7 @@ fn run(
                 &scanner,
                 &pref,
                 &mut live,
+                &mut next_conn,
                 &mut failed,
                 initial,
                 &tx,
@@ -564,6 +567,7 @@ fn scan(
     scanner: &midir::MidiInput,
     pref: &MidiInputPref,
     live: &mut Vec<Live>,
+    next_conn: &mut u64,
     failed: &mut BTreeSet<String>,
     initial: bool,
     tx: &Sender<MidiInputEvent>,
@@ -592,7 +596,10 @@ fn scan(
     let connected: Vec<PortEntry> = live.iter().map(|l| l.entry.clone()).collect();
     let plan = plan_connections(pref, &available, &connected);
     for (name, reason) in &plan.close {
-        live.retain(|l| &l.entry.name != name);
+        let Some(i) = live.iter().position(|l| &l.entry.name == name) else {
+            continue;
+        };
+        let conn = live.remove(i).conn;
         // Every close is reported, a re-plug included: the GUI must end the
         // notes the old connection was holding.
         emit(
@@ -600,6 +607,7 @@ fn scan(
             &**wake,
             MidiInputEvent::Disconnected {
                 name: name.clone(),
+                conn,
                 reason: *reason,
             },
         );
@@ -608,11 +616,14 @@ fn scan(
         let Some(i) = available.iter().position(|a| &a.name == name) else {
             continue;
         };
-        match open_port(&ports[i], name, tx, wake) {
+        let id = *next_conn;
+        match open_port(&ports[i], name, id, tx, wake) {
             Ok(conn) => {
+                *next_conn += 1;
                 failed.remove(name);
                 live.push(Live {
                     entry: available[i].clone(),
+                    conn: id,
                     _conn: conn,
                 });
                 emit(
@@ -654,6 +665,7 @@ fn scan(
 fn open_port(
     port: &midir::MidiInputPort,
     name: &str,
+    conn: u64,
     tx: &Sender<MidiInputEvent>,
     wake: &Arc<dyn Fn() + Send + Sync>,
 ) -> Result<midir::MidiInputConnection<()>, String> {
@@ -668,7 +680,7 @@ fn open_port(
             &format!("{CLIENT_NAME} input ({name})"),
             move |_stamp, bytes, _| {
                 if let Some(message) = parse_message(bytes) {
-                    emit(&tx, &*wake, MidiInputEvent::Message(message));
+                    emit(&tx, &*wake, MidiInputEvent::Message { conn, message });
                 }
             },
             (),

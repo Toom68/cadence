@@ -33,8 +33,21 @@ fn app_with_track() -> (egui::Context, CadenceApp, usize) {
     (ctx, app, idx)
 }
 
+/// Connection number the helpers send from.
+const CONN: u64 = 1;
+
 fn send(app: &mut CadenceApp, message: MidiMessage) {
-    app.midi_input_event(MidiInputEvent::Message(message));
+    send_from(app, CONN, message);
+}
+fn send_from(app: &mut CadenceApp, conn: u64, message: MidiMessage) {
+    app.midi_input_event(MidiInputEvent::Message { conn, message });
+}
+fn disconnect(app: &mut CadenceApp, conn: u64, name: &str, reason: CloseReason) {
+    app.midi_input_event(MidiInputEvent::Disconnected {
+        name: name.to_owned(),
+        conn,
+        reason,
+    });
 }
 fn on(app: &mut CadenceApp, pitch: u8, velocity: u8) {
     send(
@@ -158,10 +171,7 @@ fn a_disconnect_ends_held_controller_notes() {
     on(&mut app, 60, 100);
     app.record_note_on(62).expect("computer note");
     app.transport.position = 4.0;
-    app.midi_input_event(MidiInputEvent::Disconnected {
-        name: "Keys".to_owned(),
-        reason: CloseReason::Unplugged,
-    });
+    disconnect(&mut app, CONN, "Keys", CloseReason::Unplugged);
     let status = app.status.as_ref().unwrap();
     assert_eq!(status.kind, StatusKind::Warning);
     assert!(status.text.contains("Keys"), "{}", status.text);
@@ -190,17 +200,26 @@ fn a_replug_ends_held_and_sustained_controller_notes_quietly() {
     on(&mut app, 64, 100);
     app.transport.position = 2.0;
     app.status = None;
-    app.midi_input_event(MidiInputEvent::Disconnected {
-        name: "Keys".to_owned(),
-        reason: CloseReason::Replugged,
-    });
+    disconnect(&mut app, CONN, "Keys", CloseReason::Replugged);
     assert!(app.editor.record_pending.is_empty(), "nothing left hanging");
     assert!(app.status.is_none(), "the reconnect is announced instead");
     let n = notes(&app, idx);
     assert!(n.iter().all(|n| n.duration == 2.0), "{n:?}");
     // The pedal is up again for the reopened connection.
-    on(&mut app, 67, 100);
-    off(&mut app, 67);
+    let note_on = MidiMessage::NoteOn {
+        channel: 0,
+        pitch: 67,
+        velocity: 100,
+    };
+    send_from(&mut app, 2, note_on);
+    send_from(
+        &mut app,
+        2,
+        MidiMessage::NoteOff {
+            channel: 0,
+            pitch: 67,
+        },
+    );
     assert!(app.editor.record_pending.is_empty());
 }
 
@@ -211,13 +230,46 @@ fn deselecting_an_input_leaves_the_new_inputs_notes_alone() {
     app.transport.playing = true;
     app.set_midi_input(MidiInputPref::Device("Keys".to_owned()));
     on(&mut app, 60, 100);
-    app.midi_input_event(MidiInputEvent::Disconnected {
-        name: "Pad".to_owned(),
-        reason: CloseReason::Deselected,
-    });
+    disconnect(&mut app, 2, "Pad", CloseReason::Deselected);
     assert_eq!(app.editor.record_pending.len(), 1, "still held on Keys");
     off(&mut app, 60);
     assert!(app.editor.record_pending.is_empty());
+}
+
+#[test]
+fn late_messages_from_a_closed_connection_are_ignored() {
+    let (_ctx, mut app, idx) = app_with_track();
+    app.toggle_record();
+    app.transport.playing = true;
+    app.transport.position = 0.0;
+    on(&mut app, 60, 100);
+    app.transport.position = 1.0;
+    disconnect(&mut app, CONN, "Keys", CloseReason::Unplugged);
+    // The callback thread raced the scan thread's report.
+    on(&mut app, 62, 100);
+    pedal(&mut app, true);
+    assert!(
+        app.editor.record_pending.is_empty(),
+        "nothing waits for a release that cannot come"
+    );
+    assert_eq!(notes(&app, idx).len(), 1, "the late note is not recorded");
+    // The device's next connection plays normally.
+    let note_on = MidiMessage::NoteOn {
+        channel: 0,
+        pitch: 64,
+        velocity: 100,
+    };
+    send_from(&mut app, 2, note_on);
+    assert_eq!(app.editor.record_pending.len(), 1);
+    send_from(
+        &mut app,
+        2,
+        MidiMessage::NoteOff {
+            channel: 0,
+            pitch: 64,
+        },
+    );
+    assert!(app.editor.record_pending.is_empty(), "pedal stayed up");
 }
 
 #[test]

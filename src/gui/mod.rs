@@ -186,6 +186,10 @@ pub struct CadenceApp {
     midi_pref: MidiInputPref,
     /// Held controller notes and the sustain pedal.
     midi_notes: NoteTracker,
+    /// Connections reported closed: their callback can still deliver a
+    /// late message after the `Disconnected` report, which must not start a
+    /// note nothing will ever release. Ids are never reused.
+    midi_closed: BTreeSet<u64>,
     transport: TransportState,
     sel: Selection,
     clipboard: Clipboard,
@@ -343,6 +347,7 @@ impl CadenceApp {
             midi_in: None,
             midi_pref: MidiInputPref::default(),
             midi_notes: NoteTracker::new(),
+            midi_closed: BTreeSet::new(),
             transport: TransportState::default(),
             sel: Selection::default(),
             clipboard: Clipboard::default(),
@@ -1735,7 +1740,10 @@ impl CadenceApp {
     /// release.
     fn midi_input_event(&mut self, event: MidiInputEvent) {
         match event {
-            MidiInputEvent::Message(message) => {
+            MidiInputEvent::Message { conn, message } => {
+                if self.midi_closed.contains(&conn) {
+                    return;
+                }
                 for action in self.midi_notes.handle(message) {
                     self.midi_note(action);
                 }
@@ -1745,22 +1753,10 @@ impl CadenceApp {
                     self.set_status(StatusKind::Success, format!("MIDI input connected: {name}"));
                 }
             }
-            MidiInputEvent::Disconnected { name, reason } => match reason {
-                // `set_midi_input` already released everything; releasing
-                // again would cut notes held on the newly chosen input.
-                CloseReason::Deselected => {}
-                // Reopened right away; its `Connected` report follows.
-                CloseReason::Replugged => self.release_midi_notes(),
-                CloseReason::Unplugged => {
-                    self.release_midi_notes();
-                    self.set_status(
-                        StatusKind::Warning,
-                        format!(
-                            "MIDI input disconnected: {name}. It reconnects when plugged back in."
-                        ),
-                    );
-                }
-            },
+            MidiInputEvent::Disconnected { name, conn, reason } => {
+                self.midi_closed.insert(conn);
+                self.midi_disconnected(&name, reason);
+            }
             MidiInputEvent::Failed { name, error } => self.set_status(
                 StatusKind::Warning,
                 format!("Could not open MIDI input \"{name}\": {error}"),
@@ -1769,6 +1765,25 @@ impl CadenceApp {
                 StatusKind::Warning,
                 format!("MIDI input unavailable: {err}"),
             ),
+        }
+    }
+
+    /// A closed connection: notes it held end unless the preference change
+    /// that closed it already released them.
+    fn midi_disconnected(&mut self, name: &str, reason: CloseReason) {
+        match reason {
+            // `set_midi_input` already released everything; releasing
+            // again would cut notes held on the newly chosen input.
+            CloseReason::Deselected => {}
+            // Reopened right away; its `Connected` report follows.
+            CloseReason::Replugged => self.release_midi_notes(),
+            CloseReason::Unplugged => {
+                self.release_midi_notes();
+                self.set_status(
+                    StatusKind::Warning,
+                    format!("MIDI input disconnected: {name}. It reconnects when plugged back in."),
+                );
+            }
         }
     }
 
