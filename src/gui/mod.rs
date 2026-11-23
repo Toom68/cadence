@@ -246,6 +246,7 @@ impl CadenceApp {
         };
         let mut app = Self::build(Project::demo(), engine, true);
         app.theme = theme;
+        app.transport.count_in = transport::count_in_from_storage(cc.storage);
         app.audio_device_pref = device_pref;
         if let Some(err) = audio_error {
             app.set_status(
@@ -718,13 +719,7 @@ impl CadenceApp {
                         });
                         self.set_clip_selection(set, primary);
                     }
-                    None => self.set_status(
-                        StatusKind::Warning,
-                        format!(
-                            "Could not duplicate selection (tracks hold up to {} clips).",
-                            ops::MAX_CLIPS_PER_TRACK
-                        ),
-                    ),
+                    None => self.clip_limit_status("duplicate selection"),
                 }
             }
         }
@@ -1015,13 +1010,7 @@ impl CadenceApp {
                 let set: BTreeSet<u64> = ids.into_iter().collect();
                 self.set_clip_selection(set, primary);
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!(
-                    "Could not paste clips (tracks hold up to {} clips, or a copied track is gone).",
-                    ops::MAX_CLIPS_PER_TRACK
-                ),
-            ),
+            None => self.clip_limit_status("paste clips"),
         }
     }
 
@@ -1039,10 +1028,7 @@ impl CadenceApp {
                 self.arranger.reveal_track = Some(id);
                 self.set_status(StatusKind::Success, format!("Pasted track “{name}”."));
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
-            ),
+            None => self.track_limit_status(),
         }
     }
 
@@ -1148,6 +1134,32 @@ impl CadenceApp {
         if let (Some(engine), Some(track)) = (&self.engine, ops::track(&self.project, track_id)) {
             engine.preview(track, pitch, 0.45, velocity);
         }
+    }
+
+    /// Warns that a clip copy/placement was refused by the per-track clip
+    /// cap or the song-wide note-event budget.
+    fn clip_limit_status(&mut self, what: &str) {
+        self.set_status(
+            StatusKind::Warning,
+            format!(
+                "Could not {what} (tracks hold up to {} clips, songs up to {} note events).",
+                ops::MAX_CLIPS_PER_TRACK,
+                ops::MAX_SONG_EVENTS
+            ),
+        );
+    }
+
+    /// Warns that a track copy was refused, naming the limit that ran out.
+    fn track_limit_status(&mut self) {
+        let text = if self.project.tracks.len() >= ops::MAX_TRACKS {
+            format!("Track limit reached ({} tracks).", ops::MAX_TRACKS)
+        } else {
+            format!(
+                "No room for the copy: songs hold up to {} note events.",
+                ops::MAX_SONG_EVENTS
+            )
+        };
+        self.set_status(StatusKind::Warning, text);
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
@@ -1335,7 +1347,7 @@ impl CadenceApp {
         theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
-            self.history.seal();
+            self.history.seal_unless(self.editor.record_take.as_deref());
             self.arranger.end_gesture();
             self.editor.end_gesture();
         }
@@ -1461,6 +1473,7 @@ impl CadenceApp {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         let typing = ctx.wants_keyboard_input();
         if self.dialog.is_open() {
+            self.keyboard_releases(ctx);
             // Even from a focused text field: Escape always backs out of a dialog.
             if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 self.dialog_escape();
@@ -1501,6 +1514,7 @@ impl CadenceApp {
             self.tab = Tab::Keys;
         }
         if typing {
+            self.keyboard_releases(ctx);
             return;
         }
         // Before the arrow-key nudges: Ctrl+Shift+↑/↓ move the panel split.
@@ -1788,10 +1802,14 @@ impl eframe::App for CadenceApp {
         self.frame(ctx);
     }
 
-    /// Persists only the UI theme — song state is saved through `.cadence`
-    /// files, never through eframe storage.
+    /// Persists only UI preferences (theme, count-in) — song state is saved
+    /// through `.cadence` files, never through eframe storage.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(theme::STORAGE_KEY, self.theme.id().to_owned());
+        storage.set_string(
+            transport::COUNT_IN_KEY,
+            if self.transport.count_in { "1" } else { "0" }.to_owned(),
+        );
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

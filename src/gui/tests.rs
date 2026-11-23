@@ -3606,8 +3606,7 @@ fn record_extends_the_current_clip_to_cover_the_playhead() {
         note.start, 4.0,
         "step 20 folds into the 16-step pattern at 4"
     );
-    // Both the extension and the note are undo steps.
-    ui.app.undo();
+    // The extension and the note belong to one recording take.
     ui.app.undo();
     let track = &ui.app.project.tracks[idx];
     assert_eq!(track.clips[0].loops, 1);
@@ -3647,6 +3646,147 @@ fn record_skips_audio_lanes_and_uncovered_playheads() {
     );
     let status = ui.app.status.as_ref().unwrap().text.clone();
     assert!(status.contains("no clip covers"), "status: {status}");
+}
+
+#[test]
+fn record_release_ends_the_note_after_an_octave_change() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.transport.position = 4.0;
+    ui.app.toggle_record();
+    let octave = ui.app.editor.kb_octave;
+    press_key(&mut ui, Key::Z, true);
+    ui.key(Key::W);
+    assert_eq!(ui.app.editor.kb_octave, octave + 1, "W shifts the octave");
+    press_key(&mut ui, Key::Z, false);
+    assert!(
+        ui.app.editor.record_pending.is_empty(),
+        "the release ends the note that Z started"
+    );
+    assert_eq!(ui.app.transport.position, 5.0, "release advances one snap");
+    assert_eq!(
+        ui.pattern(idx, 0).notes[0].pitch,
+        super::editor::key_to_pitch(Key::Z, octave).unwrap()
+    );
+}
+
+#[test]
+fn record_release_is_processed_with_a_modifier_held() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    plant_record_track(&mut ui);
+    ui.app.transport.position = 4.0;
+    ui.app.toggle_record();
+    press_key(&mut ui, Key::Z, true);
+    assert_eq!(ui.app.editor.record_pending.len(), 1);
+    ui.event(Event::Key {
+        key: Key::Z,
+        physical_key: Some(Key::Z),
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    assert!(ui.app.editor.record_pending.is_empty());
+    assert_eq!(ui.app.transport.position, 5.0);
+}
+
+#[test]
+fn stopping_or_disarming_finalizes_held_recorded_notes() {
+    for disarm in [false, true] {
+        let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+        ui.step();
+        let idx = plant_record_track(&mut ui);
+        ui.app.toggle_record();
+        ui.app.transport.playing = true;
+        ui.app.transport.position = 2.3;
+        let id = ui.app.record_note_on(64).expect("note inserted");
+        ui.app.transport.position = 6.5;
+        if disarm {
+            ui.app.toggle_record();
+        } else {
+            ui.app.stop();
+        }
+        assert!(ui.app.editor.record_pending.is_empty(), "disarm: {disarm}");
+        let note = ui
+            .pattern(idx, 0)
+            .notes
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap();
+        assert_eq!(note.duration, 5.0, "held from 2 to 6.5 (disarm: {disarm})");
+    }
+}
+
+#[test]
+fn one_recording_take_is_one_undo_step() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    let before = ui.app.project.clone();
+    ui.app.toggle_record();
+    ui.app.transport.playing = true;
+    for (i, pitch) in [60u8, 62, 64].into_iter().enumerate() {
+        ui.app.transport.position = 4.0 + 8.0 * i as f64;
+        ui.app.record_note_on(pitch).expect("note inserted");
+        ui.app.transport.position += 1.0;
+        ui.app.record_note_off(pitch);
+        // A click anywhere between notes must not split the take.
+        ui.click(egui::pos2(5.0, 5.0));
+    }
+    ui.app.stop();
+    let track = &ui.app.project.tracks[idx];
+    assert_eq!(track.clips[0].loops, 2, "the take extended the clip");
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 3);
+    ui.app.undo();
+    assert_eq!(ui.app.project, before, "one undo removes the whole take");
+    ui.app.redo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 3);
+
+    // Still armed after Stop: the next take is a separate step.
+    assert!(ui.app.transport.recording);
+    ui.app.transport.position = 1.0;
+    ui.app.record_note_on(65).expect("note inserted");
+    ui.app.record_note_off(65);
+    ui.app.toggle_record();
+    ui.app.undo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 3);
+}
+
+#[test]
+fn count_in_preference_toggles_and_round_trips_through_storage() {
+    let storage = MemStorage::default();
+    assert!(!super::transport::count_in_from_storage(Some(&storage)));
+    assert!(!super::transport::count_in_from_storage(None));
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(!ui.app.transport.count_in, "off by default");
+    ui.app.toggle_count_in();
+    assert!(ui.app.transport.count_in);
+    let mut storage = MemStorage::default();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert!(super::transport::count_in_from_storage(Some(&storage)));
+    ui.app.toggle_count_in();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert!(!super::transport::count_in_from_storage(Some(&storage)));
+}
+
+#[test]
+fn notes_played_during_the_count_in_are_not_recorded() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.toggle_record();
+    ui.app.transport.playing = true;
+    ui.app.transport.count_in_left = 8.0;
+    assert!(ui.app.record_note_on(60).is_none());
+    assert!(ui.pattern(idx, 0).notes.is_empty());
+    assert!(ui.app.editor.record_pending.is_empty());
+    ui.app.transport.count_in_left = 0.0;
+    assert!(
+        ui.app.record_note_on(60).is_some(),
+        "recording after the bar"
+    );
 }
 
 /// Regression probe for the library/quick-add click fix: a click interact

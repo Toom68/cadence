@@ -35,6 +35,8 @@ pub struct TransportStatus {
     pub playing: bool,
     /// Playhead in steps (swung timeline; equals the grid on even steps).
     pub step: f64,
+    /// Count-in steps left before the playhead starts moving.
+    pub count_in: f64,
     /// Output peak meters, linear 0..1, with a short release.
     pub peak_l: f32,
     pub peak_r: f32,
@@ -47,6 +49,7 @@ pub struct TransportStatus {
 struct Shared {
     playing: AtomicBool,
     step: AtomicU64,
+    count_in: AtomicU64,
     peak_l: AtomicU32,
     peak_r: AtomicU32,
     voices: AtomicUsize,
@@ -269,6 +272,8 @@ impl RealTime {
             .store(self.renderer.is_playing(), Ordering::Relaxed);
         s.step
             .store(self.renderer.position().to_bits(), Ordering::Relaxed);
+        s.count_in
+            .store(self.renderer.count_in().to_bits(), Ordering::Relaxed);
         s.peak_l.store(self.meter_l.to_bits(), Ordering::Relaxed);
         s.peak_r.store(self.meter_r.to_bits(), Ordering::Relaxed);
         s.voices
@@ -450,6 +455,7 @@ fn audio_thread(
                     rt.meter_l = 0.0;
                     rt.meter_r = 0.0;
                     shared.playing.store(false, Ordering::Relaxed);
+                    shared.count_in.store(0, Ordering::Relaxed);
                     shared.peak_l.store(0, Ordering::Relaxed);
                     shared.peak_r.store(0, Ordering::Relaxed);
                     shared.voices.store(0, Ordering::Relaxed);
@@ -660,6 +666,19 @@ impl AudioEngine {
         looping: bool,
         loop_region: Option<(f64, f64)>,
     ) -> Result<(), String> {
+        self.play_with_count_in(project, start_step, looping, loop_region, 0.0)
+    }
+
+    /// [`Self::play`] after `count_in` steps of metronome clicks, during
+    /// which the playhead waits at `start_step`.
+    pub fn play_with_count_in(
+        &self,
+        project: &Project,
+        start_step: f64,
+        looping: bool,
+        loop_region: Option<(f64, f64)>,
+        count_in: f64,
+    ) -> Result<(), String> {
         if !self.is_connected() {
             return Err("The audio output is disconnected; waiting for a device.".into());
         }
@@ -669,12 +688,16 @@ impl AudioEngine {
             start_step,
             looping,
             loop_region,
+            count_in,
         })?;
         // Reflect the request immediately; the callback confirms within one buffer.
         self.shared.playing.store(true, Ordering::Relaxed);
         self.shared
             .step
             .store(start_step.max(0.0).to_bits(), Ordering::Relaxed);
+        self.shared
+            .count_in
+            .store(count_in.max(0.0).to_bits(), Ordering::Relaxed);
         Ok(())
     }
 
@@ -682,6 +705,9 @@ impl AudioEngine {
     pub fn pause(&self) {
         let _ = self.send(Command::Pause);
         self.shared.playing.store(false, Ordering::Relaxed);
+        self.shared
+            .count_in
+            .store(0f64.to_bits(), Ordering::Relaxed);
     }
 
     /// Stops, rewinds to the start and silences all voices and effect tails (panic).
@@ -689,6 +715,9 @@ impl AudioEngine {
         let _ = self.send(Command::Stop);
         self.shared.playing.store(false, Ordering::Relaxed);
         self.shared.step.store(0f64.to_bits(), Ordering::Relaxed);
+        self.shared
+            .count_in
+            .store(0f64.to_bits(), Ordering::Relaxed);
     }
 
     /// Updates the song while keeping the transport running (edits, mixer moves, mute/solo).
@@ -780,6 +809,7 @@ impl AudioEngine {
         TransportStatus {
             playing: s.playing.load(Ordering::Relaxed),
             step: f64::from_bits(s.step.load(Ordering::Relaxed)),
+            count_in: f64::from_bits(s.count_in.load(Ordering::Relaxed)),
             peak_l: f32::from_bits(s.peak_l.load(Ordering::Relaxed)),
             peak_r: f32::from_bits(s.peak_r.load(Ordering::Relaxed)),
             voices: s.voices.load(Ordering::Relaxed),
@@ -853,6 +883,7 @@ mod tests {
                 start_step: 0.0,
                 looping: true,
                 loop_region: None,
+                count_in: 0.0,
             }
             .into(),
         )
@@ -928,6 +959,7 @@ mod tests {
                 start_step: 0.0,
                 looping: false,
                 loop_region: None,
+                count_in: 0.0,
             }
             .into(),
         )
@@ -965,6 +997,7 @@ mod tests {
                     start_step: 0.0,
                     looping: false,
                     loop_region: None,
+                    count_in: 0.0,
                 }
                 .into(),
             )

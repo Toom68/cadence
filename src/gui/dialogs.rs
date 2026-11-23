@@ -920,6 +920,8 @@ impl CadenceApp {
     /// at build time so the text is always available even when the package's
     /// THIRD-PARTY-NOTICES.txt file is not at hand.
     fn notices_dialog(&mut self, ctx: &Context) -> bool {
+        /// Height of the notices dialog around its scrolling text.
+        const NOTICES_CHROME: f32 = 140.0;
         let pal = self.palette();
         let mut closed = false;
         const NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.txt");
@@ -935,8 +937,10 @@ impl CadenceApp {
                 "Licenses for every Rust crate and bundled font in this build.",
             );
             ui.add_space(theme::GAP_S);
-            egui::ScrollArea::vertical()
+            // Title, hint and the Close row stay put; only the text scrolls.
+            ScrollArea::vertical()
                 .id_salt("notices-body")
+                .max_height((dialog_max_height(ctx) - NOTICES_CHROME).max(80.0))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -1129,8 +1133,10 @@ impl CadenceApp {
                 .color(pal.text_dim),
             );
             ui.add_space(theme::GAP_S);
+            // Height of the dialog around the list: header, notes, buttons.
+            const CHROME: f32 = 200.0;
             ScrollArea::vertical()
-                .max_height(300.0)
+                .max_height((dialog_max_height(ctx) - CHROME).clamp(80.0, 300.0))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     for err in errors {
@@ -1196,7 +1202,18 @@ fn modal(id: &str, pal: Palette) -> egui::Modal {
         )
 }
 
+/// Room kept between a dialog's frame and the window edge, plus the
+/// frame's own margins, top and bottom combined.
+const DIALOG_V_CHROME: f32 = 2.0 * 24.0 + 2.0 * 21.0;
+
+/// Tallest a dialog body may grow in this window: the modal plus its
+/// frame always fits on screen.
+pub(super) fn dialog_max_height(ctx: &Context) -> f32 {
+    (ctx.content_rect().height() - DIALOG_V_CHROME).max(120.0)
+}
+
 /// A modal `width` px wide (never wider than the window) with `add` inside.
+/// A body taller than the window scrolls, so its button row stays reachable.
 pub(super) fn show_dialog<T>(
     ctx: &Context,
     id: &str,
@@ -1205,9 +1222,21 @@ pub(super) fn show_dialog<T>(
     add: impl FnOnce(&mut Ui) -> T,
 ) -> egui::ModalResponse<T> {
     let width = width.min(ctx.content_rect().width() - 64.0).max(240.0);
+    let max_height = dialog_max_height(ctx);
     modal(id, pal).show(ctx, |ui| {
         ui.set_width(width);
-        add(ui)
+        // The modal area offers last frame's size; let the body grow to the
+        // window-derived cap instead.
+        ui.set_max_height(max_height);
+        ScrollArea::vertical()
+            .id_salt((id, "dialog-body"))
+            .max_height(max_height)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.set_width(width);
+                add(ui)
+            })
+            .inner
     })
 }
 
@@ -1237,14 +1266,26 @@ pub(super) fn button_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     ui.add_space(theme::GAP_L);
     // A fixed-height row: `with_layout` would claim all the height the modal
     // offers and centre the buttons in it, stretching the dialog.
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), theme::CONTROL_L),
-        Layout::right_to_left(Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = theme::GAP_S;
-            add(ui);
-        },
-    );
+    let _row = ui
+        .allocate_ui_with_layout(
+            vec2(ui.available_width(), theme::CONTROL_L),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = theme::GAP_S;
+                add(ui);
+            },
+        )
+        .response
+        .rect;
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(button_row_probe_id(), _row));
+}
+
+/// Where tests find the rect of the last drawn dialog button row.
+#[cfg(test)]
+fn button_row_probe_id() -> egui::Id {
+    egui::Id::new("dialog-button-row-probe")
 }
 
 /// Enter confirms a dialog unless a widget (a button reached with Tab, a
@@ -1940,6 +1981,65 @@ mod tests {
 
         run_frame(&mut app, &ctx, escape_input());
         assert!(matches!(app.dialog, Dialog::None));
+    }
+
+    /// Every dialog fits the window and keeps its button row on screen,
+    /// however long its body: the notices text once pushed the modal past
+    /// the window bottom and hid its Close button. Below the 760 px minimum
+    /// window a short dialog may scroll instead, but still fits; the
+    /// long-bodied ones scroll only their text.
+    #[test]
+    fn dialogs_keep_their_buttons_inside_short_windows() {
+        fn pack_errors() -> Dialog {
+            Dialog::PackErrors((0..200).map(|i| format!("pack {i}: bad field")).collect())
+        }
+        /// Area id, dialog, and whether its body is long enough to scroll.
+        type Case = (&'static str, fn() -> Dialog, bool);
+        let dialogs: [Case; 5] = [
+            ("cadence-notices", || Dialog::Notices, true),
+            ("cadence-help", || Dialog::Help, true),
+            ("cadence-pack-errors", pack_errors, true),
+            ("cadence-about", || Dialog::About, false),
+            (
+                "cadence-unsaved",
+                || Dialog::Unsaved(PendingAction::Quit),
+                false,
+            ),
+        ];
+        for window_h in [480.0, 760.0, 1400.0] {
+            for (id, make, long) in dialogs {
+                let mut app = headless();
+                app.dialog = make();
+                let ctx = Context::default();
+                for _ in 0..4 {
+                    let input = RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1360.0, window_h),
+                        )),
+                        ..Default::default()
+                    };
+                    run_frame(&mut app, &ctx, input);
+                }
+                let area = ctx
+                    .memory(|m| m.area_rect(egui::Id::new(id)))
+                    .unwrap_or_else(|| panic!("{id} was not shown"));
+                assert!(
+                    area.top() >= 0.0 && area.bottom() <= window_h,
+                    "{id} spans {area:?} in a {window_h} px window"
+                );
+                if window_h < 760.0 && !long {
+                    continue;
+                }
+                let row = ctx
+                    .data(|d| d.get_temp::<egui::Rect>(button_row_probe_id()))
+                    .unwrap_or_else(|| panic!("{id} drew no button row"));
+                assert!(
+                    area.contains_rect(row) && row.bottom() <= window_h,
+                    "{id}: buttons at {row:?} outside {area:?} ({window_h} px window)"
+                );
+            }
+        }
     }
 
     fn close_input() -> RawInput {

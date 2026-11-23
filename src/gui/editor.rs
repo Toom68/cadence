@@ -21,7 +21,9 @@ use egui::{
 use super::arranger::snap_floor;
 use super::theme::{self, Palette};
 use super::{ops, sidebar, CadenceApp, StatusKind};
-use crate::model::{next_id, note_name, ChordQuality, Note, Pattern, SongKey, Track, NOTE_NAMES};
+use crate::model::{
+    next_id, note_name, ChordQuality, Note, Pattern, Project, SongKey, Track, NOTE_NAMES,
+};
 
 const KEYS_W: f32 = 66.0;
 const DRUM_LABEL_W: f32 = 140.0;
@@ -89,8 +91,8 @@ const PITCHES: usize = (LAST_PITCH - FIRST_PITCH + 1) as usize;
 const KB_OCTAVE_MIN: i32 = 0;
 const KB_OCTAVE_MAX: i32 = 8;
 
-/// Computer-key press/release pairs as `(key, shift held)`.
-type KeyEvents = Vec<(Key, bool)>;
+/// Computer-keyboard key events in arrival order: `(key, pressed, shift)`.
+type KeyEvents = Vec<(Key, bool, bool)>;
 
 /// Jitter the Humanize button applies: ±10% velocity and ±0.25 steps (a
 /// 1/64 note) of timing — enough to loosen a rigid line without scattering
@@ -535,6 +537,12 @@ pub(super) struct EditorView {
     /// Held recorded notes by pitch (MIDI recording): press inserts,
     /// release finalizes the duration / advances the step-record playhead.
     pub record_pending: HashMap<u8, PendingRecord>,
+    /// Pitch each held computer key started, so its release ends that note
+    /// even after the octave or Shift changed in between.
+    kb_held: HashMap<Key, u8>,
+    /// Undo group of the running recording take: every note and clip
+    /// extension from arming (or play) to stop/disarm is one undo step.
+    pub record_take: Option<String>,
     /// Pitch of the on-screen piano key currently being recorded with the
     /// mouse (Keys tab).
     pub kb_record_pitch: Option<u8>,
@@ -585,6 +593,8 @@ impl Default for EditorView {
             kb_down: false,
             kb_last_preview: None,
             record_pending: HashMap::new(),
+            kb_held: HashMap::new(),
+            record_take: None,
             kb_record_pitch: None,
             kb_was_down: false,
             rects: EditorRects::default(),
@@ -606,6 +616,7 @@ impl EditorView {
         self.kb_down = false;
         self.kb_last_preview = None;
         self.record_pending.clear();
+        self.kb_held.clear();
         self.kb_record_pitch = None;
         self.kb_was_down = false;
         self.rename = None;
@@ -2910,52 +2921,52 @@ impl CadenceApp {
     /// physical press (key auto-repeat is ignored) at the editor's velocity;
     /// release does nothing — previews are fixed-length. With record armed
     /// each press/release instead starts/ends a note in the selected track's
-    /// pattern (live or step recording).
+    /// pattern (live or step recording). Releases are always honoured — on
+    /// any tab and under any modifier — and end the note their key started.
     pub(super) fn keyboard_play(&mut self, ctx: &Context) {
-        if self.tab != super::Tab::Editor && self.tab != super::Tab::Keys {
-            return;
-        }
-        let (presses, releases): (KeyEvents, KeyEvents) = ctx.input(|i| {
-            let mut presses = Vec::new();
-            let mut releases = Vec::new();
-            for e in &i.events {
-                let Event::Key {
-                    key,
-                    pressed,
-                    repeat,
-                    modifiers,
-                    ..
-                } = e
-                else {
-                    continue;
-                };
-                if modifiers.command || modifiers.ctrl || modifiers.alt {
-                    continue;
-                }
-                if *pressed {
-                    if !repeat {
-                        presses.push((*key, modifiers.shift));
+        let events: KeyEvents = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Key {
+                        key,
+                        pressed,
+                        repeat,
+                        modifiers,
+                        ..
+                    } => {
+                        let chord = modifiers.command || modifiers.ctrl || modifiers.alt;
+                        (!*pressed || !(*repeat || chord)).then_some((
+                            *key,
+                            *pressed,
+                            modifiers.shift,
+                        ))
                     }
-                } else {
-                    releases.push((*key, modifiers.shift));
-                }
-            }
-            (presses, releases)
+                    _ => None,
+                })
+                .collect()
         });
-        if presses.is_empty() && releases.is_empty() {
+        if events.is_empty() {
             return;
         }
-        let Some(track_id) = self.sel.track else {
-            return;
-        };
-        let Some(track) = ops::track(&self.project, track_id) else {
-            return;
-        };
-        let drum_pitches = track
-            .shows_drum_grid()
-            .then(|| drum_keyboard_pitches(track));
+        let playable = self.tab == super::Tab::Editor || self.tab == super::Tab::Keys;
+        let target = self
+            .sel
+            .track
+            .filter(|_| playable)
+            .and_then(|id| ops::track(&self.project, id))
+            .map(|t| (t.id, t.shows_drum_grid().then(|| drum_keyboard_pitches(t))));
         let velocity = self.editor.velocity;
-        for (key, shift) in presses {
+        for (key, pressed, shift) in events {
+            if !pressed {
+                if let Some(pitch) = self.editor.kb_held.remove(&key) {
+                    self.record_note_off(pitch);
+                }
+                continue;
+            }
+            let Some((track_id, drum_pitches)) = &target else {
+                continue;
+            };
             if drum_pitches.is_none() {
                 match key {
                     Key::Q => {
@@ -2971,15 +2982,32 @@ impl CadenceApp {
                     _ => {}
                 }
             }
-            let pitch = keyboard_pitch(key, shift, self.editor.kb_octave, &drum_pitches);
-            if let Some(pitch) = pitch {
-                self.preview(track_id, pitch, velocity);
+            if let Some(pitch) = keyboard_pitch(key, shift, self.editor.kb_octave, drum_pitches) {
+                self.preview(*track_id, pitch, velocity);
                 self.record_note_on(pitch);
+                self.editor.kb_held.insert(key, pitch);
             }
         }
-        for (key, shift) in releases {
-            let pitch = keyboard_pitch(key, shift, self.editor.kb_octave, &drum_pitches);
-            if let Some(pitch) = pitch {
+    }
+
+    /// Ends held computer-key notes whose release arrives while a dialog or
+    /// text field owns the keyboard (when [`Self::keyboard_play`] doesn't run).
+    pub(super) fn keyboard_releases(&mut self, ctx: &Context) {
+        let released: Vec<Key> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Key {
+                        key,
+                        pressed: false,
+                        ..
+                    } => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+        for key in released {
+            if let Some(pitch) = self.editor.kb_held.remove(&key) {
                 self.record_note_off(pitch);
             }
         }
@@ -3003,24 +3031,19 @@ impl CadenceApp {
             return Some(hit);
         }
         let pid = self.current_pattern_id(ops::track(&self.project, track_id)?)?;
-        let (clip_id, clip_start, loops, plen, cap) = {
+        let (clip_id, clip_start, loops, plen) = {
             let track = ops::track(&self.project, track_id)?;
             let clip = track.clips.iter().find(|c| c.pattern_id == pid)?;
             let plen = ops::pattern(track, pid)?.length.max(1) as f64;
-            (
-                clip.id,
-                clip.start,
-                clip.loop_count(),
-                plen,
-                ops::max_clip_loops(track, clip),
-            )
+            (clip.id, clip.start, clip.loop_count(), plen)
         };
+        let cap = ops::song_max_clip_loops(&self.project, track_id, clip_id)?;
         if pos < clip_start - 1e-9 {
             return None;
         }
         let need = ((pos - clip_start) / plen).floor() as u32 + 1;
         if need > loops && need <= cap {
-            self.edit("Extend clip for recording", None, |p| {
+            self.record_edit(|p| {
                 let _ = ops::set_clip_loops(p, track_id, clip_id, need);
             });
         }
@@ -3031,7 +3054,7 @@ impl CadenceApp {
     /// computer-keyboard row. While the transport plays, the note starts at
     /// the snapped transport step; while it is stopped (step recording) the
     /// note lands at the playhead, which advances one Snap cell on release.
-    /// Each insertion is its own undo step. Returns the new note's id.
+    /// The whole take is one undo step. Returns the new note's id.
     pub(super) fn record_note_on(&mut self, pitch: u8) -> Option<u64> {
         self.record_note_on_with(pitch, self.editor.velocity)
     }
@@ -3039,7 +3062,7 @@ impl CadenceApp {
     /// [`Self::record_note_on`] at an explicit `velocity` (drum pads scale
     /// it by where they are hit).
     fn record_note_on_with(&mut self, pitch: u8, velocity: f32) -> Option<u64> {
-        if !self.transport.recording {
+        if !self.transport.recording || self.transport.count_in_left > 0.0 {
             return None;
         }
         let track_id = self.sel.track?;
@@ -3060,7 +3083,7 @@ impl CadenceApp {
             return None;
         };
         let mut note_id = None;
-        self.edit("Record note", None, |p| {
+        self.record_edit(|p| {
             if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
                 note_id = ops::add_note(pat, pitch, rel, snap, velocity);
             }
@@ -3096,12 +3119,48 @@ impl CadenceApp {
     /// one, so a tap still sounds), clamped inside the pattern. In step
     /// recording the playhead then advances one Snap cell.
     pub(super) fn record_note_off(&mut self, pitch: u8) {
-        let Some(held) = self.editor.record_pending.remove(&pitch) else {
-            return;
-        };
+        if let Some(held) = self.editor.record_pending.remove(&pitch) {
+            self.finish_recorded_note(held);
+            if held.step_record {
+                let snap = self.record_snap();
+                self.seek(record_start(held.start_step, snap) + snap);
+            }
+        }
+    }
+
+    /// Applies one recording edit inside the running take's undo group,
+    /// opening a new take on the first edit after arming or a stop.
+    fn record_edit(&mut self, f: impl FnOnce(&mut Project)) {
+        let group = self
+            .editor
+            .record_take
+            .get_or_insert_with(|| format!("record-take-{}", self.history.state()))
+            .clone();
+        self.edit("Record take", Some(&group), f);
+    }
+
+    /// Ends the recording take on stop or disarm: notes still held are
+    /// finalized at the current playhead, and the next take gets its own
+    /// undo step.
+    pub(super) fn finish_record_take(&mut self) {
+        let mut held: Vec<PendingRecord> =
+            self.editor.record_pending.drain().map(|(_, h)| h).collect();
+        held.sort_by_key(|h| h.note_id);
+        for h in held {
+            self.finish_recorded_note(h);
+        }
+        self.editor.kb_held.clear();
+        self.editor.kb_record_pitch = None;
+        if self.editor.record_take.take().is_some() {
+            self.history.seal();
+        }
+    }
+
+    /// Sets a held recorded note's duration from its start to the playhead.
+    fn finish_recorded_note(&mut self, held: PendingRecord) {
         let snap = self.record_snap();
         let duration = record_duration(held.start_step, self.transport.position, snap);
-        self.edit("Record note", None, |p| {
+        self.record_edit(|p| {
             if let Some(pat) = ops::pattern_mut(p, held.track_id, held.pattern_id) {
                 if let Some(n) = pat.notes.iter_mut().find(|n| n.id == held.note_id) {
                     let room = (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION);
@@ -3109,9 +3168,6 @@ impl CadenceApp {
                 }
             }
         });
-        if held.step_record {
-            self.seek(record_start(held.start_step, snap) + snap);
-        }
     }
 
     /// Keys-tab mouse recording state machine: press inserts a note at the

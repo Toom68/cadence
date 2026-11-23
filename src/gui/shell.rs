@@ -769,10 +769,7 @@ impl CadenceApp {
                 self.select_track(n);
                 self.arranger.reveal_track = Some(n);
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
-            ),
+            None => self.track_limit_status(),
         }
     }
 

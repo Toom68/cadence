@@ -52,6 +52,7 @@ fn start_playback(project: &Project, rate: f32) -> (RealTime, Receiver<Retired>)
             start_step: 0.0,
             looping: true,
             loop_region: None,
+            count_in: 0.0,
         }
         .into(),
     )

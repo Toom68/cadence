@@ -48,6 +48,8 @@ pub enum Command {
         looping: bool,
         /// Repeat bounds in steps while `looping` (`None` wraps at song end).
         loop_region: Option<(f64, f64)>,
+        /// Steps of metronome count-in before the transport moves (0 = none).
+        count_in: f64,
     },
     Pause,
     Stop,
@@ -339,6 +341,11 @@ pub struct Renderer {
     next_event: usize,
     next_beat: f64,
     metronome: bool,
+    /// Count-in steps left before the clock starts moving; clicks fire on
+    /// each beat of it regardless of `metronome`.
+    count_in: f64,
+    /// Remaining count-in (in steps) at which the next count-in click fires.
+    count_in_click: f64,
     voices: Vec<Voice>,
     age: u64,
     strips: Vec<Strip>,
@@ -392,6 +399,8 @@ impl Renderer {
             next_event: 0,
             next_beat: 0.0,
             metronome: false,
+            count_in: 0.0,
+            count_in_click: 0.0,
             voices: (0..MAX_VOICES).map(|_| Voice::new(sr)).collect(),
             age: 0,
             strips: vec![Strip::new(sr); STRIPS],
@@ -488,6 +497,11 @@ impl Renderer {
         self.clock
     }
 
+    /// Count-in steps left before the transport starts moving.
+    pub fn count_in(&self) -> f64 {
+        self.count_in
+    }
+
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|v| v.active).count() + self.font_bank.active_notes()
     }
@@ -527,10 +541,15 @@ impl Renderer {
                 start_step,
                 looping,
                 loop_region,
+                count_in,
             } => {
                 let old = self.load(song);
                 self.set_loop_region(loop_region);
                 self.play(start_step, looping);
+                if count_in.is_finite() && count_in > EPS {
+                    self.count_in = count_in.min(STEPS_PER_BAR as f64 * 4.0);
+                    self.count_in_click = self.count_in;
+                }
                 Some(old)
             }
             Command::Pause => {
@@ -679,6 +698,7 @@ impl Renderer {
         self.clock = start;
         self.looping = looping;
         self.playing = true;
+        self.count_in = 0.0;
         self.resync();
         if start > 0.0 {
             let sps = self.samples_per_step();
@@ -724,17 +744,20 @@ impl Renderer {
     /// Stops the transport where it is; notes release naturally and effect tails ring out.
     pub fn pause(&mut self) {
         self.playing = false;
+        self.count_in = 0.0;
         self.release_song_voices();
     }
 
     pub fn device_lost(&mut self) {
         self.playing = false;
+        self.count_in = 0.0;
         self.hard_reset();
     }
 
     /// Stops, rewinds and silences everything (voices and effect tails) after a short fade.
     pub fn stop(&mut self) {
         self.playing = false;
+        self.count_in = 0.0;
         self.clock = 0.0;
         self.next_event = 0;
         self.next_beat = 0.0;
@@ -963,6 +986,25 @@ impl Renderer {
         best
     }
 
+    /// Runs the count-in while the clock waits: clicks on each of its beats
+    /// (the first accented) and counts down. Returns the frames to render.
+    fn count_in_step(&mut self, max: usize) -> usize {
+        let sps = self.samples_per_step();
+        if self.count_in_click > 0.0 && self.count_in <= self.count_in_click + EPS {
+            let accent = (self.count_in_click / STEPS_PER_BAR as f64).fract().abs() < 1e-6;
+            self.click.trigger(accent, self.sr);
+            self.count_in_click -= STEPS_PER_BEAT as f64;
+        }
+        let next = self.count_in_click.max(0.0);
+        let frames = (((self.count_in - next) * sps) - 1e-6).ceil().max(1.0);
+        let frames = (frames as usize).min(max);
+        self.count_in -= frames as f64 / sps;
+        if self.count_in <= EPS {
+            self.count_in = 0.0;
+        }
+        frames
+    }
+
     /// Fires events and beats due at the current clock, then advances the clock to the next
     /// due point (at most `max` frames). Returns the frames to render before the next call.
     fn transport_step(&mut self, max: usize) -> usize {
@@ -1137,12 +1179,15 @@ impl Renderer {
         let sps = self.samples_per_step();
         while pos < n {
             let was_playing = self.playing;
-            let seg = if was_playing {
+            let counting = was_playing && self.count_in > 0.0;
+            let seg = if counting {
+                self.count_in_step(n - pos)
+            } else if was_playing {
                 self.transport_step(n - pos)
             } else {
                 n - pos
             };
-            if was_playing {
+            if was_playing && !counting {
                 // `transport_step` already advanced the clock past this
                 // segment; the segment's start is `seg` frames back. When the
                 // song ended mid-call the clock rewound to 0, so the (dead
@@ -1804,6 +1849,71 @@ mod tests {
             l[lat + 24_000..lat + 24_200].iter().any(|s| s.abs() > 0.05),
             "click on beat 2"
         );
+    }
+
+    #[test]
+    fn count_in_clicks_one_bar_before_the_transport_moves() {
+        // 120 BPM at 48 kHz: 6000 frames per step, 96 000 per bar. A kick on
+        // step 0 must wait out the count-in bar; the metronome stays off.
+        let p = one_note_project(Instrument::Drums, 36, 0.0, 1.0);
+        let mut r = Renderer::new(SR);
+        let _ = r.apply(Command::Play {
+            song: Box::new(SongData::from_project(&p)),
+            start_step: 0.0,
+            looping: false,
+            loop_region: None,
+            count_in: STEPS_PER_BAR as f64,
+        });
+        assert!(r.is_playing());
+        assert_eq!(r.count_in(), STEPS_PER_BAR as f64);
+        let (l, _) = run(&mut r, 50_000);
+        assert_eq!(r.position(), 0.0, "the playhead waits during the count-in");
+        assert!(r.count_in() > 0.0);
+        let (l2, _) = run(&mut r, 60_000);
+        assert_eq!(r.count_in(), 0.0);
+        assert!(r.position() > 0.0, "the transport rolls after one bar");
+        let l: Vec<f32> = l.into_iter().chain(l2).collect();
+        let lat = r.latency();
+        let peak = |from: usize, to: usize| {
+            l[lat + from..lat + to]
+                .iter()
+                .fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        let accent = peak(0, 2_000);
+        assert!(accent > 0.1, "accented first count-in click ({accent})");
+        for beat in 1..4 {
+            let at = beat * 24_000;
+            let click = peak(at, at + 2_000);
+            assert!(click > 0.05, "count-in click on beat {beat} ({click})");
+            assert!(accent > click * 1.2, "only the first click is accented");
+            assert!(
+                peak(at - 21_000, at - 1_000) < 0.01,
+                "quiet before beat {beat}"
+            );
+        }
+        assert!(peak(74_000, 95_900) < 0.01, "the kick waits for the bar");
+        assert!(
+            peak(96_000, 98_000) > 0.05,
+            "the kick plays after the count-in"
+        );
+    }
+
+    #[test]
+    fn stopping_cancels_a_count_in() {
+        let p = one_note_project(Instrument::Drums, 36, 0.0, 1.0);
+        let mut r = Renderer::new(SR);
+        let _ = r.apply(Command::Play {
+            song: Box::new(SongData::from_project(&p)),
+            start_step: 0.0,
+            looping: false,
+            loop_region: None,
+            count_in: STEPS_PER_BAR as f64,
+        });
+        run(&mut r, 10_000);
+        let _ = r.apply(Command::Stop);
+        assert_eq!(r.count_in(), 0.0);
+        r.play(0.0, false);
+        assert_eq!(r.count_in(), 0.0, "plain play has no count-in");
     }
 
     #[test]

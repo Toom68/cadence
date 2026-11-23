@@ -122,6 +122,14 @@ impl History {
         self.group = None;
     }
 
+    /// [`Self::seal`], except that an open `keep` group stays open — a
+    /// recording take spans many pointer releases.
+    pub fn seal_unless(&mut self, keep: Option<&str>) {
+        if keep.is_none() || self.group.as_deref() != keep {
+            self.group = None;
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -183,6 +191,22 @@ mod tests {
         let mut p = Project::empty();
         p.name = name.to_owned();
         p
+    }
+
+    #[test]
+    fn seal_unless_keeps_only_the_named_group_open() {
+        let mut h = History::new();
+        let mut p = named("a");
+        h.edit(&mut p, "Take", Some("take"), |p| p.name = "b".into());
+        h.seal_unless(Some("take"));
+        h.edit(&mut p, "Take", Some("take"), |p| p.name = "c".into());
+        assert_eq!(h.undo.len(), 1, "still one step");
+        h.seal_unless(Some("other"));
+        h.edit(&mut p, "Take", Some("take"), |p| p.name = "d".into());
+        assert_eq!(h.undo.len(), 2, "sealed");
+        h.seal_unless(None);
+        h.edit(&mut p, "Take", Some("take"), |p| p.name = "e".into());
+        assert_eq!(h.undo.len(), 3);
     }
 
     #[test]
