@@ -2789,6 +2789,37 @@ pub fn set_note_durations(p: &mut Pattern, ids: &BTreeSet<u64>, duration: f64) -
     changed
 }
 
+/// Changes the length of the notes `ids` selects by `ddur` steps. A note
+/// never gets shorter than `cell` (or its current length, when that is
+/// already shorter) and never runs past the pattern end. Returns how many
+/// notes changed.
+pub fn change_note_lengths(p: &mut Pattern, ids: &BTreeSet<u64>, ddur: f64, cell: f64) -> usize {
+    let len = p.length as f64;
+    let mut changed = 0;
+    for n in p.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+        let floor = cell.min(n.duration).max(MIN_NOTE_DURATION);
+        let d = (n.duration + ddur)
+            .max(floor)
+            .min(len - n.start)
+            .max(MIN_NOTE_DURATION);
+        if d != n.duration {
+            n.duration = d;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// The lowest pitch among the notes `ids` selects — the one keyboard
+/// transposes audition, so the preview doesn't depend on selection order.
+pub fn lowest_pitch(p: &Pattern, ids: &BTreeSet<u64>) -> Option<u8> {
+    p.notes
+        .iter()
+        .filter(|n| ids.contains(&n.id))
+        .map(|n| n.pitch)
+        .min()
+}
+
 /// Adds a copy of each of `originals` in place under a fresh id (stopping at
 /// [`MAX_NOTES_PER_PATTERN`]) and returns the copies — the snapshots an
 /// Alt+drag then moves with [`move_notes`].
@@ -3070,6 +3101,61 @@ mod tests {
         p.tracks.clear();
         let id = add_track(&mut p, inst).unwrap();
         (p, id)
+    }
+
+    fn pattern_with(notes: &[(u8, f64, f64)]) -> (Pattern, BTreeSet<u64>) {
+        let mut p = Pattern {
+            id: next_id(),
+            name: "P".into(),
+            length: 16,
+            notes: Vec::new(),
+        };
+        for &(pitch, start, dur) in notes {
+            add_note(&mut p, pitch, start, dur, 0.8).unwrap();
+        }
+        let ids = p.notes.iter().map(|n| n.id).collect();
+        (p, ids)
+    }
+
+    #[test]
+    fn note_length_ops_clamp_to_cells_and_pattern_end() {
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 12.0, 0.5), (67, 4.0, 1.0)]);
+        // Lengthen by a 1/16 cell, the last note stops at the pattern end.
+        assert_eq!(change_note_lengths(&mut p, &ids, 1.0, 1.0), 3);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![3.0, 1.5, 2.0]);
+        assert_eq!(change_note_lengths(&mut p, &ids, 8.0, 1.0), 3);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![11.0, 4.0, 10.0]);
+        // Shortening stops at one cell, or the note's own length if shorter.
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 4.0, 0.5)]);
+        change_note_lengths(&mut p, &ids, -4.0, 1.0);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![1.0, 0.5]);
+
+        assert_eq!(set_note_durations(&mut p, &ids, 16.0), 2);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![16.0, 12.0]);
+        assert_eq!(set_note_durations(&mut p, &ids, 16.0), 0, "no-op");
+        assert_eq!(lowest_pitch(&p, &ids), Some(60));
+        let high: BTreeSet<u64> = [p.notes[1].id].into();
+        assert_eq!(lowest_pitch(&p, &high), Some(64));
+        assert_eq!(lowest_pitch(&p, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn clone_notes_adds_fresh_copies_in_place() {
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 4.0, 1.0)]);
+        let originals = p.notes.clone();
+        let copies = clone_notes(&mut p, &originals);
+        assert_eq!(p.notes.len(), 4);
+        for (c, o) in copies.iter().zip(&originals) {
+            assert!(!ids.contains(&c.id));
+            assert_eq!(
+                (c.pitch, c.start, c.duration),
+                (o.pitch, o.start, o.duration)
+            );
+        }
     }
 
     #[test]

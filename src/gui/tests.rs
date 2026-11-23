@@ -814,6 +814,27 @@ fn arrow_keys_nudge_notes() {
         73,
         "shift+arrow transposes by an octave"
     );
+
+    // Shift+←/→ move by a bar (clamped inside the pattern), Alt+←/→ change
+    // the length by the snap.
+    ui.app.project.tracks[idx].patterns[0].length = 48;
+    let note = |ui: &Ui| ui.pattern(idx, 0).notes[0].clone();
+    ui.key_mod(Key::ArrowRight, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 19.0, "shift+right moves a bar");
+    ui.key_mod(Key::ArrowLeft, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 3.0, "shift+left moves back a bar");
+    ui.key_mod(Key::ArrowLeft, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 0.0, "clamped at the pattern start");
+    assert_eq!(note(&ui).duration, 2.0);
+    ui.key_mod(Key::ArrowRight, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 3.0, "alt+right lengthens by the snap");
+    assert_eq!(note(&ui).start, 0.0, "the start stays");
+    ui.app.editor.snap = 2.0;
+    ui.key_mod(Key::ArrowLeft, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 2.0, "alt+left shortens by the snap");
+    ui.key_mod(Key::ArrowLeft, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 2.0, "never below one snap cell");
+    assert_eq!(note(&ui).pitch, 73, "no transposition along the way");
 }
 
 #[test]

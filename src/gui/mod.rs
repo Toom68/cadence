@@ -70,6 +70,12 @@ pub(crate) const SC_LOOP: KeyboardShortcut = sc(Modifiers::NONE, Key::L);
 /// editor); the same shortcut again restores the split.
 pub(crate) const SC_MAX_EDITOR: KeyboardShortcut = sc(CMD_SHIFT, Key::ArrowUp);
 pub(crate) const SC_MAX_ARRANGER: KeyboardShortcut = sc(CMD_SHIFT, Key::ArrowDown);
+/// Shift+←/→ move the selection by a bar; Alt+←/→ shorten / lengthen the
+/// selected notes by the Snap.
+pub(crate) const SC_BAR_BACK: KeyboardShortcut = sc(Modifiers::SHIFT, Key::ArrowLeft);
+pub(crate) const SC_BAR_FORWARD: KeyboardShortcut = sc(Modifiers::SHIFT, Key::ArrowRight);
+pub(crate) const SC_SHORTEN: KeyboardShortcut = sc(Modifiers::ALT, Key::ArrowLeft);
+pub(crate) const SC_LENGTHEN: KeyboardShortcut = sc(Modifiers::ALT, Key::ArrowRight);
 /// MIDI record toggle — the performance keys (Z X C V B N M, S D G H J) all
 /// sit in the rows below R, so plain R is free.
 pub(crate) const SC_RECORD: KeyboardShortcut = sc(Modifiers::NONE, Key::R);
@@ -755,8 +761,24 @@ impl CadenceApp {
         }
     }
 
-    /// Arrow-key nudging of the current selection.
+    /// Arrow-key nudging of the current selection: `steps` snap cells (the
+    /// editor's Snap for notes, the arranger grid for clips) and
+    /// `semitones`.
     fn nudge(&mut self, steps: i32, semitones: i32) {
+        let notes = f64::from(steps) * self.editor.snap;
+        let clips = f64::from(steps) * self.arranger.snap.steps();
+        self.nudge_by(notes, clips, semitones);
+    }
+
+    /// Shift+←/→: moves the selected notes (or clips) by whole bars.
+    fn nudge_bars(&mut self, bars: i32) {
+        let steps = f64::from(bars) * f64::from(ops::STEPS_PER_BAR);
+        self.nudge_by(steps, steps, 0);
+    }
+
+    /// Moves the note selection by `note_steps` / `semitones` while the
+    /// editor has focus, else the clip selection by `clip_steps`.
+    fn nudge_by(&mut self, note_steps: f64, clip_steps: f64, semitones: i32) {
         let Some(track_id) = self.sel.track else {
             return;
         };
@@ -768,7 +790,6 @@ impl CadenceApp {
                 return;
             };
             let ids = self.sel.notes.clone();
-            let snap = self.editor.snap;
             self.edit(
                 if semitones != 0 {
                     "Transpose notes"
@@ -784,35 +805,51 @@ impl CadenceApp {
                             .filter(|n| ids.contains(&n.id))
                             .cloned()
                             .collect();
-                        ops::move_notes(pat, &orig, steps as f64 * snap, semitones);
+                        ops::move_notes(pat, &orig, note_steps, semitones);
                     }
                 },
             );
             if semitones != 0 {
-                if let Some(&first) = self.sel.notes.iter().next() {
-                    let pitch = self
-                        .selected_track()
-                        .and_then(|t| ops::pattern(t, pid))
-                        .and_then(|p| p.notes.iter().find(|n| n.id == first))
-                        .map(|n| n.pitch);
-                    if let Some(pitch) = pitch {
-                        self.preview(track_id, pitch, 0.8);
-                    }
+                // Hear where the selection landed: its lowest note, the same
+                // one every time whatever the selection order.
+                let pitch = self
+                    .selected_track()
+                    .and_then(|t| ops::pattern(t, pid))
+                    .and_then(|p| ops::lowest_pitch(p, &self.sel.notes));
+                if let Some(pitch) = pitch {
+                    self.preview(track_id, pitch, 0.8);
                 }
             }
         } else if semitones == 0 {
             let clips = self.selected_clip_snapshots();
             let aclips = self.selected_audio_clip_snapshots();
             if !clips.is_empty() || !aclips.is_empty() {
-                let grid = self.arranger.snap.steps();
-                let dstep =
-                    ops::mixed_group_delta(&self.project, &clips, &aclips, steps as f64 * grid);
+                let dstep = ops::mixed_group_delta(&self.project, &clips, &aclips, clip_steps);
                 self.edit("Move clips", Some("nudge-clips"), |p| {
                     ops::move_clip_group(p, &clips, dstep);
                     ops::move_audio_clip_group(p, &aclips, dstep);
                 });
             }
         }
+    }
+
+    /// Alt+←/→: shortens or lengthens the selected notes by `cells` snap
+    /// cells. A note never shrinks below one cell (or its own length, when
+    /// it is already shorter) and never runs past the pattern end.
+    fn nudge_note_lengths(&mut self, cells: i32) {
+        if self.focus != Focus::Editor || self.sel.notes.is_empty() {
+            return;
+        }
+        let Some((tid, pid)) = self.editor_target() else {
+            return;
+        };
+        let ids = self.sel.notes.clone();
+        let snap = self.editor.snap;
+        self.edit("Resize notes", Some("nudge-note-lengths"), |p| {
+            if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                ops::change_note_lengths(pat, &ids, f64::from(cells) * snap, snap);
+            }
+        });
     }
 
     // ----- clipboard (copy / paste / cut) ---------------------------------
@@ -1619,10 +1656,19 @@ impl CadenceApp {
         } else if key(Modifiers::NONE, Key::ArrowDown) {
             self.nudge(0, -1);
         }
-        if key(Modifiers::NONE, Key::ArrowLeft) {
+        // Most specific first: a NONE pattern also matches Shift/Alt held.
+        if pressed(&SC_SHORTEN) {
+            self.nudge_note_lengths(-1);
+        } else if pressed(&SC_BAR_BACK) {
+            self.nudge_bars(-1);
+        } else if key(Modifiers::NONE, Key::ArrowLeft) {
             self.nudge(-1, 0);
         }
-        if key(Modifiers::NONE, Key::ArrowRight) {
+        if pressed(&SC_LENGTHEN) {
+            self.nudge_note_lengths(1);
+        } else if pressed(&SC_BAR_FORWARD) {
+            self.nudge_bars(1);
+        } else if key(Modifiers::NONE, Key::ArrowRight) {
             self.nudge(1, 0);
         }
         self.roll_digit_keys(ctx);

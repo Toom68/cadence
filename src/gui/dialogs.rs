@@ -1405,6 +1405,10 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         rows: &[
             ("Note length 1/32 … 1 bar", Text("1 … 6")),
             ("Give the selected notes that length", Text("Shift+1 … 6")),
+            (
+                "Shorten / lengthen by the Snap",
+                Either(&super::SC_SHORTEN, &super::SC_LENGTHEN),
+            ),
         ],
     },
     Section {
@@ -1424,6 +1428,10 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Deselect, close a dialog", Text("Esc")),
             ("Nudge the selection", Text("← / → / ↑ / ↓")),
             ("Nudge by an octave", Text("Shift+↑ / Shift+↓")),
+            (
+                "Nudge by a bar",
+                Either(&super::SC_BAR_BACK, &super::SC_BAR_FORWARD),
+            ),
             ("Arpeggiator", Menu("Edit menu")),
         ],
     },
@@ -2333,6 +2341,10 @@ mod tests {
             g::SC_MAX_EDITOR,
             g::SC_MAX_ARRANGER,
             g::SC_RECORD,
+            g::SC_BAR_BACK,
+            g::SC_BAR_FORWARD,
+            g::SC_SHORTEN,
+            g::SC_LENGTHEN,
         ] {
             assert!(listed.contains(&sc), "{sc:?} is missing from Help");
         }
