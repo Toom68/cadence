@@ -108,11 +108,10 @@ impl CadenceApp {
     /// recording; armed while stopped = step recording (the playhead
     /// advances one Snap step per note).
     pub(super) fn toggle_record(&mut self) {
+        self.finish_record_take();
         self.transport.recording = !self.transport.recording;
         if self.transport.recording {
             self.transport.recorded_notes = 0;
-            self.editor.record_pending.clear();
-            self.editor.kb_record_pitch = None;
             self.set_status(
                 StatusKind::Info,
                 "Recording… play and perform, or step-record at the playhead while stopped.",
@@ -176,7 +175,9 @@ impl CadenceApp {
     }
 
     /// Stops playback. Pressing Stop while stopped returns to the song start.
+    /// Ends a recording take, finalizing held notes at the stop position.
     pub(super) fn stop(&mut self) {
+        self.finish_record_take();
         if let Some(engine) = &self.engine {
             engine.stop();
         }
@@ -273,6 +274,16 @@ impl CadenceApp {
             return;
         };
         let st = engine.status();
+        if self.transport.playing
+            && !st.playing
+            && self
+                .transport
+                .started_at
+                .is_none_or(|s| s.elapsed() > START_GRACE)
+        {
+            // Playback ran off the song end: end the take where it stopped.
+            self.finish_record_take();
+        }
         let t = &mut self.transport;
         if t.playing {
             if st.playing {

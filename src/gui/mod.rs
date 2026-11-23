@@ -1335,7 +1335,7 @@ impl CadenceApp {
         theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
-            self.history.seal();
+            self.history.seal_unless(self.editor.record_take.as_deref());
             self.arranger.end_gesture();
             self.editor.end_gesture();
         }
@@ -1461,6 +1461,7 @@ impl CadenceApp {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         let typing = ctx.wants_keyboard_input();
         if self.dialog.is_open() {
+            self.keyboard_releases(ctx);
             // Even from a focused text field: Escape always backs out of a dialog.
             if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 self.dialog_escape();
@@ -1498,6 +1499,7 @@ impl CadenceApp {
             self.tab = Tab::Keys;
         }
         if typing {
+            self.keyboard_releases(ctx);
             return;
         }
         // Before the arrow-key nudges: Ctrl+Shift+↑/↓ move the panel split.
