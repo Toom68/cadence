@@ -51,6 +51,8 @@ pub(super) enum Dialog {
     Preferences,
     /// Confirm deleting audio-store files nothing known uses.
     CleanAudio(persistence::UnusedAudio),
+    /// Cleanup refused: these recent songs (path, reason) can't be read.
+    CleanAudioBlocked(Vec<(std::path::PathBuf, String)>),
 }
 
 /// Editable state of the New Song dialog.
@@ -260,6 +262,7 @@ impl CadenceApp {
             Dialog::Update => self.update_dialog(ctx),
             Dialog::Preferences => self.preferences_dialog(ctx),
             Dialog::CleanAudio(plan) => self.clean_audio_dialog(ctx, plan),
+            Dialog::CleanAudioBlocked(songs) => self.clean_audio_blocked_dialog(ctx, songs),
         };
         if keep {
             self.dialog = dialog;
@@ -1170,6 +1173,86 @@ impl CadenceApp {
             return false;
         }
         !cancel && !resp.should_close()
+    }
+
+    /// File ▸ Clean Up Unused Audio… refused because some recent songs
+    /// can't be read (a disconnected drive, a moved or damaged file): their
+    /// audio might be in the store, so nothing is offered for deletion.
+    /// "Forget These Songs" drops them from Open Recent and scans again.
+    fn clean_audio_blocked_dialog(
+        &mut self,
+        ctx: &Context,
+        songs: &[(std::path::PathBuf, String)],
+    ) -> bool {
+        let pal = self.palette();
+        let mut closed = false;
+        let mut forget = false;
+        let n = songs.len();
+        let resp = show_dialog(ctx, "cadence-clean-audio-blocked", pal, W_LIST, |ui| {
+            header(
+                ui,
+                pal,
+                "AUDIO STORE",
+                &format!(
+                    "Can't check {n} recent song{}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            ui.add_space(theme::GAP_S);
+            ui.label(
+                RichText::new(
+                    "Nothing was deleted. These songs in File ▸ Open Recent could not be read, \
+                     so Cadence can't tell which imported audio they use:",
+                )
+                .color(pal.text),
+            );
+            ui.add_space(theme::GAP_S);
+            const CHROME: f32 = 240.0;
+            ScrollArea::vertical()
+                .max_height((dialog_max_height(ctx) - CHROME).clamp(80.0, 260.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (path, err) in songs {
+                        ui.horizontal_top(|ui| {
+                            ui.label(RichText::new("•").color(pal.danger));
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(path.display().to_string())
+                                        .small()
+                                        .color(pal.text),
+                                );
+                                ui.label(RichText::new(err).small().color(pal.text_faint));
+                            });
+                        });
+                        ui.add_space(theme::GAP_XS);
+                    }
+                });
+            ui.add_space(theme::GAP_S);
+            theme::hint(
+                ui,
+                pal,
+                "Reconnect the drive (or put the song back) and try again. If a song is gone \
+                 for good, Forget These Songs removes it from Open Recent and checks again — \
+                 audio only it used may then be offered for deletion.",
+            );
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Close").clicked() {
+                    closed = true;
+                }
+                if theme::secondary_button(ui, "Forget These Songs").clicked() {
+                    forget = true;
+                }
+            });
+        });
+        if forget {
+            let paths: Vec<_> = songs.iter().map(|(p, _)| p.clone()).collect();
+            self.forget_recent_files(&paths);
+            // Opens the confirm dialog (or a status note) for the new scan.
+            self.open_audio_cleanup();
+            return false;
+        }
+        closed |= enter_pressed(ctx);
+        !closed && !resp.should_close()
     }
 
     // ----- pack errors ---------------------------------------------------------
@@ -2171,6 +2254,12 @@ mod tests {
         check("cadence-new-song", || {
             Dialog::NewSong(NewSongDraft::default())
         });
+        check("cadence-clean-audio-blocked", || {
+            Dialog::CleanAudioBlocked(vec![(
+                "/Volumes/Away/Song.cadence".into(),
+                "Could not open the song".into(),
+            )])
+        });
         check("cadence-clean-audio", || {
             Dialog::CleanAudio(persistence::UnusedAudio {
                 files: vec!["/store/0000000000000000.wav".into()],
@@ -2294,9 +2383,17 @@ mod tests {
         fn pack_errors() -> Dialog {
             Dialog::PackErrors((0..200).map(|i| format!("pack {i}: bad field")).collect())
         }
+        fn cleanup_blocked() -> Dialog {
+            Dialog::CleanAudioBlocked(
+                (0..200)
+                    .map(|i| (format!("/Volumes/Away/{i}.cadence").into(), "gone".into()))
+                    .collect(),
+            )
+        }
         /// Area id, dialog, and whether its body is long enough to scroll.
         type Case = (&'static str, fn() -> Dialog, bool);
-        let dialogs: [Case; 6] = [
+        let dialogs: [Case; 7] = [
+            ("cadence-clean-audio-blocked", cleanup_blocked, true),
             ("cadence-notices", || Dialog::Notices, true),
             (
                 "cadence-new-song",

@@ -31,6 +31,17 @@ pub(super) struct Document {
     pub(super) saved_state: Option<u64>,
 }
 
+/// What Clean Up Unused Audio… must keep, from
+/// [`CadenceApp::referenced_audio`].
+#[derive(Debug, Default)]
+pub(super) struct AudioInUse {
+    /// Store names something known still uses.
+    pub(super) names: std::collections::BTreeSet<String>,
+    /// Recent songs that could not be read (path, reason): their audio is
+    /// unknown, so cleanup refuses while any are listed.
+    pub(super) unreadable: Vec<(PathBuf, String)>,
+}
+
 /// A file action that may need an unsaved-changes decision first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PendingAction {
@@ -438,9 +449,19 @@ impl CadenceApp {
             );
             return;
         }
-        let plan =
-            persistence::unused_audio_files_in(&persistence::audio_dir(), &self.referenced_audio());
-        self.offer_audio_cleanup(plan);
+        self.plan_audio_cleanup_in(&persistence::audio_dir());
+    }
+
+    /// Scans `store` and opens the confirm dialog — or, when a recent song
+    /// can't be read, the dialog that refuses and lists those songs (their
+    /// audio can't be proven unused, so nothing may be offered for deletion).
+    pub(super) fn plan_audio_cleanup_in(&mut self, store: &Path) {
+        let in_use = self.referenced_audio();
+        if !in_use.unreadable.is_empty() {
+            self.dialog = Dialog::CleanAudioBlocked(in_use.unreadable);
+            return;
+        }
+        self.offer_audio_cleanup(persistence::unused_audio_files_in(store, &in_use.names));
     }
 
     /// Shows the confirm dialog for `plan`, or says there is nothing to do.
@@ -457,35 +478,79 @@ impl CadenceApp {
     }
 
     /// Store names still in use: the open song and every state undo/redo can
-    /// restore, the crash-recovery autosave and each song in Open Recent.
-    /// (Songs elsewhere on disk can't be known — the dialog says so.)
-    pub(super) fn referenced_audio(&self) -> std::collections::BTreeSet<String> {
-        let mut refs: std::collections::BTreeSet<String> = std::iter::once(&self.project)
-            .chain(self.history.snapshots())
-            .flat_map(persistence::audio_refs)
-            .collect();
+    /// restore, the crash-recovery autosave and each song in Open Recent
+    /// (plus any file in a recent song's `<stem> Audio` folder). A recent
+    /// song that can't be read is listed in `unreadable` — cleanup must not
+    /// run while one is. (Songs elsewhere on disk can't be known — the
+    /// dialog says so.)
+    pub(super) fn referenced_audio(&self) -> AudioInUse {
+        let mut in_use = AudioInUse {
+            names: std::iter::once(&self.project)
+                .chain(self.history.snapshots())
+                .flat_map(persistence::audio_refs)
+                .collect(),
+            unreadable: Vec::new(),
+        };
         if let Some(work) = self
             .recovery_dir
             .as_deref()
             .and_then(persistence::peek_recovery_in)
         {
-            refs.extend(persistence::audio_refs(&work));
+            in_use.names.extend(persistence::audio_refs(&work));
         }
         if let Dialog::Recovery(work) = &self.dialog {
-            refs.extend(persistence::audio_refs(&work.project));
+            in_use.names.extend(persistence::audio_refs(&work.project));
         }
-        for path in &self.recent_files {
-            if let Ok(song) = persistence::load_project(path) {
-                refs.extend(persistence::audio_refs(&song));
+        // The open song's file counts too (its saved version may still use
+        // a clip the live state dropped). It never blocks: the live state
+        // above is what an unreadable or deleted file would hold.
+        let open = self
+            .doc
+            .path
+            .as_ref()
+            .filter(|p| !self.recent_files.contains(p));
+        for (path, blocks) in self
+            .recent_files
+            .iter()
+            .map(|p| (p, true))
+            .chain(open.map(|p| (p, false)))
+        {
+            match persistence::load_project(path) {
+                Ok(song) => in_use.names.extend(persistence::audio_refs(&song)),
+                Err(err) if blocks => in_use.unreadable.push((path.clone(), err)),
+                Err(_) => {}
             }
+            in_use.names.extend(persistence::audio_folder_names(
+                &persistence::song_audio_dir(path),
+            ));
         }
-        refs
+        in_use
+    }
+
+    /// Removes `paths` from File ▸ Open Recent (the cleanup dialog's
+    /// "Forget These Songs" for songs that are gone for good).
+    pub(super) fn forget_recent_files(&mut self, paths: &[PathBuf]) {
+        self.recent_files.retain(|p| !paths.contains(p));
+        self.store_recent_files();
     }
 
     /// The confirmed cleanup: deletes the planned files that are *still*
     /// unused (re-checked now, in case a recent song changed meanwhile).
+    /// Deletes nothing while a recent song can't be read.
     pub(super) fn run_audio_cleanup(&mut self, plan: &persistence::UnusedAudio) {
-        let refs = self.referenced_audio();
+        let in_use = self.referenced_audio();
+        if let Some((path, _)) = in_use.unreadable.first() {
+            self.set_status(
+                StatusKind::Error,
+                format!(
+                    "Nothing was deleted: the recent song {} can't be read, so its audio \
+                     can't be checked.",
+                    path.display()
+                ),
+            );
+            return;
+        }
+        let refs = in_use.names;
         let files: Vec<PathBuf> = plan
             .files
             .iter()
@@ -1782,7 +1847,7 @@ mod tests {
         persistence::save_recovery_in(&rec, &saved, None).unwrap();
         app.recovery_dir = Some(rec);
 
-        let refs = app.referenced_audio();
+        let refs = app.referenced_audio().names;
         let plan = persistence::unused_audio_files_in(store.path(), &refs);
         assert_eq!(plan.files, vec![store.path().join(&stale)]);
         app.offer_audio_cleanup(plan.clone());
@@ -1803,6 +1868,57 @@ mod tests {
         app.open_audio_cleanup();
         assert!(!app.dialog.is_open());
         assert_eq!(app.status.clone().unwrap().kind, StatusKind::Warning);
+    }
+
+    /// A recent song that can't be read (an unplugged drive) might use any
+    /// store file, so cleanup refuses until it is back or forgotten; files
+    /// in a recent song's `<stem> Audio` folder always count as used.
+    #[test]
+    fn audio_cleanup_refuses_while_a_recent_song_is_unreadable() {
+        let store = tempfile::tempdir().unwrap();
+        let songs = tempfile::tempdir().unwrap();
+        let wav = |name: &str| {
+            std::fs::write(store.path().join(name), vec![1u8; 1024]).unwrap();
+            name.to_owned()
+        };
+        let (stale, bundled) = (wav("5555555555555555.wav"), wav("6666666666666666.wav"));
+        let song_path = songs.path().join("Song.cadence");
+        persistence::save_project(&Project::empty(), &song_path).unwrap();
+        let folder = persistence::song_audio_dir(&song_path);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(&bundled), b"copy").unwrap();
+        let gone = songs.path().join("Unplugged").join("Away.cadence");
+
+        let mut app = CadenceApp::headless(Project::empty());
+        app.recent_files = vec![gone.clone(), song_path];
+        app.plan_audio_cleanup_in(store.path());
+        match &app.dialog {
+            Dialog::CleanAudioBlocked(songs) => {
+                assert_eq!(songs.iter().map(|s| &s.0).collect::<Vec<_>>(), [&gone]);
+            }
+            other => panic!("expected the blocked dialog, got {other:?}"),
+        }
+        // A confirm that races the drive going away deletes nothing either.
+        let plan = persistence::UnusedAudio {
+            files: vec![store.path().join(&stale)],
+            bytes: 1024,
+        };
+        app.dialog = Dialog::None;
+        app.run_audio_cleanup(&plan);
+        assert!(store.path().join(&stale).is_file());
+        assert_eq!(app.status.clone().unwrap().kind, StatusKind::Error);
+
+        // Forgetting the unreadable song lets the scan go ahead; the bundled
+        // copy's name is still kept.
+        app.forget_recent_files(std::slice::from_ref(&gone));
+        assert_eq!(app.recent_files.len(), 1);
+        app.plan_audio_cleanup_in(store.path());
+        match &app.dialog {
+            Dialog::CleanAudio(plan) => {
+                assert_eq!(plan.files, vec![store.path().join(&stale)]);
+            }
+            other => panic!("expected the confirm dialog, got {other:?}"),
+        }
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

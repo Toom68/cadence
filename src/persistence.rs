@@ -243,6 +243,23 @@ pub fn song_audio_dir(song: &Path) -> PathBuf {
     parent.join(format!("{stem} Audio"))
 }
 
+/// Names of the `.wav` files directly in `folder` (a song's
+/// [`song_audio_dir`]); empty when it is missing or unreadable. Cleanup
+/// treats these names as in use.
+pub fn audio_folder_names(folder: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".wav"))
+        .collect();
+    names.sort();
+    names
+}
+
 /// Every audio-store name `project` references, sorted and deduplicated.
 pub fn audio_refs(project: &crate::model::Project) -> Vec<String> {
     let mut refs: Vec<String> = project
@@ -1201,6 +1218,18 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&store);
         let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn audio_folder_names_lists_only_wav_files() {
+        let dir = temp_dir("folder-names");
+        fs::write(dir.join("b.WAV"), b"x").unwrap();
+        fs::write(dir.join("a.wav"), b"x").unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+        fs::create_dir_all(dir.join("sub.wav")).unwrap();
+        assert_eq!(audio_folder_names(&dir), ["a.wav", "b.WAV"]);
+        assert!(audio_folder_names(&dir.join("missing")).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
