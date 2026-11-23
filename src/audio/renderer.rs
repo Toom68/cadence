@@ -1094,9 +1094,15 @@ impl Renderer {
                 }
                 let idx = src_pos as usize;
                 if idx + 1 < src_frames {
+                    // 4-point cubic interpolation; the outer taps clamp to
+                    // the source's ends (clip loops restart from `offset`,
+                    // not by wrapping the source).
                     let fr = (src_pos - idx as f64) as f32;
-                    let x = src.left[idx] + (src.left[idx + 1] - src.left[idx]) * fr;
-                    let y = src.right[idx] + (src.right[idx + 1] - src.right[idx]) * fr;
+                    let (im1, i2) = (idx.saturating_sub(1), (idx + 2).min(src_frames - 1));
+                    let (l, r) = (&src.left, &src.right);
+                    let hermite = super::voice::hermite;
+                    let x = hermite(l[im1], l[idx], l[idx + 1], l[i2], fr);
+                    let y = hermite(r[im1], r[idx], r[idx + 1], r[i2], fr);
                     let gv = g as f32;
                     self.strip_l[base + i] += x * gv;
                     self.strip_r[base + i] += y * gv;

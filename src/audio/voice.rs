@@ -437,7 +437,7 @@ enum Kind {
     Lead,
     Preset,
     /// Embedded-clip playback (a preset or kit piece `sample` block): reads
-    /// `sample_buf` with linear interpolation, then shares the preset DSP tail.
+    /// `sample_buf` with cubic interpolation, then shares the preset DSP tail.
     Sample,
 }
 
@@ -619,7 +619,7 @@ pub struct Voice {
     noise_value: [f32; MAX_PRESET_OSCILLATORS],
     /// Decoded clip for `Kind::Sample`, resolved from its published slot.
     sample_buf: Option<&'static [f32]>,
-    /// Read position in clip frames (fractional; linear interp uses the rest).
+    /// Read position in clip frames (fractional; cubic interp uses the rest).
     sample_pos: f64,
     /// Second read head for `spread` sample voices.
     sample_pos2: f64,
@@ -1659,7 +1659,7 @@ impl Voice {
     }
 
     /// PCM clip playback for `sample` presets and kit pieces: the registered
-    /// buffer is read with linear interpolation at `2^((pitch - root)/12)`
+    /// buffer is read with cubic interpolation at `2^((pitch - root)/12)`
     /// times its declared rate — `self.freq` (the played note, with portamento
     /// plus the preset's pitch envelope and LFO) times `sample_ratio` sets the
     /// step — one-shot or looping while held, then shaped by the shared
@@ -1702,17 +1702,7 @@ impl Voice {
             Some(buf) if !buf.is_empty() => {
                 let len = buf.len();
                 let pos = self.sample_pos;
-                let i = pos as usize;
-                let s0 = buf.get(i).copied().unwrap_or(0.0);
-                // At the loop seam the interp target wraps to the first
-                // frame so a seamless loop stays seamless.
-                let j = if p.sample_loop && i + 1 >= len {
-                    0
-                } else {
-                    i.saturating_add(1).min(len - 1)
-                };
-                let s1 = buf.get(j).copied().unwrap_or(0.0);
-                let v = s0 + (s1 - s0) * (pos - i as f64) as f32;
+                let v = read_clip(buf, pos, p.sample_loop);
                 let next = pos + inc;
                 if p.sample_loop {
                     self.sample_pos = next.rem_euclid(len as f64);
@@ -1767,6 +1757,41 @@ impl Voice {
         );
         value.clamp(-1.0, 1.0)
     }
+}
+
+/// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `x0` and
+/// `x1` at fraction `t` in `0..1`, using the outer neighbours `xm1`/`x2`.
+/// Exact at the sample points and far smoother than linear interpolation
+/// for resampled audio (less high-frequency imaging and droop).
+#[inline]
+pub(crate) fn hermite(xm1: f32, x0: f32, x1: f32, x2: f32, t: f32) -> f32 {
+    let c1 = 0.5 * (x1 - xm1);
+    let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
+    let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+    ((c3 * t + c2) * t + c1) * t + x0
+}
+
+/// Reads a mono clip at fractional frame `pos` with [`hermite`]
+/// interpolation. A looping clip wraps its neighbours around the seam (so a
+/// seamless loop stays seamless); a one-shot clamps them to its ends.
+#[inline]
+fn read_clip(buf: &[f32], pos: f64, looped: bool) -> f32 {
+    let len = buf.len();
+    if len == 0 {
+        return 0.0;
+    }
+    let i = pos.floor();
+    let t = (pos - i) as f32;
+    let i = i as i64;
+    let at = |k: i64| -> f32 {
+        let idx = if looped {
+            k.rem_euclid(len as i64) as usize
+        } else {
+            k.clamp(0, len as i64 - 1) as usize
+        };
+        buf[idx]
+    };
+    hermite(at(i - 1), at(i), at(i + 1), at(i + 2), t)
 }
 
 /// Band-limited pulse with duty `width`, DC removed.
@@ -2914,5 +2939,85 @@ mod tests {
             age: 1,
         });
         assert_eq!(v.cutoff, 1_500.0);
+    }
+
+    /// Max error of reading a sampled sine (period `period` frames) at
+    /// fractional positions with `read`, against the ideal sine.
+    fn interp_error(period: f32, read: impl Fn(&[f32], f64) -> f32) -> f32 {
+        let tau = std::f32::consts::TAU;
+        let buf: Vec<f32> = (0..2_000)
+            .map(|i| (i as f32 * tau / period).sin())
+            .collect();
+        let mut worst = 0.0f32;
+        // A transposition step (≈ +7 semitones) lands on every fraction.
+        let mut pos = 2.0f64;
+        while pos < 1_990.0 {
+            let ideal = (pos as f32 * tau / period).sin();
+            worst = worst.max((read(&buf, pos) - ideal).abs());
+            pos += 1.498_307;
+        }
+        worst
+    }
+
+    #[test]
+    fn cubic_clip_reads_beat_linear_on_a_transposed_sine() {
+        let linear = |buf: &[f32], pos: f64| {
+            let i = pos as usize;
+            let t = (pos - i as f64) as f32;
+            buf[i] + (buf[i + 1] - buf[i]) * t
+        };
+        let cubic = |buf: &[f32], pos: f64| read_clip(buf, pos, false);
+        for period in [8.0f32, 20.0, 50.0] {
+            let (lin, cub) = (interp_error(period, linear), interp_error(period, cubic));
+            assert!(
+                cub < lin * 0.5,
+                "period {period}: cubic error {cub} should be well below linear {lin}"
+            );
+        }
+        // Exact at the sample points.
+        let buf = [0.1, -0.4, 0.9, 0.3];
+        for (i, &x) in buf.iter().enumerate() {
+            assert_eq!(read_clip(&buf, i as f64, false), x);
+        }
+        assert_eq!(read_clip(&[], 0.5, true), 0.0);
+    }
+
+    #[test]
+    fn cubic_clip_reads_wrap_a_seamless_loop() {
+        // 4 whole cycles of a 25-frame sine: reading across the seam must
+        // continue the waveform (neighbours wrap), not clamp to the end.
+        let tau = std::f32::consts::TAU;
+        let buf: Vec<f32> = (0..100).map(|i| (i as f32 * tau / 25.0).sin()).collect();
+        for pos in [98.25f64, 99.0, 99.5, 99.9, 0.3] {
+            let ideal = (pos as f32 * tau / 25.0).sin();
+            let err = (read_clip(&buf, pos, true) - ideal).abs();
+            assert!(err < 2e-3, "seam read at {pos} off by {err}");
+        }
+        // A one-shot clamps instead: past the last frame it holds the end.
+        assert_eq!(read_clip(&buf, 99.0, false), buf[99]);
+    }
+
+    #[test]
+    fn transposed_sample_voice_tracks_an_ideal_sine() {
+        // The 220 Hz clip played a fifth up (pitch 67) should be a clean
+        // ~329.6 Hz sine: fit-free check against the ideal by correlating
+        // with the expected frequency over the sustained part.
+        let (l, _) = render_stereo(sample_sound(true), 67, 0.8, 0.6, 0.5);
+        let x = &l[(0.1 * SR) as usize..(0.4 * SR) as usize];
+        let f = 220.0 * 2f32.powf(7.0 / 12.0);
+        let (mut c, mut s) = (0.0f32, 0.0f32);
+        for (i, &v) in x.iter().enumerate() {
+            let w = std::f32::consts::TAU * f * i as f32 / SR;
+            c += v * w.cos();
+            s += v * w.sin();
+        }
+        let n = x.len() as f32;
+        let fundamental = 2.0 * (c * c + s * s).sqrt() / n / std::f32::consts::SQRT_2;
+        let total = rms(x);
+        // Almost all energy is at the transposed fundamental.
+        assert!(
+            fundamental / total > 0.99,
+            "residual too high: {fundamental} of {total}"
+        );
     }
 }

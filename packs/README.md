@@ -89,8 +89,8 @@ base64-encoded PCM instead of (or beside) oscillators:
   `root_pitch` 0–127 (default 60 = the note that plays at unity speed).
   `loop` (default false) loops the clip while the note is held; a one-shot
   ends when the clip does.
-- Playback transposes by `2^((note - root_pitch)/12)` with linear
-  interpolation, then runs the usual preset envelope/filter/bitcrush/gain
+- Playback transposes by `2^((note - root_pitch)/12)` with 4-point cubic
+  (Hermite) interpolation, then runs the usual preset envelope/filter/bitcrush/gain
   tail, so those fields still shape the clip.
 - A `sample` preset may omit `oscillators` entirely; any listed oscillators
   are still range-validated but inert. A kit piece `voice` can carry a clip
