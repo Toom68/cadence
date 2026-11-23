@@ -458,7 +458,22 @@ fn list_instruments() {
     let fonts = font::load_library();
     println!("SoundFont instruments ({}):", fonts.fonts.len());
     for info in &fonts.fonts {
-        println!("  {:<32} {} GM programs (0-127)", info.name, info.presets);
+        println!(
+            "  {:<32} {} presets, GM programs 0-127",
+            fonts.display_name(&info.name),
+            info.presets
+        );
+    }
+    if !fonts.has_builtin() {
+        println!(
+            "  (no built-in SoundFont found; searched: {})",
+            fonts
+                .bundled_dirs
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     println!(
         "User font folder: {} (drop .sf2 files here)",

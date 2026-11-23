@@ -9,14 +9,23 @@
 //! CADENCE_TEST_FONT=/path/to/GeneralUser.sf2 cargo test --test fonts -- --ignored
 //! ```
 //!
-//! Everything else runs without a font: the catalog scan, directory
-//! resolution and the missing-font fallback are covered here and in unit
-//! tests.
+//! Everything else runs without a real font: the catalog scan, directory
+//! resolution, the missing-font fallback and the bundled ("built-in") font
+//! path are covered here and in unit tests, using a tiny generated `.sf2`
+//! (`common::tiny_sf2`). Tests never read the developer font cache: library
+//! tests pass explicit directories and CLI tests set `CADENCE_SOUNDFONT_DIR`.
+
+mod common;
 
 use cadence_studio::audio::render_project;
-use cadence_studio::font::{font_key, gm_program_name, load_library_from, user_fonts_dir};
+use cadence_studio::font::{
+    font_key, gm_program_name, load_library_from, load_library_with, user_fonts_dir,
+    BUILTIN_FONT_NAME, BUNDLED_FONTS_DIR_ENV,
+};
 use cadence_studio::model::{create_track, FontRef, Instrument, Note, Project};
-use std::path::PathBuf;
+use cadence_studio::persistence::save_project;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 fn rms(x: &[f32]) -> f32 {
     (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
@@ -53,6 +62,154 @@ fn catalog_reports_bad_files_without_failing() {
     assert_eq!(library.errors.len(), 1);
     assert!(library.errors[0].contains("broken.sf2"));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+fn write_font(dir: &Path, name: &str) {
+    std::fs::write(dir.join(format!("{name}.sf2")), common::tiny_sf2()).unwrap();
+}
+
+#[test]
+fn tiny_test_font_parses() {
+    let dir = tempfile::tempdir().unwrap();
+    write_font(dir.path(), "Tiny");
+    let library = load_library_from(dir.path());
+    assert!(library.errors.is_empty(), "{:?}", library.errors);
+    assert_eq!(library.fonts.len(), 1);
+    assert_eq!(library.fonts[0].presets, 1);
+    assert!(!library.has_builtin(), "user fonts are not built-in");
+}
+
+#[test]
+fn bundled_fonts_come_first_and_are_marked_builtin() {
+    let bundled = tempfile::tempdir().unwrap();
+    let fallback = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    write_font(bundled.path(), BUILTIN_FONT_NAME);
+    // A second bundled dir with the same font (e.g. the dev cache next to a
+    // packaged copy) is skipped silently.
+    write_font(fallback.path(), BUILTIN_FONT_NAME);
+    write_font(user.path(), "Zed");
+    write_font(user.path(), "Alpha");
+    // A user font can't shadow the built-in one; it's reported instead.
+    write_font(user.path(), BUILTIN_FONT_NAME);
+    let library = load_library_with(
+        &[
+            bundled.path().to_path_buf(),
+            PathBuf::from("/definitely/not/a/real/dir"),
+            fallback.path().to_path_buf(),
+        ],
+        user.path(),
+    );
+    let names: Vec<&str> = library.fonts.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, [BUILTIN_FONT_NAME, "Alpha", "Zed"]);
+    assert!(library.has_builtin());
+    assert!(library.is_builtin(BUILTIN_FONT_NAME));
+    assert!(!library.is_builtin("Alpha"));
+    assert_eq!(
+        library.display_name(BUILTIN_FONT_NAME),
+        "Cadence GM (built-in)"
+    );
+    assert_eq!(library.display_name("Alpha"), "Alpha");
+    assert_eq!(library.errors.len(), 1, "{:?}", library.errors);
+    assert!(library.errors[0].contains("built-in font already uses this name"));
+    assert_eq!(library.dir, user.path());
+    for info in &library.fonts {
+        assert!(library.get(info.key).is_some(), "{} is playable", info.name);
+    }
+    // The built-in font resolves by the name songs store.
+    assert!(library
+        .get(FontRef::new(BUILTIN_FONT_NAME, 0).key())
+        .is_some());
+}
+
+#[test]
+fn broken_bundled_font_is_reported_and_user_fonts_still_load() {
+    let bundled = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    std::fs::write(bundled.path().join("Cadence GM.sf2"), b"truncated").unwrap();
+    write_font(user.path(), "Mine");
+    let library = load_library_with(&[bundled.path().to_path_buf()], user.path());
+    assert_eq!(library.fonts.len(), 1);
+    assert_eq!(library.fonts[0].name, "Mine");
+    assert!(!library.has_builtin());
+    assert_eq!(library.errors.len(), 1);
+    assert!(
+        library.errors[0].contains("(built-in)"),
+        "{:?}",
+        library.errors
+    );
+}
+
+/// Runs the CLI with an isolated data dir and `soundfonts` as the bundled
+/// font folder.
+fn cadence(soundfonts: &Path, data: &Path, args: &[&std::ffi::OsStr]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cadence"))
+        .args(args)
+        .env("CADENCE_DATA_DIR", data)
+        .env(BUNDLED_FONTS_DIR_ENV, soundfonts)
+        .env_remove("CADENCE_FONTS_DIR")
+        .env_remove("CADENCE_PACKS_DIR")
+        .output()
+        .expect("run cadence binary")
+}
+
+#[test]
+fn cli_lists_and_renders_with_the_bundled_font() {
+    let root = tempfile::tempdir().unwrap();
+    let with_font = root.path().join("soundfonts");
+    let without_font = root.path().join("no-soundfonts");
+    let data = root.path().join("data");
+    std::fs::create_dir_all(&with_font).unwrap();
+    std::fs::create_dir_all(&without_font).unwrap();
+    write_font(&with_font, BUILTIN_FONT_NAME);
+
+    let out = cadence(&with_font, &data, &["--list-instruments".as_ref()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Cadence GM (built-in)"),
+        "built-in font listed:\n{stdout}"
+    );
+
+    // A song referencing the built-in font by name renders through it: the
+    // tiny font's sine differs from the fallback piano it replaces.
+    let mut p = Project::empty();
+    p.bpm = 120.0;
+    p.bars = 1;
+    p.tracks = vec![create_track(Instrument::Piano)];
+    p.tracks[0].effects.reverb = 0.0;
+    p.tracks[0].effects.delay = 0.0;
+    p.tracks[0].font = Some(FontRef::new(BUILTIN_FONT_NAME, 0));
+    p.tracks[0].patterns[0].notes = vec![Note::new(69, 0.0, 8.0, 0.9)];
+    p.validate().unwrap();
+    let song = root.path().join("gm.cadence");
+    save_project(&p, &song).unwrap();
+    let render = |soundfonts: &Path, name: &str| {
+        let wav = root.path().join(name);
+        let out = cadence(
+            soundfonts,
+            &data,
+            &["--render".as_ref(), song.as_os_str(), wav.as_os_str()],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        common::read_wav(&wav)
+    };
+    let font = render(&with_font, "font.wav");
+    let fallback = render(&without_font, "fallback.wav");
+    assert!(font.peak() > 0.01, "bundled font is audible");
+    assert!(fallback.peak() > 0.01, "fallback is audible");
+    assert_ne!(
+        font.samples, fallback.samples,
+        "the bundled font, not the fallback, played"
+    );
 }
 
 #[test]

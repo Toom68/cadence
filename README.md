@@ -15,7 +15,7 @@
 
 Cadence is a multi-track music-making app for Windows and macOS, written in Rust. Write drum patterns and melodies in a step sequencer and piano roll, arrange them into songs on a timeline, drop imported WAVs onto audio lanes, mix with per-track effects and subgroup buses, and export WAV, per-track stems, or MIDI.
 
-- **203 bundled instruments** — chiptune, psy-experimental banks, drum kits, guitars, neon leads, one-shot FX, mallets & keys — plus JSON instrument packs, `.sf2` SoundFonts, and `.wav` sample import
+- **203 bundled instruments** — chiptune, psy-experimental banks, drum kits, guitars, neon leads, one-shot FX, mallets & keys — plus a built-in General MIDI SoundFont (all 128 GM programs, sampled — GeneralUser GS), more `.sf2` SoundFonts, JSON instrument packs, and `.wav` sample import
 - **Play and record from a MIDI keyboard** — plug in any USB/class-compliant controller (or use the computer keyboard): notes play the selected track with their velocity and record into its pattern, sustain pedal included; hot-plugging is followed automatically
 - **Audio lanes** for your own WAV clips — move, loop, and fade them like pattern clips
 - **A real mixer** — per-track volume/pan/mute/solo, FX, subgroup buses, live peak meters
@@ -74,11 +74,14 @@ On first launch Cadence opens the included demo song, *Afterglow*. If a valid re
 | `cargo clippy --locked --all-targets -- -D warnings` | Lint |
 | `scripts/mac-package.sh` | macOS package: `Cadence.app`, `.zip`, and `.dmg` when `hdiutil` is available |
 | `scripts/windows-package.ps1` | Windows package on Windows: release `Cadence.exe`, a portable `.zip`, and the `-setup.exe` installer when [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed |
+| `scripts/fetch-soundfont.sh` | Download + SHA-256-verify the built-in GM SoundFont into `.cache/soundfonts` (run once; `cargo run` then finds it). The packaging scripts call it; `fetch-soundfont.ps1` is the Windows twin |
 | `scripts/windows-cross-package.sh` | Windows x64 package from macOS/Linux via the GNU target (needs `mingw-w64` and `rustup target add x86_64-pc-windows-gnu`; installs nothing itself) |
 
 `Cargo.lock` is committed — build and test with `--locked` for reproducible results (as CI does). Package artifacts land in `dist/`: `Cadence-<version>-macos-<arch>.{zip,dmg}`, `Cadence-<version>-windows-x64.zip` (containing `Cadence.exe`) and `Cadence-<version>-windows-x64-setup.exe`. Two Windows paths exist: `windows-package.ps1` builds the native MSVC binary on Windows (the CI path), while `windows-cross-package.sh` cross-builds the GNU-target exe on macOS/Linux. Both scripts honor `CARGO_TARGET_DIR` and copy the bundled font licenses into `licenses/` plus a buyer `README.txt`, `THIRD-PARTY-NOTICES.txt` (every crate and bundled font license, also browsable in-app via Help → About → Third-Party Notices) and `EULA.txt` when one exists at the repo root — the scripts warn when it is missing. Regenerate the notices after dependency changes with `python scripts/gen-third-party-notices.py`. Packages are **not distribution-signed** (macOS ad-hoc, Windows unsigned). The native MSVC Windows package has been launched on Windows 11 (demo opened with audio ready, clean exit); a full human acceptance pass on Windows is still outstanding — see Limitations and [docs/verification.md](docs/verification.md).
 
 `scripts/mac-package.sh` also accepts `UNIVERSAL=1` (arm64 + x86_64 universal binary via `lipo`) and `SKIP_DMG=1` (zip only).
+
+Every package also carries the built-in General MIDI SoundFont, `soundfonts/Cadence GM.sf2` (GeneralUser GS 2.0.3, ~31 MB, with its license) — inside `Cadence.app/Contents/Resources/` on macOS, next to `Cadence.exe` on Windows. It is not in git: the scripts fetch it from a pinned URL and verify its SHA-256 (see [packaging/soundfont/README.md](packaging/soundfont/README.md)). Offline local packaging warns and ships without it; `REQUIRE_SOUNDFONT=1` (set in CI) makes that an error, and a checksum mismatch always is.
 
 ### Headless / CLI modes
 
@@ -182,7 +185,7 @@ A `.cadence` file is a plain-text JSON document describing tempo, swing, song le
 
 ## Limitations
 
-- **Built-in synthesizers, JSON packs and SoundFonts — no binary plugin hosting yet.** Sounds are synthesized in-app (seven built-in timbres, 196 bundled pack presets across thirteen banks, optional user-installed JSON packs), sampled from user-installed `.sf2` SoundFonts, or embedded as small WAV clips — see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
+- **Built-in synthesizers, JSON packs and SoundFonts — no binary plugin hosting yet.** Sounds are synthesized in-app (seven built-in timbres, 196 bundled pack presets across thirteen banks, optional user-installed JSON packs), sampled from the built-in General MIDI SoundFont or user-installed `.sf2` SoundFonts, or embedded as small WAV clips — see [docs/instrument-packs.md](docs/instrument-packs.md) and [packs/README.md](packs/README.md). Loading VST3/AU/CLAP plugins is a designed-but-unimplemented roadmap item; Cadence does **not** load them today.
 - **Packages are not distribution-signed.** macOS builds are ad-hoc signed only and Windows builds are unsigned — no Developer ID, notarization, or Authenticode, so platform security warnings (Gatekeeper, SmartScreen) can appear when sharing builds. The native MSVC Windows package has been launched on Windows 11 (demo with audio ready, clean exit, GUI screenshot-swept in all three themes); a full human acceptance pass and audio-device hot-plug on Windows are still unverified. Windows 10+ is the expected target per Rust's platform support.
 - **No audio recording.** Cadence is a pattern-based sequencer — you compose notes and drop in finished WAV files; you don't record takes. MIDI recording from a hardware MIDI controller, the computer keyboard or the Keyboard tab exists (the record button or **R**), writing notes into the selected track's pattern. Controller notes audition the track as short fixed-length previews (like computer keys) — how long you hold a key and the sustain pedal shape the *recorded* note lengths, not the live preview. MIDI input carries notes, velocity and the sustain pedal only; pitch bend, mod wheel and other controllers are ignored. Controller input has been exercised on macOS (CoreMIDI, including hot-plug) with a virtual device; Windows (WinMM) and Linux (ALSA) use the same `midir` code path but are unverified with real hardware.
 - **Audio clips are per-install.** Imported WAVs are staged into the app's audio store and referenced by content-hash name; a `.cadence` file does not embed the audio. To move a song with audio to another computer use **File → Save Copy with Audio…**, which writes a `<song> Audio` folder beside it that Cadence picks up on open.
@@ -213,7 +216,7 @@ src/audio/         CPAL playback engine, synth voices, mixer/FX, WAV & stem rend
 src/midi.rs        Standard MIDI File import/export (midly)
 src/midi_in.rs     hardware MIDI controller input (midir): parsing, sustain, hot-plug
 src/packs.rs       JSON instrument packs (validate, catalog, install)
-src/font.rs        SoundFont (.sf2) instruments: user font dir, GM program names, catalog
+src/font.rs        SoundFont (.sf2) instruments: built-in + user font dirs, GM program names, catalog
 src/gui/           eframe/egui interface: shell (menus/status/toasts), transport,
                    sidebar, arranger, editors, mixer, dialogs, theme
 src/persistence.rs .cadence save/load, atomic writes, recovery autosave, audio store

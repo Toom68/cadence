@@ -57,8 +57,9 @@ Cadence is a **single native Rust crate** — `cadence-studio` — producing a l
 └───────────────────────────────────────────────────────────────┘
 
 ┌─ src/font.rs + src/audio/font.rs ──────────────────────────────┐
-│ SoundFont (.sf2) instruments: user font dir + $CADENCE_FONTS_  │
-│ DIR, GM program names/catalog, SF2 parsing and voice           │
+│ SoundFont (.sf2) instruments: built-in "Cadence GM" (bundled   │
+│ soundfonts/ dir) + user font dir, GM program names/catalog,    │
+│ SF2 parsing and voice                                          │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +67,7 @@ Cadence is a **single native Rust crate** — `cadence-studio` — producing a l
 
 **One data model, three consumers.** `Project` (in `src/model.rs`) is the single source of truth. The GUI edits it, the audio engine plays and exports it via `Project::events()`, and persistence/MIDI serialize it. Musical positions are `f64` **sixteenth-note steps** (16 per bar); the UI snaps edits to whole steps while MIDI import may produce fractional positions.
 
-**Extensible instruments without plugins.** `src/packs.rs` defines data-driven JSON synth presets (`InstrumentPreset`: oscillators, ADSR envelope, pitch/filter envelopes, LFO, filter, bit depth, sample-and-hold, optional drum `kit` or embedded PCM `sample`). The app ships thirteen embedded banks (196 presets — `8-bit`, seven `psy-*` banks, `drum-kits`, `guitar`, `neon`, `one-shots`, `mallets`) plus user-installed ones; the catalog re-scans the pack folder about every 2 s and a user pack with the same id replaces the embedded pack wholesale. `src/font.rs` adds `.sf2` SoundFont instruments (128 GM programs per installed font), and `File → Import Sample…` wraps a WAV as a `sample.*` preset. A track stores a full copy of its preset (`Track::preset`) or its font reference (`Track::font`), so songs play identically wherever the source is installed — `instrument` still picks the editor (drum grid vs. piano roll) while the preset supplies the sound.
+**Extensible instruments without plugins.** `src/packs.rs` defines data-driven JSON synth presets (`InstrumentPreset`: oscillators, ADSR envelope, pitch/filter envelopes, LFO, filter, bit depth, sample-and-hold, optional drum `kit` or embedded PCM `sample`). The app ships thirteen embedded banks (196 presets — `8-bit`, seven `psy-*` banks, `drum-kits`, `guitar`, `neon`, `one-shots`, `mallets`) plus user-installed ones; the catalog re-scans the pack folder about every 2 s and a user pack with the same id replaces the embedded pack wholesale. `src/font.rs` adds `.sf2` SoundFont instruments (128 GM programs per font): the read-only built-in General MIDI font "Cadence GM" that packages ship in `soundfonts/` (GeneralUser GS, fetched and checksum-verified at packaging time — [packaging/soundfont/README.md](../packaging/soundfont/README.md)) plus user-installed ones, and `File → Import Sample…` wraps a WAV as a `sample.*` preset. A track stores a full copy of its preset (`Track::preset`) or its font reference (`Track::font`), so songs play identically wherever the source is installed — `instrument` still picks the editor (drum grid vs. piano roll) while the preset supplies the sound.
 
 **Audio never blocks the UI.** `AudioEngine::new_with_device()` opens a CPAL stream on the preferred output device (host default otherwise; the pick is remembered in the data dir and listed in the status bar's audio indicator, which doubles as the output picker). Control methods (`play`, `pause`, `stop`, `set_project`, `preview`, `set_metronome`, `set_output_device`) are non-blocking and hand the engine a snapshot of the project. All synthesis, mixing, effects, swing scheduling, and the master limiter run on the real-time callback — no file I/O, no unbounded locks, no per-sample allocation. If no audio device exists, engine creation returns an error that the GUI surfaces while editing/export still work offline, and the app retries in the background until a device appears; a stream that dies mid-session is reopened by the audio thread on the same interval.
 
@@ -90,7 +91,7 @@ Cadence is a **single native Rust crate** — `cadence-studio` — producing a l
 | `src/audio/mod.rs` + `engine.rs`, `renderer.rs`, `voice.rs`, `dsp.rs`, `song.rs`, `export.rs`, `font.rs`, `meter.rs`, `perf_bench.rs` | `AudioEngine` (CPAL), shared offline/online `Renderer`, per-instrument + SoundFont + sample voices, synth DSP, scheduler, meters, `export_wav`/`export_stems` |
 | `src/midi.rs` | `export_midi` / `import_midi` (format-1, 480 PPQ, `midly`) |
 | `src/packs.rs` | JSON instrument packs: schema validation, catalog, install, template, `sample`/`kit` specs |
-| `src/font.rs` | SoundFont `.sf2` instruments: user font dir, GM program names, catalog |
+| `src/font.rs` | SoundFont `.sf2` instruments: built-in + user font dirs, GM program names, catalog |
 | `src/gui/mod.rs` + `shell.rs`, `transport.rs`, `sidebar.rs`, `arranger.rs`, `editor.rs`, `mixer.rs`, `dialogs.rs`, `files.rs`, `history.rs`, `theme.rs`, `ops.rs` | `CadenceApp` and all egui UI: menus/status/toasts, transport bar, library/inspector, arranger, pattern editor/keyboard, mixer, dialogs, file flows, undo history, themes, edit ops |
 | `src/persistence.rs` | Load/save `.cadence`, atomic writes, recovery file, audio store (`audio/` dir), WAV decode |
 | `src/update.rs` + `src/gui/updates.rs` | Release manifest, minisign verification, download via system curl, installer hand-off; the status-bar button and Update dialog |

@@ -29,7 +29,9 @@ an indie release and does not mean the app is unsafe.
 First run
 ---------
 Launch Cadence and the built-in demo song (Afterglow) opens ready to play —
-press Space. Songs are .cadence files; your work autosaves for crash
+press Space. Sampled General MIDI instruments (pianos, guitars, strings,
+drums...) are built in: pick "Cadence GM (built-in)" in a track's Sound menu
+or the Instruments tab. Songs are .cadence files; your work autosaves for crash
 recovery in your user data folder.
 
 Contents of this package
@@ -37,7 +39,12 @@ Contents of this package
   Cadence.exe / Cadence.app   the application
   README.txt                  this file
   THIRD-PARTY-NOTICES.txt     licenses for every Rust crate and bundled font
-  licenses/                   the Inter and DejaVu font license texts
+  soundfonts/                 Cadence GM.sf2, the built-in General MIDI
+                              SoundFont (GeneralUser GS by S. Christian
+                              Collins), and its license (inside
+                              Cadence.app/Contents/Resources on macOS)
+  licenses/                   the Inter, DejaVu and GeneralUser GS license
+                              texts
   EULA.txt                    the end-user license (when present)
 
 In the app, Help > About Cadence > "Third-Party Notices" shows the same
