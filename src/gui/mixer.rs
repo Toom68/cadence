@@ -406,6 +406,10 @@ struct Meters {
     tracks: HashMap<u64, Gauge>,
     buses: [Gauge; ops::NUM_BUSES],
     master: [Gauge; 2],
+    /// Master output RMS (linear, already ~300 ms smoothed by the engine).
+    master_rms: f32,
+    /// Glue compressor gain reduction in dB.
+    glue_db: f32,
     last_peaks: Option<MixerPeaks>,
 }
 
@@ -431,6 +435,9 @@ impl Meters {
         for (gauge, input) in self.master.iter_mut().zip(master) {
             gauge.update(input, dt, fall, MASTER_CLIP_LEVEL);
         }
+        let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        self.master_rms = finite(peaks.map_or(0.0, |p| p.master_rms));
+        self.glue_db = finite(peaks.map_or(0.0, |p| p.glue_reduction_db));
     }
 
     fn any_active(&self) -> bool {
@@ -1975,6 +1982,46 @@ impl CadenceApp {
             mx.text,
             title.width(),
         );
+        // Loudness line under the title: output RMS, plus the glue's gain
+        // reduction while it is working.
+        let info = Rect::from_min_size(pos2(inner.left(), y + 20.0), vec2(inner.width(), 14.0));
+        let rms = meters.master_rms;
+        let glue_db = meters.glue_db;
+        let info_resp = ui.interact(info, sid.with("rms"), Sense::hover());
+        info_resp.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Label,
+                true,
+                format!("Master RMS {}", level_db_text(rms)),
+            )
+        });
+        theme::paint_elided(
+            ui,
+            info.left_center(),
+            Align2::LEFT_CENTER,
+            &format!("RMS {}", level_db_text(rms)),
+            theme::body_font(theme::TEXT_SMALL),
+            mx.text_dim,
+            info.width(),
+        );
+        if glue_db >= 0.1 && !compact {
+            theme::paint_elided(
+                ui,
+                info.right_center(),
+                Align2::RIGHT_CENTER,
+                &format!("GR {:.1}", -glue_db),
+                theme::body_font(theme::TEXT_SMALL),
+                mx.text_faint,
+                info.width() * 0.45,
+            );
+        }
+        lazy_tip(info_resp, || {
+            format!(
+                "Master RMS: {} dBFS (300 ms average)\nGlue gain reduction: {:.1} dB",
+                level_db_text(rms),
+                glue_db
+            )
+        });
         y += 20.0 + 14.0 + GAP_XS;
 
         // Glue knob along the bottom when the strip is tall enough.
@@ -2319,6 +2366,15 @@ mod tests {
         assert!(m.any_active());
         m.reset();
         assert_eq!(m.master_peak(), m.master[0].level.max(m.master[1].level));
+        // Master RMS and glue reduction come straight from the engine tap.
+        assert_eq!((m.master_rms, m.glue_db), (0.0, 0.0));
+        m.last_peaks = Some(crate::audio::MixerPeaks {
+            master_rms: 0.1,
+            glue_reduction_db: f32::NAN,
+            ..Default::default()
+        });
+        m.advance(&project, [0.3, 0.2], 1.0 / 60.0);
+        assert_eq!((m.master_rms, m.glue_db), (0.1, 0.0));
     }
 
     /// `legible` only moves a color when it must, and always reaches the

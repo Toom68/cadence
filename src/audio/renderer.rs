@@ -36,6 +36,8 @@ const DELAY_SEND: f32 = 0.7;
 /// Delay echo spacing: a dotted eighth.
 const DELAY_STEPS: f64 = 3.0;
 const PANIC_SECONDS: f32 = 0.012;
+/// Integration time of the master RMS meter.
+const RMS_SECONDS: f32 = 0.3;
 
 /// Messages from the control thread. `Box` payloads are built off the audio thread.
 // `Preview` carries a `TrackParams` whose `Sound::Kit` variant is ~5 KB; the
@@ -392,6 +394,9 @@ pub struct Renderer {
     panic_len: usize,
     peak_l: f32,
     peak_r: f32,
+    /// Smoothed mean-square power of the output (metered renders only).
+    rms_power: f32,
+    rms_coef: f32,
     /// SoundFont catalog + per-track synthesizers for `Sound::Font` notes.
     font_bank: FontBank,
     /// Stereo scratch for rustysynth output (its `render` needs separate L/R).
@@ -443,6 +448,8 @@ impl Renderer {
             panic_len: ((PANIC_SECONDS * sr) as usize).max(1),
             peak_l: 0.0,
             peak_r: 0.0,
+            rms_power: 0.0,
+            rms_coef: 1.0 - time_coef(RMS_SECONDS, sr),
             font_bank: FontBank::new(sr, Arc::new(FontLibrary::empty())),
             font_scratch_l: vec![0.0; MAX_BLOCK],
             font_scratch_r: vec![0.0; MAX_BLOCK],
@@ -1299,6 +1306,15 @@ impl Renderer {
             });
         self.peak_l = pl;
         self.peak_r = pr;
+        if METER {
+            let mut power = self.rms_power;
+            for (&l, &r) in self.mix_l[..n].iter().zip(self.mix_r[..n].iter()) {
+                power += ((l * l + r * r) * 0.5 - power) * self.rms_coef;
+            }
+            self.rms_power = super::dsp::flush(power);
+            peaks.master_rms = self.rms_power.sqrt();
+            peaks.glue_reduction_db = peaks.glue_reduction_db.max(self.glue.gain_reduction_db);
+        }
     }
 
     /// Renders `out_l.len()` frames (any length) into the given buffers, overwriting them.
@@ -1461,6 +1477,31 @@ mod tests {
             .iter()
             .chain(&gr)
             .all(|x| x.is_finite() && x.abs() <= 0.892));
+    }
+
+    #[test]
+    fn metered_render_reports_master_rms() {
+        let p = one_note_project(Instrument::Pad, 60, 0.0, 16.0);
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (mut l, mut rr) = (vec![0.0; 256], vec![0.0; 256]);
+        let mut tail = Vec::new();
+        let mut peaks = BlockPeaks::default();
+        for _ in 0..(SR as usize / 256) {
+            peaks = BlockPeaks::default();
+            r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+            tail.extend(l.iter().zip(&rr).map(|(a, b)| (a * a + b * b) * 0.5));
+        }
+        let window = &tail[tail.len() - (0.3 * SR) as usize..];
+        let expect = (window.iter().sum::<f32>() / window.len() as f32).sqrt();
+        assert!(expect > 0.005, "pad is sounding");
+        assert!(
+            (peaks.master_rms / expect - 1.0).abs() < 0.25,
+            "meter {} vs measured {expect}",
+            peaks.master_rms
+        );
+        assert_eq!(peaks.glue_reduction_db, 0.0, "glue is off");
     }
 
     #[test]
