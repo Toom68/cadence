@@ -643,7 +643,20 @@ pub fn decode_wav_f32(bytes: &[u8]) -> Result<DecodedWav, String> {
         ));
     }
     let (left, right) = match spec.sample_format {
-        hound::SampleFormat::Float => decode_channels(&mut reader, channels, |s: f32| s)?,
+        // Float WAVs may carry NaN/inf; zero them so they never reach the mix.
+        hound::SampleFormat::Float => {
+            decode_channels(
+                &mut reader,
+                channels,
+                |s: f32| {
+                    if s.is_finite() {
+                        s
+                    } else {
+                        0.0
+                    }
+                },
+            )?
+        }
         hound::SampleFormat::Int => {
             if !(8..=32).contains(&spec.bits_per_sample) {
                 return Err(format!(
@@ -1265,6 +1278,34 @@ mod tests {
         assert!(decode_wav_f32(b"").is_err());
         assert!(decode_wav_f32(b"RIFFxxxxWAVE").is_err());
         assert!(decode_wav_f32(&vec![0u8; 4096]).is_err());
+    }
+
+    #[test]
+    fn decode_wav_f32_zeroes_non_finite_float_samples() {
+        // A float WAV may carry NaN/inf; none of it may reach the mix.
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for pair in [
+                [f32::NAN, 0.5],
+                [f32::INFINITY, -0.5],
+                [f32::NEG_INFINITY, f32::NAN],
+            ] {
+                for v in pair {
+                    w.write_sample(v).unwrap();
+                }
+            }
+            w.finalize().unwrap();
+        }
+        let d = decode_wav_f32(&cursor.into_inner()).unwrap();
+        assert_eq!(d.left, vec![0.0, 0.0, 0.0]);
+        assert_eq!(d.right, vec![0.5, -0.5, 0.0]);
     }
 
     #[test]
