@@ -360,18 +360,58 @@ impl CadenceApp {
         }
     }
 
-    /// The status-bar pill (right-to-left layout: call before the song summary).
-    pub(super) fn update_status_item(&mut self, ui: &mut Ui, pal: Palette) {
-        let Some(label) = self.update_pill() else {
+    /// The pill's compact label for a crowded status bar.
+    fn update_pill_short(&self) -> Option<String> {
+        match &self.update.phase {
+            Phase::Available(r) => Some(format!("Update {}", r.version)),
+            Phase::Downloading(_) => Some(match self.update.progress() {
+                Some((done, Some(total))) if total > 0 => {
+                    format!("Update {}%", done.min(total) * 100 / total)
+                }
+                _ => "Updating…".to_owned(),
+            }),
+            Phase::Ready(_) if self.update.install_on_quit.is_some() => {
+                Some("Update on quit".to_owned())
+            }
+            Phase::Ready(_) => Some("Restart to update".to_owned()),
+            _ => None,
+        }
+    }
+
+    fn update_pill_label(&self, short: bool) -> Option<String> {
+        if short {
+            self.update_pill_short()
+        } else {
+            self.update_pill()
+        }
+    }
+
+    /// Room the pill takes in the status bar (0 when there is none), with
+    /// its leading gap and dot.
+    pub(super) fn update_status_width(&self, ui: &Ui, short: bool) -> f32 {
+        self.update_pill_label(short).map_or(0.0, |label| {
+            theme::GAP_M
+                + theme::text_button_width(ui, &label, theme::CONTROL_S)
+                + 8.0
+                + 2.0 * ui.spacing().item_spacing.x
+        })
+    }
+
+    /// The status-bar pill (right-to-left layout: call before the song
+    /// summary). `short` picks the compact label when space is tight.
+    pub(super) fn update_status_item(&mut self, ui: &mut Ui, pal: Palette, short: bool) {
+        let Some(label) = self.update_pill_label(short) else {
             return;
         };
         if matches!(self.update.phase, Phase::Downloading(_)) {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
         ui.add_space(theme::GAP_M);
-        if theme::text_button(ui, pal, &label, theme::CONTROL_S, "Open the update details")
-            .clicked()
-        {
+        let tip = match self.update_pill().filter(|_| short) {
+            Some(full) => format!("{full} · Open the update details"),
+            None => "Open the update details".to_owned(),
+        };
+        if theme::text_button(ui, pal, &label, theme::CONTROL_S, &tip).clicked() {
             self.dialog = Dialog::Update;
         }
         theme::color_dot(ui, pal.accent, 8.0);

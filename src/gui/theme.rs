@@ -2050,6 +2050,13 @@ pub fn text_button(ui: &mut Ui, pal: Palette, text: &str, height: f32, tooltip: 
     labelled_button(ui, pal, None, text, None, height, tooltip)
 }
 
+/// Width [`text_button`] takes for `text` at `height` (for layouts that
+/// decide what fits before drawing).
+pub fn text_button_width(ui: &Ui, text: &str, height: f32) -> f32 {
+    let galley = label_galley(ui, text, button_font(height));
+    button_width(height, false, Some(&*galley))
+}
+
 /// Text toggle. OFF is a normal button body with a legible label; ON fills
 /// with the accent.
 ///

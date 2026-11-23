@@ -157,6 +157,10 @@ pub(super) struct LayoutProbe {
     pub(super) menu: Rect,
     pub(super) status: Rect,
     pub(super) toast: Rect,
+    pub(super) status_right: Rect,
+    pub(super) status_fit: Option<StatusFit>,
+    /// Stands in for a running engine's device name in the status bar.
+    pub(super) fake_device: Option<String>,
 }
 
 #[cfg(test)]
@@ -169,6 +173,9 @@ impl Default for LayoutProbe {
             menu: Rect::NOTHING,
             status: Rect::NOTHING,
             toast: Rect::NOTHING,
+            status_right: Rect::NOTHING,
+            status_fit: None,
+            fake_device: None,
         }
     }
 }
@@ -992,12 +999,17 @@ impl CadenceApp {
             .frame(frame)
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
+                let budget = (full.width() - STATUS_LEFT_MIN).max(0.0);
                 let right = ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(full)
                         .layout(Layout::right_to_left(Align::Center)),
-                    |ui| self.status_right(ui, pal),
+                    |ui| self.status_right(ui, pal, budget),
                 );
+                #[cfg(test)]
+                {
+                    self.shell.probe.status_right = right.response.rect;
+                }
                 let left = Rect::from_min_max(
                     full.min,
                     pos2(
@@ -1039,34 +1051,101 @@ impl CadenceApp {
         );
     }
 
-    /// Song summary, audio state and export progress, right to left.
-    fn status_right(&mut self, ui: &mut Ui, pal: Palette) {
-        ui.spacing_mut().item_spacing.x = theme::GAP_S;
-        let small = |text: String, color: Color32| {
-            RichText::new(text)
-                .size(theme::TEXT_SMALL + 1.0)
-                .color(color)
+    /// Song summary, audio state and export progress, right to left, fitted
+    /// into `budget` px (see [`fit_status`] for what gives way first).
+    fn status_right(&mut self, ui: &mut Ui, pal: Palette, budget: f32) {
+        let sp = theme::GAP_S;
+        ui.spacing_mut().item_spacing.x = sp;
+        let font = egui::FontId::proportional(theme::TEXT_SMALL + 1.0);
+        let small =
+            |text: String, color: Color32| RichText::new(text).font(font.clone()).color(color);
+        let text_w = |ui: &Ui, text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
         };
-        match (&self.engine, &self.audio_error) {
-            (Some(engine), _) => {
-                let (color, text, tip) = match &self.transport.engine_error {
-                    Some(e) => (pal.danger, "Audio error".to_owned(), e.clone()),
-                    None => (
-                        pal.accent,
-                        "Audio ready".to_owned(),
-                        format!("{} voice(s) sounding", self.transport.voices),
-                    ),
-                };
-                let device = engine.device_name();
-                let label = if device.is_empty() {
-                    text
+        let dot = 8.0;
+        let pad = ui.spacing().button_padding.x;
+
+        // What each item needs, measured before anything is drawn.
+        let audio = self.status_audio();
+        let (audio_w, device_w) = match &audio {
+            StatusAudio::Ready { text, device, .. } => (
+                dot + 2.0 * sp + 2.0 * pad + text_w(ui, text),
+                if device.is_empty() {
+                    0.0
+                } else {
+                    text_w(ui, &format!(" · {device}"))
+                },
+            ),
+            StatusAudio::Off { .. } => (
+                theme::text_button_width(ui, "Retry audio", theme::CONTROL_S)
+                    + text_w(ui, "No audio output")
+                    + dot
+                    + 3.0 * sp,
+                0.0,
+            ),
+        };
+        let autosave_w = if self.autosave_failures > 0 {
+            theme::GAP_M + text_w(ui, "Autosave paused") + dot + 2.0 * sp
+        } else {
+            0.0
+        };
+        let t = self.project.tracks.len();
+        let secs = ops::steps_to_seconds(self.project.total_steps(), self.project.bpm);
+        let summary = format!(
+            "{t} track{} · {} bars · {}",
+            if t == 1 { "" } else { "s" },
+            self.project.bars,
+            ops::format_time(secs)
+        );
+        let export = self.export.as_ref().map(|job| {
+            let p = job.progress();
+            (format!("{} {:.0}%", job.verb(), p * 100.0), p)
+        });
+        let widths = StatusWidths {
+            fixed: audio_w
+                + autosave_w
+                + export.as_ref().map_or(0.0, |(label, _)| {
+                    theme::GAP_M + text_w(ui, label) + 2.0 * sp
+                }),
+            device: device_w,
+            update: self.update_status_width(ui, false),
+            update_short: self.update_status_width(ui, true),
+            summary: theme::GAP_M + text_w(ui, &summary) + sp,
+            export: export.is_some(),
+        };
+        let fit = fit_status(budget, &widths);
+        #[cfg(test)]
+        {
+            self.shell.probe.status_fit = Some(fit);
+        }
+
+        match audio {
+            StatusAudio::Ready {
+                color,
+                text,
+                tip,
+                device,
+            } => {
+                let full = if device.is_empty() {
+                    text.clone()
                 } else {
                     format!("{text} · {device}")
                 };
+                let room = text_w(ui, &text) + fit.device;
+                let label = theme::elide(ui, &full, font.clone(), Color32::PLACEHOLDER, room);
+                let tip = if !device.is_empty() && (label.elided || fit.device <= 0.0) {
+                    format!("Output: {device}\n{tip}")
+                } else {
+                    tip
+                };
                 // The audio state label doubles as the output picker —
                 // the same status footprint, one click to switch device.
-                ui.menu_button(RichText::new(label).size(theme::TEXT_SMALL + 1.0), |ui| {
+                ui.menu_button(egui::WidgetText::from(label), |ui| {
                     ui.set_min_width(200.0);
+                    ui.set_max_width(DEVICE_MENU_W);
                     ui.label(RichText::new("Audio output").small().color(pal.text_faint));
                     if ui
                         .selectable_label(self.audio_device_pref.is_none(), "System default")
@@ -1077,7 +1156,12 @@ impl CadenceApp {
                     }
                     for name in AudioEngine::output_devices() {
                         let picked = self.audio_device_pref.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(picked, &name).clicked() {
+                        let mut resp =
+                            ui.add(egui::Button::selectable(picked, name.as_str()).truncate());
+                        if text_w(ui, &name) > DEVICE_MENU_W - 2.0 * pad {
+                            resp = resp.on_hover_text(name.as_str());
+                        }
+                        if resp.clicked() {
                             self.set_audio_device(Some(name));
                             ui.close();
                         }
@@ -1085,16 +1169,15 @@ impl CadenceApp {
                 })
                 .response
                 .on_hover_text(tip);
-                theme::color_dot(ui, color, 8.0);
+                theme::color_dot(ui, color, dot);
             }
-            (None, err) => {
-                let tip = err.clone().unwrap_or_default();
+            StatusAudio::Off { tip } => {
                 if theme::text_button(ui, pal, "Retry audio", theme::CONTROL_S, &tip).clicked() {
                     self.retry_audio(true);
                 }
                 ui.label(small("No audio output".to_owned(), pal.text_dim))
                     .on_hover_text("Editing, saving and WAV export still work");
-                theme::color_dot(ui, pal.danger, 8.0);
+                theme::color_dot(ui, pal.danger, dot);
             }
         }
         if self.autosave_failures > 0 {
@@ -1105,34 +1188,53 @@ impl CadenceApp {
             );
             ui.label(small("Autosave paused".to_owned(), pal.text))
                 .on_hover_text(tip);
-            theme::color_dot(ui, pal.warn, 8.0);
+            theme::color_dot(ui, pal.warn, dot);
         }
-        self.update_status_item(ui, pal);
-        ui.add_space(theme::GAP_M);
-        let t = self.project.tracks.len();
-        let secs = ops::steps_to_seconds(self.project.total_steps(), self.project.bpm);
-        ui.label(small(
-            format!(
-                "{t} track{} · {} bars · {}",
-                if t == 1 { "" } else { "s" },
-                self.project.bars,
-                ops::format_time(secs)
-            ),
-            pal.text_faint,
-        ));
-        if let Some(job) = &self.export {
+        self.update_status_item(ui, pal, fit.short_update);
+        if fit.summary {
             ui.add_space(theme::GAP_M);
-            let p = job.progress();
-            ui.label(small(
-                format!("{} {:.0}%", job.verb(), p * 100.0),
-                pal.accent,
-            ));
+            ui.label(small(summary, pal.text_faint));
+        }
+        if let Some((label, p)) = export {
+            ui.add_space(theme::GAP_M);
+            ui.label(small(label, pal.accent));
             ui.add(
                 egui::ProgressBar::new(p)
-                    .desired_width(120.0)
+                    .desired_width(fit.export_bar)
                     .desired_height(8.0)
                     .fill(pal.accent),
             );
+        }
+    }
+
+    /// The audio item of the status bar: the engine's state and device.
+    fn status_audio(&self) -> StatusAudio {
+        let device = match &self.engine {
+            Some(engine) => Some(engine.device_name()),
+            #[cfg(test)]
+            None => self.shell.probe.fake_device.clone(),
+            #[cfg(not(test))]
+            None => None,
+        };
+        let Some(device) = device else {
+            return StatusAudio::Off {
+                tip: self.audio_error.clone().unwrap_or_default(),
+            };
+        };
+        let pal = self.palette();
+        let (color, text, tip) = match &self.transport.engine_error {
+            Some(e) => (pal.danger, "Audio error", e.clone()),
+            None => (
+                pal.accent,
+                "Audio ready",
+                format!("{} voice(s) sounding", self.transport.voices),
+            ),
+        };
+        StatusAudio::Ready {
+            color,
+            text: text.to_owned(),
+            tip,
+            device,
         }
     }
 
@@ -1473,6 +1575,101 @@ impl CadenceApp {
     }
 }
 
+/// Room the status message keeps before the right side gives way.
+const STATUS_LEFT_MIN: f32 = 220.0;
+/// The device name never takes more than this in the status bar…
+const STATUS_DEVICE_MAX: f32 = 220.0;
+/// …and is hidden rather than cut below this.
+const STATUS_DEVICE_MIN: f32 = 64.0;
+const STATUS_EXPORT_BAR: f32 = 120.0;
+const STATUS_EXPORT_BAR_MIN: f32 = 48.0;
+/// Widest entry in the audio-output menu; longer names are cut.
+const DEVICE_MENU_W: f32 = 320.0;
+
+/// The audio item of the status bar.
+enum StatusAudio {
+    /// An engine is running on `device`.
+    Ready {
+        color: Color32,
+        text: String,
+        tip: String,
+        device: String,
+    },
+    /// No audio output; `tip` says why.
+    Off { tip: String },
+}
+
+/// Widths the right side of the status bar wants, gaps included.
+#[derive(Clone, Copy, Debug, Default)]
+struct StatusWidths {
+    /// Items that always show: audio state, autosave warning, export label.
+    fixed: f32,
+    /// " · device name" after the audio state (0: none).
+    device: f32,
+    /// Update pill with its full / compact label (0: none).
+    update: f32,
+    update_short: f32,
+    /// Song summary ("4 tracks · 16 bars · 0:32").
+    summary: f32,
+    /// An export is running (its progress bar).
+    export: bool,
+}
+
+/// What the right side of the status bar shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct StatusFit {
+    /// Room for the device name (0: hidden).
+    pub(super) device: f32,
+    pub(super) summary: bool,
+    pub(super) short_update: bool,
+    pub(super) export_bar: f32,
+}
+
+/// Fits the status items into `budget` px. When space runs out they give way
+/// in a fixed order: the device name is capped, then the song summary hides,
+/// the export bar shrinks, the update pill takes its compact label, and the
+/// device name is cut further and finally hidden. Audio state, autosave
+/// warning and export progress always stay.
+fn fit_status(budget: f32, w: &StatusWidths) -> StatusFit {
+    let mut fit = StatusFit {
+        device: w.device.min(STATUS_DEVICE_MAX),
+        summary: true,
+        short_update: false,
+        export_bar: if w.export { STATUS_EXPORT_BAR } else { 0.0 },
+    };
+    let total = |f: &StatusFit| {
+        w.fixed
+            + f.device
+            + if f.short_update {
+                w.update_short
+            } else {
+                w.update
+            }
+            + if f.summary { w.summary } else { 0.0 }
+            + f.export_bar
+    };
+    if total(&fit) <= budget {
+        return fit;
+    }
+    fit.summary = false;
+    if total(&fit) <= budget {
+        return fit;
+    }
+    if w.export {
+        fit.export_bar = STATUS_EXPORT_BAR_MIN;
+        if total(&fit) <= budget {
+            return fit;
+        }
+    }
+    fit.short_update = true;
+    let over = total(&fit) - budget;
+    if over > 0.0 {
+        let cut = fit.device - over;
+        fit.device = if cut >= STATUS_DEVICE_MIN { cut } else { 0.0 };
+    }
+    fit
+}
+
 /// Smallest window the layout is designed for (see `main.rs`).
 pub(super) const MIN_WINDOW: Vec2 = vec2(1100.0, 760.0);
 
@@ -1705,6 +1902,85 @@ mod tests {
             self.app.editor.chord_open = chord_open;
             self.frames(4);
         }
+    }
+
+    #[test]
+    fn status_items_give_way_in_order() {
+        let w = StatusWidths {
+            fixed: 120.0,
+            device: 400.0,
+            update: 160.0,
+            update_short: 90.0,
+            summary: 150.0,
+            export: true,
+        };
+        let roomy = fit_status(2000.0, &w);
+        assert_eq!(roomy.device, STATUS_DEVICE_MAX, "the device name is capped");
+        assert!(roomy.summary && !roomy.short_update);
+        assert_eq!(roomy.export_bar, STATUS_EXPORT_BAR);
+        // fixed 120 + device 220 + update 160 + export 120 = 620 without the summary.
+        let fit = fit_status(620.0, &w);
+        assert!(!fit.summary && !fit.short_update);
+        assert_eq!(fit.export_bar, STATUS_EXPORT_BAR);
+        let fit = fit_status(560.0, &w);
+        assert_eq!(fit.export_bar, STATUS_EXPORT_BAR_MIN);
+        assert!(!fit.short_update);
+        let fit = fit_status(480.0, &w);
+        assert!(fit.short_update);
+        assert_eq!(fit.device, STATUS_DEVICE_MAX);
+        let fit = fit_status(400.0, &w);
+        assert!(fit.device < STATUS_DEVICE_MAX && fit.device >= STATUS_DEVICE_MIN);
+        let fit = fit_status(250.0, &w);
+        assert_eq!(fit.device, 0.0, "hidden rather than cut to nothing");
+        assert_eq!(fit.export_bar, STATUS_EXPORT_BAR_MIN, "export stays");
+    }
+
+    /// At the 1100 px minimum a very long device name, the update pill and
+    /// the autosave warning still leave the status message its room; in
+    /// narrower windows the lower-priority items give way instead of
+    /// overflowing.
+    #[test]
+    fn status_bar_fits_a_long_device_name_at_minimum_width() {
+        let long = "Extremely Long Professional USB Audio Interface With Many Outputs \
+                    (Channels 1-2) — Built-in Speakers Fallback";
+        let mut shrunk = Vec::new();
+        for width in [MIN_WINDOW.x, 900.0, 700.0] {
+            let mut ui = Harness::new(vec2(width, MIN_WINDOW.y));
+            ui.app.shell.probe.fake_device = Some(long.to_owned());
+            ui.app.update.phase = super::super::updates::Phase::Ready(crate::update::Release {
+                version: "9.9.10".into(),
+                ..Default::default()
+            });
+            ui.app.update.install_on_quit = Some(false);
+            ui.app.autosave_failures = 1;
+            ui.frames(3);
+            let p = &ui.app.shell.probe;
+            let fit = p.status_fit.expect("status bar drawn");
+            assert!(fit.device <= STATUS_DEVICE_MAX, "{width}: {fit:?}");
+            assert!(
+                p.status.contains_rect(p.status_right),
+                "{width}: right side overflows: {:?} in {:?}",
+                p.status_right,
+                p.status
+            );
+            assert!(
+                p.status_right.left() >= p.status.left() + STATUS_LEFT_MIN,
+                "{width}: status message squeezed: {:?} in {:?} ({fit:?})",
+                p.status_right,
+                p.status
+            );
+            if width == MIN_WINDOW.x {
+                assert!(fit.device > 0.0, "the device still shows at 1100 px");
+            }
+            shrunk.push(fit);
+        }
+        assert!(!shrunk[2].summary && shrunk[2].short_update, "{shrunk:?}");
+        // Without the long name everything shows in full.
+        let mut ui = Harness::new(MIN_WINDOW);
+        ui.app.shell.probe.fake_device = Some("Speakers".into());
+        ui.frames(2);
+        let fit = ui.app.shell.probe.status_fit.unwrap();
+        assert!(fit.summary && !fit.short_update, "{fit:?}");
     }
 
     /// The piano roll (melodic track) keeps room to work in at the sizes
