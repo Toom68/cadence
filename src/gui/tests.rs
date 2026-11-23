@@ -780,6 +780,59 @@ fn piano_alt_drag_on_a_full_pattern_keeps_the_selection_and_warns() {
 }
 
 #[test]
+fn escape_cancels_a_note_drag() {
+    for alt in [false, true] {
+        let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+        ui.step();
+        ui.app.add_track(Instrument::Piano);
+        ui.step();
+        let idx = ui.app.project.tracks.len() - 1;
+        let id = ui.app.project.tracks[idx].id;
+        show_pitch(&mut ui, id, 63);
+        {
+            let pat = &mut ui.app.project.tracks[idx].patterns[0];
+            pat.notes = vec![Note::new(60, 2.0, 2.0, 0.8), Note::new(64, 6.0, 2.0, 0.8)];
+        }
+        let originals: BTreeSet<u64> = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+        ui.app.sel.notes = originals.clone();
+        ui.app.focus = super::Focus::Editor;
+        ui.step();
+        let before = ui.app.project.clone();
+        let state = ui.app.history.state();
+        let undo = ui.app.history.undo_label().map(str::to_owned);
+        let mods = if alt { Modifiers::ALT } else { Modifiers::NONE };
+
+        let grab = ui.app.roll_cell_center(64, 6.0).unwrap();
+        ui.press_mod(grab, PointerButton::Primary, mods);
+        ui.next.modifiers = mods;
+        ui.at(ui.app.roll_cell_center(66, 9.0).unwrap());
+        ui.step();
+        ui.next.modifiers = mods;
+        ui.at(ui.app.roll_cell_center(67, 10.0).unwrap());
+        ui.step();
+        assert_ne!(ui.app.project, before, "alt {alt}: the drag edited");
+        ui.key_mod(Key::Escape, mods);
+        assert_eq!(ui.app.project, before, "alt {alt}: Esc restored the notes");
+        ui.next.modifiers = mods;
+        ui.at(ui.app.roll_cell_center(70, 12.0).unwrap());
+        ui.step();
+        ui.release_mod(
+            ui.app.roll_cell_center(70, 12.0).unwrap(),
+            PointerButton::Primary,
+            mods,
+        );
+        ui.step();
+        assert_eq!(
+            ui.app.project, before,
+            "alt {alt}: the gesture stayed cancelled"
+        );
+        assert_eq!(ui.app.history.state(), state, "alt {alt}: not dirty");
+        assert_eq!(ui.app.history.undo_label().map(str::to_owned), undo);
+        assert_eq!(ui.app.sel.notes, originals, "alt {alt}: selection kept");
+    }
+}
+
+#[test]
 fn velocity_lane_sets_velocity_of_selected_notes() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

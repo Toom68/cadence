@@ -1564,7 +1564,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Duplicate", Shortcut(&super::SC_DUPLICATE)),
             ("Select all", Shortcut(&super::SC_SELECT_ALL)),
             ("Delete", Text("Del / Backspace")),
-            ("Deselect, close a dialog", Text("Esc")),
+            ("Deselect, cancel a drag, close a dialog", Text("Esc")),
             ("Nudge the selection", Text("← / → / ↑ / ↓")),
             ("Nudge by an octave", Text("Shift+↑ / Shift+↓")),
             (

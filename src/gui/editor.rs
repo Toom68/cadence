@@ -803,6 +803,44 @@ impl EditorView {
         self.vel_drag = None;
     }
 
+    /// Whether a pointer gesture Escape can cancel is in flight (note
+    /// drag, drawn note, marquee, erase/paint strokes, velocity drag).
+    pub fn gesture_active(&self) -> bool {
+        self.drag.is_some()
+            || self.draw.is_some()
+            || self.pending_note.is_some()
+            || self.marquee.is_some()
+            || self.right_erase
+            || self.drum_paint.is_some()
+            || self.vel_drag.is_some()
+    }
+
+    /// Whether the in-flight gesture is a marquee (selection only, no edit).
+    pub fn marquee_active(&self) -> bool {
+        self.marquee.is_some()
+    }
+
+    /// Undo coalescing keys the in-flight gesture's edits use.
+    pub fn gesture_groups(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.drag.is_some() {
+            out.push("note-drag");
+        }
+        if self.draw.is_some() || self.pending_note.is_some() {
+            out.push("draw-note");
+        }
+        if self.right_erase {
+            out.extend(["erase-notes", "drum-erase"]);
+        }
+        if self.drum_paint.is_some() {
+            out.push("drum-paint");
+        }
+        if self.vel_drag.is_some() {
+            out.push("vel-drag");
+        }
+        out
+    }
+
     /// Zooms the piano roll horizontally about the visible centre.
     pub fn zoom(&mut self, factor: f32) {
         self.roll_pps = (self.roll_pps * factor).clamp(ROLL_MIN_PPS, MAX_PPS);
@@ -2394,7 +2432,9 @@ impl CadenceApp {
             }
         }
         // Velocity lane input
-        if vel_resp.is_pointer_button_down_on() || vel_resp.dragged_by(PointerButton::Primary) {
+        if !self.gesture_cancelled
+            && (vel_resp.is_pointer_button_down_on() || vel_resp.dragged_by(PointerButton::Primary))
+        {
             if let Some(pos) = vel_resp.interact_pointer_pos() {
                 let v =
                     (1.0 - (pos.y - roll.vel.top()) / roll.vel.height().max(1.0)).clamp(0.05, 1.0);
