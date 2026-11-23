@@ -164,9 +164,9 @@ pub fn stage_audio_file(source: &Path) -> Result<StagedAudio, String> {
     stage_audio_file_into(&audio_dir(), source)
 }
 
-/// The store-parameterized core of [`stage_audio_file`] — tests point it at
-/// a temp directory, production callers go through [`audio_dir`].
-fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, String> {
+/// [`stage_audio_file`] into an explicit store (the drop worker captures
+/// [`audio_dir`] up front; tests point it at a temp directory).
+pub fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, String> {
     let shown = source.display();
     let meta = fs::metadata(source).map_err(|err| format!("Could not open {shown}: {err}"))?;
     if !meta.is_file() {
@@ -456,7 +456,12 @@ fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
 /// clip or song keeps its WAV, since another song may reference it), so
 /// the import path warns once this passes a generous bound.
 pub fn audio_store_bytes() -> u64 {
-    fs::read_dir(audio_dir())
+    audio_store_bytes_in(&audio_dir())
+}
+
+/// [`audio_store_bytes`] for an explicit store folder.
+pub fn audio_store_bytes_in(store: &Path) -> u64 {
+    fs::read_dir(store)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
