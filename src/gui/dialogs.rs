@@ -1588,6 +1588,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
                 Mouse("Double-click the divider"),
             ),
             ("Theme, fit song", Menu("View menu")),
+            ("Preferences", Shortcut(&super::SC_PREFERENCES)),
             ("These tips", Shortcut(&super::SC_HELP)),
         ],
     },
@@ -2633,6 +2634,7 @@ mod tests {
             g::SC_LENGTHEN,
             g::SC_FIT,
             g::SC_FIT_SELECTION,
+            g::SC_PREFERENCES,
         ] {
             assert!(listed.contains(&sc), "{sc:?} is missing from Help");
         }
