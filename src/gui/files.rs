@@ -45,6 +45,9 @@ pub(super) enum PendingAction {
     Quit,
 }
 
+/// eframe storage key of the "Normalize WAV Export" toggle ("1"/"0").
+pub(super) const NORMALIZE_STORAGE_KEY: &str = "export.normalize";
+
 /// What a running export produces; drives the status-bar and error wording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ExportKind {
@@ -317,6 +320,15 @@ impl CadenceApp {
 
     // ----- WAV export ------------------------------------------------------
 
+    /// WAV export options from the File menu's "Normalize WAV Export" toggle.
+    pub(super) fn wav_export_options(&self) -> crate::audio::WavExportOptions {
+        crate::audio::WavExportOptions {
+            normalize_lufs: self
+                .export_normalize
+                .then_some(crate::audio::DEFAULT_TARGET_LUFS),
+        }
+    }
+
     /// Export WAV…: pick a `.wav` target, then render on a worker thread so the
     /// interface stays responsive. The render uses a snapshot of the project.
     pub(super) fn export_wav_dialog(&mut self) {
@@ -357,11 +369,21 @@ impl CadenceApp {
         let progress = Arc::new(AtomicU32::new(0));
         let report = progress.clone();
         let (tx, rx) = crossbeam_channel::bounded(1);
+        let options = self.wav_export_options();
         std::thread::spawn(move || {
-            let result = crate::audio::export_wav(&project, &render_path, move |p| {
+            let result = crate::audio::export_wav_with(&project, &render_path, options, move |p| {
                 report.store(p.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
             })
-            .map(|()| format!("Exported WAV: {}", render_path.display()));
+            .map(
+                |done| match (options.normalize_lufs, done.integrated_lufs) {
+                    (Some(_), Some(lufs)) => format!(
+                        "Exported WAV at {lufs:.1} LUFS ({:+.1} dB): {}",
+                        done.gain_db,
+                        render_path.display()
+                    ),
+                    _ => format!("Exported WAV: {}", render_path.display()),
+                },
+            );
             let _ = tx.send(result);
         });
         let shown = path.display().to_string();

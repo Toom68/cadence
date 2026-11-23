@@ -1465,6 +1465,49 @@ fn wav_export_worker_completes() {
 }
 
 #[test]
+fn normalized_wav_export_reports_loudness_and_the_toggle_persists() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(!ui.app.export_normalize, "off unless chosen");
+    assert_eq!(ui.app.wav_export_options().normalize_lufs, None);
+    ui.app.export_normalize = true;
+    assert_eq!(
+        ui.app.wav_export_options().normalize_lufs,
+        Some(crate::audio::DEFAULT_TARGET_LUFS)
+    );
+    let mut storage = MemStorage::default();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert_eq!(
+        storage
+            .map
+            .get(super::files::NORMALIZE_STORAGE_KEY)
+            .map(String::as_str),
+        Some("1")
+    );
+    // A one-bar song with a single note renders quickly.
+    let mut p = Project::empty();
+    p.bars = 1;
+    p.tracks[0].patterns[0].notes = vec![crate::model::Note::new(36, 0.0, 1.0, 1.0)];
+    ui.app.project = p;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("loud.wav");
+    ui.app.start_wav_export(path.clone());
+    let mut finished = false;
+    for _ in 0..3_000 {
+        ui.step();
+        if ui.app.export.is_none() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(finished, "normalized WAV export finished");
+    assert!(path.exists());
+    let status = ui.app.status.as_ref().expect("export status");
+    assert!(status.text.contains("LUFS"), "{}", status.text);
+}
+
+#[test]
 fn clip_delete_and_undo_restores_selection_state() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();
