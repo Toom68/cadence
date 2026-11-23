@@ -318,11 +318,23 @@ pub struct PortEntry {
     pub id: String,
 }
 
+/// Why a rescan closes a live connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    /// The port is gone (unplugged).
+    Unplugged,
+    /// The port came back under a new id (re-plugged between two scans);
+    /// it is reopened in the same rescan.
+    Replugged,
+    /// The port is still there but the preference no longer selects it.
+    Deselected,
+}
+
 /// Connection changes a rescan should make.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionPlan {
-    /// Open connections to close (names).
-    pub close: Vec<String>,
+    /// Open connections to close (names), with the reason.
+    pub close: Vec<(String, CloseReason)>,
     /// Ports to open (names), in enumeration order.
     pub open: Vec<String>,
 }
@@ -344,10 +356,16 @@ pub fn plan_connections(
     let mut plan = ConnectionPlan::default();
     let mut keep = BTreeSet::new();
     for c in connected {
-        if wanted(&c.name) && available.contains(c) {
-            keep.insert(c.name.as_str());
+        if available.contains(c) {
+            if wanted(&c.name) {
+                keep.insert(c.name.as_str());
+            } else {
+                plan.close.push((c.name.clone(), CloseReason::Deselected));
+            }
+        } else if available.iter().any(|a| a.name == c.name) {
+            plan.close.push((c.name.clone(), CloseReason::Replugged));
         } else {
-            plan.close.push(c.name.clone());
+            plan.close.push((c.name.clone(), CloseReason::Unplugged));
         }
     }
     for a in available {
@@ -370,9 +388,11 @@ pub enum MidiInputEvent {
         name: String,
         initial: bool,
     },
-    /// An open port disappeared (unplugged) and was closed.
+    /// An open port was closed. Unless the preference deselected it, any
+    /// note it was holding can no longer be released by the device.
     Disconnected {
         name: String,
+        reason: CloseReason,
     },
     /// A port could not be opened (reported once until it succeeds).
     Failed {
@@ -571,16 +591,18 @@ fn scan(
         .collect();
     let connected: Vec<PortEntry> = live.iter().map(|l| l.entry.clone()).collect();
     let plan = plan_connections(pref, &available, &connected);
-    for name in &plan.close {
-        let vanished = !available.iter().any(|a| &a.name == name);
+    for (name, reason) in &plan.close {
         live.retain(|l| &l.entry.name != name);
-        if vanished {
-            emit(
-                tx,
-                &**wake,
-                MidiInputEvent::Disconnected { name: name.clone() },
-            );
-        }
+        // Every close is reported, a re-plug included: the GUI must end the
+        // notes the old connection was holding.
+        emit(
+            tx,
+            &**wake,
+            MidiInputEvent::Disconnected {
+                name: name.clone(),
+                reason: *reason,
+            },
+        );
     }
     for name in &plan.open {
         let Some(i) = available.iter().position(|a| &a.name == name) else {
@@ -898,12 +920,18 @@ mod tests {
         assert!(all.close.is_empty());
 
         let none = plan_connections(&MidiInputPref::None, &avail, &avail);
-        assert_eq!(none.close, vec!["A", "B"]);
+        assert_eq!(
+            none.close,
+            vec![
+                ("A".to_owned(), CloseReason::Deselected),
+                ("B".to_owned(), CloseReason::Deselected)
+            ]
+        );
         assert!(none.open.is_empty());
 
         let pick = MidiInputPref::Device("B".to_owned());
         let one = plan_connections(&pick, &avail, &[entry("A", "1")]);
-        assert_eq!(one.close, vec!["A"]);
+        assert_eq!(one.close, vec![("A".to_owned(), CloseReason::Deselected)]);
         assert_eq!(one.open, vec!["B"]);
 
         let steady = plan_connections(&MidiInputPref::All, &avail, &avail);
@@ -915,7 +943,10 @@ mod tests {
         let pick = MidiInputPref::Device("Keys".to_owned());
         // Unplugged: the live connection is closed, nothing opens.
         let gone = plan_connections(&pick, &[], &[entry("Keys", "7")]);
-        assert_eq!(gone.close, vec!["Keys"]);
+        assert_eq!(
+            gone.close,
+            vec![("Keys".to_owned(), CloseReason::Unplugged)]
+        );
         assert!(gone.open.is_empty());
         // Missing at startup: nothing to do until it shows up.
         assert_eq!(
@@ -927,7 +958,11 @@ mod tests {
         assert_eq!(back.open, vec!["Keys"]);
         // Re-plugged between two scans under a new id: reopen.
         let replug = plan_connections(&pick, &[entry("Keys", "9")], &[entry("Keys", "7")]);
-        assert_eq!(replug.close, vec!["Keys"]);
+        assert_eq!(
+            replug.close,
+            vec![("Keys".to_owned(), CloseReason::Replugged)],
+            "reported, so held notes are released"
+        );
         assert_eq!(replug.open, vec!["Keys"]);
         // All inputs picks up a newly plugged device and drops a gone one.
         let all = plan_connections(
@@ -935,7 +970,7 @@ mod tests {
             &[entry("A", "1"), entry("C", "3")],
             &[entry("A", "1"), entry("B", "2")],
         );
-        assert_eq!(all.close, vec!["B"]);
+        assert_eq!(all.close, vec![("B".to_owned(), CloseReason::Unplugged)]);
         assert_eq!(all.open, vec!["C"]);
     }
 }

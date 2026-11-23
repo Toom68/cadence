@@ -7,7 +7,7 @@ use egui::{Pos2, RawInput, Rect};
 use super::dialogs::{midi_input_note, Dialog};
 use super::editor::NoteSource;
 use super::{CadenceApp, StatusKind};
-use crate::midi_in::{MidiInputEvent, MidiInputPref, MidiMessage};
+use crate::midi_in::{CloseReason, MidiInputEvent, MidiInputPref, MidiMessage};
 use crate::model::{Instrument, Project};
 
 fn frame(ctx: &egui::Context, app: &mut CadenceApp) {
@@ -160,6 +160,7 @@ fn a_disconnect_ends_held_controller_notes() {
     app.transport.position = 4.0;
     app.midi_input_event(MidiInputEvent::Disconnected {
         name: "Keys".to_owned(),
+        reason: CloseReason::Unplugged,
     });
     let status = app.status.as_ref().unwrap();
     assert_eq!(status.kind, StatusKind::Warning);
@@ -175,6 +176,48 @@ fn a_disconnect_ends_held_controller_notes() {
     );
     let n = notes(&app, idx);
     assert_eq!(n.iter().find(|n| n.pitch == 60).unwrap().duration, 4.0);
+}
+
+#[test]
+fn a_replug_ends_held_and_sustained_controller_notes_quietly() {
+    let (_ctx, mut app, idx) = app_with_track();
+    app.toggle_record();
+    app.transport.playing = true;
+    app.transport.position = 0.0;
+    pedal(&mut app, true);
+    on(&mut app, 60, 100);
+    off(&mut app, 60);
+    on(&mut app, 64, 100);
+    app.transport.position = 2.0;
+    app.status = None;
+    app.midi_input_event(MidiInputEvent::Disconnected {
+        name: "Keys".to_owned(),
+        reason: CloseReason::Replugged,
+    });
+    assert!(app.editor.record_pending.is_empty(), "nothing left hanging");
+    assert!(app.status.is_none(), "the reconnect is announced instead");
+    let n = notes(&app, idx);
+    assert!(n.iter().all(|n| n.duration == 2.0), "{n:?}");
+    // The pedal is up again for the reopened connection.
+    on(&mut app, 67, 100);
+    off(&mut app, 67);
+    assert!(app.editor.record_pending.is_empty());
+}
+
+#[test]
+fn deselecting_an_input_leaves_the_new_inputs_notes_alone() {
+    let (_ctx, mut app, _) = app_with_track();
+    app.toggle_record();
+    app.transport.playing = true;
+    app.set_midi_input(MidiInputPref::Device("Keys".to_owned()));
+    on(&mut app, 60, 100);
+    app.midi_input_event(MidiInputEvent::Disconnected {
+        name: "Pad".to_owned(),
+        reason: CloseReason::Deselected,
+    });
+    assert_eq!(app.editor.record_pending.len(), 1, "still held on Keys");
+    off(&mut app, 60);
+    assert!(app.editor.record_pending.is_empty());
 }
 
 #[test]

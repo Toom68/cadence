@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use egui::{Context, Event, Key, KeyboardShortcut, Modifiers, SurrenderFocusOn, ViewportCommand};
 
 use crate::audio::AudioEngine;
-use crate::midi_in::{MidiInputEvent, MidiInputHandle, MidiInputPref, NoteTracker};
+use crate::midi_in::{CloseReason, MidiInputEvent, MidiInputHandle, MidiInputPref, NoteTracker};
 use crate::model::{AudioClip, Clip, Instrument, Project, Track};
 
 pub use history::History;
@@ -1730,8 +1730,9 @@ impl CadenceApp {
     }
 
     /// One MIDI input report: notes play (and record) on the selected
-    /// track; connection changes become status messages. A disconnect ends
-    /// every held controller note so none waits for a lost release.
+    /// track; connection changes become status messages. A disconnect or
+    /// re-plug ends every held controller note so none waits for a lost
+    /// release.
     fn midi_input_event(&mut self, event: MidiInputEvent) {
         match event {
             MidiInputEvent::Message(message) => {
@@ -1744,13 +1745,22 @@ impl CadenceApp {
                     self.set_status(StatusKind::Success, format!("MIDI input connected: {name}"));
                 }
             }
-            MidiInputEvent::Disconnected { name } => {
-                self.release_midi_notes();
-                self.set_status(
-                    StatusKind::Warning,
-                    format!("MIDI input disconnected: {name}. It reconnects when plugged back in."),
-                );
-            }
+            MidiInputEvent::Disconnected { name, reason } => match reason {
+                // `set_midi_input` already released everything; releasing
+                // again would cut notes held on the newly chosen input.
+                CloseReason::Deselected => {}
+                // Reopened right away; its `Connected` report follows.
+                CloseReason::Replugged => self.release_midi_notes(),
+                CloseReason::Unplugged => {
+                    self.release_midi_notes();
+                    self.set_status(
+                        StatusKind::Warning,
+                        format!(
+                            "MIDI input disconnected: {name}. It reconnects when plugged back in."
+                        ),
+                    );
+                }
+            },
             MidiInputEvent::Failed { name, error } => self.set_status(
                 StatusKind::Warning,
                 format!("Could not open MIDI input \"{name}\": {error}"),
