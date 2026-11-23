@@ -1431,7 +1431,7 @@ impl CadenceApp {
                     None,
                 );
                 ui.add_space(theme::GAP_L);
-                let (w, h, gap) = (128.0, 40.0, theme::GAP_S);
+                let (w, h, gap) = (128.0, theme::CONTROL_L, theme::GAP_S);
                 let columns = (((ui.available_width() + gap) / (w + gap)).floor() as usize).max(1);
                 for row in Instrument::ALL.chunks(columns) {
                     let used = row.len() as f32 * w + (row.len() as f32 - 1.0) * gap;
@@ -1440,11 +1440,10 @@ impl CadenceApp {
                         ui.add_space(((ui.available_width() - used) * 0.5).max(0.0));
                         for &inst in row {
                             let color = theme::rgb(sidebar::instrument_color(inst));
-                            let label = RichText::new(format!("+  {}", inst.name()))
-                                .color(theme::ink_on(color))
-                                .strong();
-                            let button = egui::Button::new(label).fill(color).min_size(vec2(w, h));
-                            if ui.add(button).on_hover_text(inst.description()).clicked() {
+                            let label = format!("+  {}", inst.name());
+                            let size = vec2(w, h);
+                            let tip = inst.description();
+                            if theme::solid_button(ui, pal, &label, color, size, tip).clicked() {
                                 self.add_track(inst);
                             }
                         }
