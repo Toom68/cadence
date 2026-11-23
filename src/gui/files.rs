@@ -161,6 +161,7 @@ impl CadenceApp {
         match persistence::load_project(&path) {
             Ok(project) => {
                 let shown = file_label(&path);
+                self.remember_recent(&path);
                 self.replace_project(project, Some(path), true);
                 self.set_status(StatusKind::Success, format!("Opened {shown}."));
                 self.warn_missing_refs();
@@ -222,6 +223,37 @@ impl CadenceApp {
         }
     }
 
+    // ----- recent files ----------------------------------------------------
+
+    /// Puts `path` at the top of File ▸ Open Recent (saved in the desktop
+    /// app; headless sessions only keep it in memory).
+    pub(super) fn remember_recent(&mut self, path: &Path) {
+        persistence::push_recent_file(&mut self.recent_files, path);
+        self.store_recent_files();
+    }
+
+    /// File ▸ Open Recent ▸ Clear Recent.
+    pub(super) fn clear_recent_files(&mut self) {
+        self.recent_files.clear();
+        self.store_recent_files();
+        self.set_status(StatusKind::Info, "Cleared the recent songs list.");
+    }
+
+    /// The recent songs that still exist, for the menu.
+    pub(super) fn existing_recent_files(&self) -> Vec<PathBuf> {
+        self.recent_files
+            .iter()
+            .filter(|p| p.is_file())
+            .cloned()
+            .collect()
+    }
+
+    fn store_recent_files(&self) {
+        if self.io_enabled {
+            let _ = persistence::save_recent_files(&self.recent_files);
+        }
+    }
+
     /// Open…: pick a `.cadence` file. Cancelling changes nothing.
     fn open_dialog(&mut self) {
         if !self.dialogs_available() {
@@ -275,6 +307,7 @@ impl CadenceApp {
         let path = persistence::with_project_extension(&path);
         match persistence::save_project(&self.project, &path) {
             Ok(()) => {
+                self.remember_recent(&path);
                 self.doc.path = Some(path.clone());
                 self.doc.saved_state = Some(self.history.state());
                 // An autosave still awaiting its Restore/Discard decision is
@@ -1438,6 +1471,34 @@ mod tests {
         }
         assert_eq!(app.project, project);
         assert!(!app.dialog.is_open());
+    }
+
+    #[test]
+    fn opening_and_saving_feed_open_recent_without_touching_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.cadence");
+        let b = dir.path().join("b.cadence");
+        persistence::save_project(&Project::empty(), &a).unwrap();
+
+        let mut app = CadenceApp::headless(Project::demo());
+        app.open_path(a.clone());
+        assert!(app.save_to(b.clone()));
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(app.recent_files, vec![canon(&b), canon(&a)]);
+        // Re-opening moves to the top without duplicating.
+        app.open_path(a.clone());
+        assert_eq!(app.recent_files, vec![canon(&a), canon(&b)]);
+        // Missing songs stay remembered but are not offered.
+        std::fs::remove_file(&b).unwrap();
+        assert_eq!(app.existing_recent_files(), vec![canon(&a)]);
+        // A failed open is not remembered.
+        app.open_path(dir.path().join("missing.cadence"));
+        assert_eq!(app.recent_files.len(), 2);
+        app.clear_recent_files();
+        assert!(app.recent_files.is_empty());
+        // Headless: nothing was written next to the songs.
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1);
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

@@ -276,6 +276,72 @@ pub fn save_audio_device_pref(name: Option<&str>) {
     }
 }
 
+// ----- recent files ----------------------------------------------------------
+
+/// Most songs File ▸ Open Recent remembers.
+pub const MAX_RECENT_FILES: usize = 10;
+
+/// Plain-text list of recently opened/saved songs, newest first, one path
+/// per line, beside the other app data.
+const RECENT_FILES_FILE: &str = "recent-files.txt";
+
+/// The remembered recent songs (newest first, deduplicated, at most
+/// [`MAX_RECENT_FILES`]). Missing files are kept here — a disconnected
+/// drive may come back — and filtered out when the menu is shown.
+pub fn load_recent_files() -> Vec<PathBuf> {
+    load_recent_files_in(&data_dir())
+}
+
+/// [`load_recent_files`] for an explicit data folder.
+pub fn load_recent_files_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(file) = File::open(dir.join(RECENT_FILES_FILE)) else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if file.take(64 * 1024).read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let mut list = Vec::new();
+    for line in String::from_utf8_lossy(&bytes).lines().rev() {
+        let line = line.trim();
+        if !line.is_empty() {
+            push_recent_file(&mut list, Path::new(line));
+        }
+    }
+    list
+}
+
+/// Saves the recent-songs list atomically (best effort for callers: a
+/// failure only means the list doesn't survive a restart).
+pub fn save_recent_files(list: &[PathBuf]) -> Result<(), String> {
+    save_recent_files_in(&data_dir(), list)
+}
+
+/// [`save_recent_files`] for an explicit data folder.
+pub fn save_recent_files_in(dir: &Path, list: &[PathBuf]) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|err| format!("Could not create {}: {err}", dir.display()))?;
+    let mut text = String::new();
+    for path in list.iter().take(MAX_RECENT_FILES) {
+        // A path that can't round-trip through one line of UTF-8 text is
+        // simply not remembered.
+        if let Some(line) = path.to_str().filter(|l| !l.contains(['\n', '\r'])) {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    write_file_atomic(&dir.join(RECENT_FILES_FILE), text.as_bytes())
+}
+
+/// Moves `path` to the front of `list` (made absolute where possible, so the
+/// same song opened two ways is one entry), dropping duplicates and keeping
+/// at most [`MAX_RECENT_FILES`].
+pub fn push_recent_file(list: &mut Vec<PathBuf>, path: &Path) {
+    let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    list.retain(|p| *p != path);
+    list.insert(0, path);
+    list.truncate(MAX_RECENT_FILES);
+}
+
 /// Reads a staged file by its store-relative `name` for decoding. Returns
 /// `None` for anything unsafe, missing, unreadable or oversize — a missing
 /// clip file is a documented tolerance (the clip plays silence), never a
@@ -618,6 +684,50 @@ mod tests {
             with_project_extension(Path::new("my.song")),
             PathBuf::from("my.song.cadence")
         );
+    }
+
+    #[test]
+    fn recent_files_dedupe_cap_and_round_trip() {
+        let dir = temp_dir("recent");
+        assert!(load_recent_files_in(&dir).is_empty());
+        let songs: Vec<PathBuf> = (0..12)
+            .map(|i| {
+                let p = dir.join(format!("song{i}.cadence"));
+                fs::write(&p, "{}").unwrap();
+                fs::canonicalize(p).unwrap()
+            })
+            .collect();
+        let mut list = Vec::new();
+        for song in &songs {
+            push_recent_file(&mut list, song);
+        }
+        assert_eq!(list.len(), MAX_RECENT_FILES);
+        assert_eq!(list[0], songs[11]);
+        // Re-opening an older song moves it to the front, no duplicate.
+        push_recent_file(&mut list, &songs[5]);
+        assert_eq!(list[0], songs[5]);
+        assert_eq!(list.iter().filter(|p| **p == songs[5]).count(), 1);
+        assert_eq!(list.len(), MAX_RECENT_FILES);
+
+        save_recent_files_in(&dir, &list).unwrap();
+        assert_eq!(load_recent_files_in(&dir), list);
+        // A hand-edited file with blanks and repeats still loads cleanly.
+        fs::write(
+            dir.join(RECENT_FILES_FILE),
+            format!(
+                "\n{0}\n\n{0}\n{1}\n",
+                songs[0].display(),
+                songs[1].display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_recent_files_in(&dir),
+            vec![songs[0].clone(), songs[1].clone()]
+        );
+        save_recent_files_in(&dir, &[]).unwrap();
+        assert!(load_recent_files_in(&dir).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

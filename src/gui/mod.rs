@@ -221,6 +221,8 @@ pub struct CadenceApp {
     shell: shell::ShellState,
     /// In-app update check / download / install-on-quit state.
     update: updates::UpdateState,
+    /// File ▸ Open Recent, newest first; persisted only when `io_enabled`.
+    recent_files: Vec<std::path::PathBuf>,
 }
 
 impl CadenceApp {
@@ -340,6 +342,11 @@ impl CadenceApp {
             theme: ThemeChoice::default(),
             shell: shell::ShellState::default(),
             update: updates::UpdateState::default(),
+            recent_files: if io_enabled {
+                crate::persistence::load_recent_files()
+            } else {
+                Vec::new()
+            },
         };
         app.fix_selection();
         app

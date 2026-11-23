@@ -453,6 +453,40 @@ impl CadenceApp {
         if menu_item(ui, pal, "Open…", &keys(ui, &SC_OPEN), true, None).clicked() {
             self.request(PendingAction::Open);
         }
+        let recent = self.existing_recent_files();
+        let mut pick = None;
+        let mut clear = false;
+        submenu(ui, pal, "Open Recent", !recent.is_empty(), |ui| {
+            for path in &recent {
+                let name = super::files::file_label(path);
+                let folder = path
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let folder = if folder.chars().count() > 18 {
+                    format!("{}…", folder.chars().take(17).collect::<String>())
+                } else {
+                    folder
+                };
+                if menu_item(ui, pal, &name, &folder, true, None)
+                    .on_hover_text(path.display().to_string())
+                    .clicked()
+                {
+                    pick = Some(path.clone());
+                }
+            }
+            menu_sep(ui, pal);
+            if menu_item(ui, pal, "Clear Recent", "", true, None).clicked() {
+                clear = true;
+            }
+        });
+        if let Some(path) = pick {
+            self.request(PendingAction::OpenPath(path));
+        }
+        if clear {
+            self.clear_recent_files();
+        }
         menu_sep(ui, pal);
         if menu_item(ui, pal, "Save", &keys(ui, &SC_SAVE), true, None).clicked() {
             self.save();
