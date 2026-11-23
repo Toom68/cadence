@@ -263,6 +263,8 @@ fn test_preset() -> InstrumentPreset {
         sample_hold: 2,
         gain: 0.8,
         monophonic: false,
+        velocity_to_cutoff: crate::packs::DEFAULT_VELOCITY_TO_CUTOFF,
+        spread: 0.0,
         hidden: false,
         audition_note: 55,
         audition_duration: 1.6,

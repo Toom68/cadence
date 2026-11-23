@@ -41,8 +41,11 @@ object with an ordered `pieces` array (1-32 pieces). Each piece has a display
 `name` (1-64 chars), a MIDI `pitch` (0-127, unique within the kit) and a
 `voice` — the same synthesis fields as a preset (`oscillators`, `envelope`,
 `pitch_envelope`, `filter_envelope`, `filter_cutoff`, `filter_resonance`,
-`lfo`, `bit_depth`, `sample_hold`, `gain`; every field optional with the
-usual defaults, but `oscillators` needs 1-4 entries).
+`lfo`, `bit_depth`, `sample_hold`, `gain`, `velocity_to_cutoff`, `spread`;
+every field optional with the usual defaults, but `oscillators` needs 1-4
+entries). A piece voice may also set `choke_group` (0-16, default 0 = none):
+starting a piece fades out every sounding piece of the same group on the
+track, so closed/pedal/open hats sharing a group cut each other.
 
 ```json
 { "id": "my-kit.studio", "name": "Studio Kit",
@@ -89,8 +92,8 @@ base64-encoded PCM instead of (or beside) oscillators:
   `root_pitch` 0–127 (default 60 = the note that plays at unity speed).
   `loop` (default false) loops the clip while the note is held; a one-shot
   ends when the clip does.
-- Playback transposes by `2^((note - root_pitch)/12)` with linear
-  interpolation, then runs the usual preset envelope/filter/bitcrush/gain
+- Playback transposes by `2^((note - root_pitch)/12)` with 4-point cubic
+  (Hermite) interpolation, then runs the usual preset envelope/filter/bitcrush/gain
   tail, so those fields still shape the clip.
 - A `sample` preset may omit `oscillators` entirely; any listed oscillators
   are still range-validated but inert. A kit piece `voice` can carry a clip

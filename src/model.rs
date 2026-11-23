@@ -3386,6 +3386,8 @@ mod tests {
             sample_hold: 0,
             gain: 3.0,
             monophonic: false,
+            velocity_to_cutoff: crate::packs::DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,

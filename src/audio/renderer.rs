@@ -883,10 +883,8 @@ impl Renderer {
                 return;
             }
         } else if matches!(sound, Sound::Builtin(Instrument::Drums)) {
-            // Same-kind choking is specific to the built-in eight-voice kit:
-            // it keys on `Voice::drum`/`drum_kind`, which pack-kit voices
-            // (`Sound::Kit`) never populate — those fall through to the
-            // generic same-pitch release below.
+            // Same-kind choking for the built-in eight-voice kit keys on
+            // `Voice::drum`/`drum_kind`; pack kits use choke groups below.
             let kind = super::voice::drum_kind(pitch);
             for v in self
                 .voices
@@ -897,6 +895,22 @@ impl Renderer {
                     v.choke(0.015);
                 } else if kind == DrumKind::ClosedHat && v.drum == DrumKind::OpenHat {
                     v.choke(0.006);
+                }
+            }
+        } else if let Sound::Kit(kit) = &sound {
+            // Pack kits: a piece with a `choke_group` fades every sounding
+            // voice of the same group on this strip (closed hat cuts the
+            // open hat); otherwise the generic same-pitch release applies.
+            let group = kit.piece_for(pitch).choke_group;
+            for v in self
+                .voices
+                .iter_mut()
+                .filter(|v| v.active && v.strip == strip && !v.is_fading())
+            {
+                if group != 0 && v.choke_group == group {
+                    v.choke(0.008);
+                } else if v.held && v.pitch == pitch {
+                    v.release();
                 }
             }
         } else {
@@ -1094,9 +1108,15 @@ impl Renderer {
                 }
                 let idx = src_pos as usize;
                 if idx + 1 < src_frames {
+                    // 4-point cubic interpolation; the outer taps clamp to
+                    // the source's ends (clip loops restart from `offset`,
+                    // not by wrapping the source).
                     let fr = (src_pos - idx as f64) as f32;
-                    let x = src.left[idx] + (src.left[idx + 1] - src.left[idx]) * fr;
-                    let y = src.right[idx] + (src.right[idx + 1] - src.right[idx]) * fr;
+                    let (im1, i2) = (idx.saturating_sub(1), (idx + 2).min(src_frames - 1));
+                    let (l, r) = (&src.left, &src.right);
+                    let hermite = super::voice::hermite;
+                    let x = hermite(l[im1], l[idx], l[idx + 1], l[i2], fr);
+                    let y = hermite(r[im1], r[idx], r[idx + 1], r[i2], fr);
                     let gv = g as f32;
                     self.strip_l[base + i] += x * gv;
                     self.strip_r[base + i] += y * gv;
@@ -1356,6 +1376,52 @@ mod tests {
         x.iter()
             .position(|s| s.abs() > threshold)
             .unwrap_or(usize::MAX)
+    }
+
+    /// A two-hat pack kit: a long ringing open hat (46) and a closed hat
+    /// (42), both in `group` (0 = no choke group).
+    fn hat_kit_project(group: u8) -> Project {
+        let kit: crate::packs::InstrumentPreset = serde_json::from_str(&format!(
+            r#"{{
+                "id": "test.hats", "name": "Hats",
+                "kit": {{ "pieces": [
+                    {{ "name": "Closed", "pitch": 42, "voice": {{
+                        "oscillators": [{{"waveform": "noise"}}],
+                        "envelope": {{"attack": 0.001, "decay": 0.05, "sustain": 0.0, "release": 0.02}},
+                        "choke_group": {group} }} }},
+                    {{ "name": "Open", "pitch": 46, "voice": {{
+                        "oscillators": [{{"waveform": "noise"}}],
+                        "envelope": {{"attack": 0.001, "decay": 2.0, "sustain": 0.8, "release": 1.0}},
+                        "choke_group": {group} }} }}
+                ] }}
+            }}"#
+        ))
+        .unwrap();
+        let mut p = Project::empty();
+        p.bpm = 120.0;
+        p.bars = 1;
+        let mut t = crate::model::Track::from_preset(Instrument::Drums, kit);
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        t.patterns[0].notes = vec![Note::new(46, 0.0, 16.0, 1.0), Note::new(42, 4.0, 1.0, 1.0)];
+        p.tracks = vec![t];
+        p.validate().unwrap();
+        p
+    }
+
+    #[test]
+    fn pack_kit_choke_group_cuts_the_open_hat() {
+        let open_hat_sounding = |group: u8| {
+            let mut r = Renderer::new(SR);
+            r.load(Box::new(SongData::from_project(&hat_kit_project(group))));
+            r.play(0.0, false);
+            // Step 4 is at 24 000 frames; look 40 ms after the closed hat.
+            let frames = 24_000 + r.latency() + 1_920;
+            run(&mut r, frames);
+            r.voices.iter().any(|v| v.active && v.pitch == 46)
+        };
+        assert!(open_hat_sounding(0), "without a group the hats stack");
+        assert!(!open_hat_sounding(1), "the closed hat chokes the open hat");
     }
 
     #[test]

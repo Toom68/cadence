@@ -877,6 +877,8 @@ fn sample_instrument(name: &str, spec: crate::packs::SampleSpec) -> crate::packs
         sample_hold: 1,
         gain: 0.9,
         monophonic: false,
+        velocity_to_cutoff: crate::packs::DEFAULT_VELOCITY_TO_CUTOFF,
+        spread: 0.0,
         hidden: false,
         audition_note: spec.root_pitch.min(127),
         audition_duration: 0.8,

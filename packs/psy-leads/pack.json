@@ -66,7 +66,7 @@
       "audition_note": 64,
       "audition_duration": 1.5,
       "name": "Wide Lead",
-      "description": "Detuned saw-and-triangle lead with slow filter breathing - width without chorus. Works single or doubled on two tracks for extra spread.",
+      "description": "Detuned saw-and-triangle lead with slow filter breathing and a true stereo spread. Works single or doubled on two tracks for an even wider image.",
       "oscillators": [
         { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": -18.0, "pulse_width": 0.5 },
         { "waveform": "saw", "level": 0.5, "frequency_ratio": 1.0, "detune_cents": 18.0, "pulse_width": 0.5 },
@@ -77,6 +77,7 @@
       "filter_resonance": 0.25,
       "lfo": { "waveform": "sine", "rate_hz": 0.45, "pitch_semitones": 0.0, "filter_octaves": 1.6, "amplitude": 0.5 },
       "gain": 0.7,
+      "spread": 0.6,
       "monophonic": false
     },
     {

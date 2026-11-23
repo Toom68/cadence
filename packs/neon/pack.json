@@ -25,6 +25,7 @@
       "bit_depth": 24,
       "sample_hold": 1,
       "gain": 0.72,
+      "spread": 0.35,
       "monophonic": true
     },
     {
@@ -47,6 +48,7 @@
       "bit_depth": 24,
       "sample_hold": 1,
       "gain": 0.62,
+      "spread": 0.6,
       "monophonic": false
     },
     {

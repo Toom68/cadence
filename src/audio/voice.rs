@@ -10,7 +10,10 @@ use super::dsp::{
     Svf, SvfCoefs,
 };
 use crate::model::{map_drum_pitch, pitch_hz, Instrument};
-use crate::packs::{InstrumentPreset, LfoWaveform, SampleSpec, Waveform, MAX_KIT_PIECES};
+use crate::packs::{
+    InstrumentPreset, LfoWaveform, SampleSpec, Waveform, DEFAULT_VELOCITY_TO_CUTOFF,
+    MAX_CHOKE_GROUP, MAX_KIT_PIECES,
+};
 
 pub const MAX_PRESET_OSCILLATORS: usize = 4;
 /// Lowest pitch the plucked-string model tunes to; lower notes are folded up an octave.
@@ -59,6 +62,14 @@ pub struct PresetParams {
     pub hold: u32,
     pub gain: f32,
     pub mono: bool,
+    /// Octaves of filter-cutoff swing across the velocity range, centred on
+    /// velocity 0.8 (see [`velocity_cutoff`]).
+    pub vel_cutoff: f32,
+    /// Stereo width 0..=1 (0 = mono): a detuned, phase-offset second copy
+    /// of the oscillators (or a second sample read head) panned apart.
+    pub spread: f32,
+    /// Kit-piece choke group (0 = none); see [`Voice::choke_group`].
+    pub choke_group: u8,
     /// Published slot for the embedded clip, or `NO_SAMPLE_SLOT` for the
     /// ordinary oscillator path. Only the slot travels on a note-on.
     pub sample_slot: usize,
@@ -108,6 +119,9 @@ impl PresetParams {
         hold: 1,
         gain: 0.9,
         mono: false,
+        vel_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
+        spread: 0.0,
+        choke_group: 0,
         sample_slot: NO_SAMPLE_SLOT,
         sample_rate: 0.0,
         sample_root: 60,
@@ -185,6 +199,10 @@ impl PresetParams {
             hold: p.sample_hold.clamp(1, 64),
             gain: finite(p.gain, 0.9).clamp(0.0, 1.0),
             mono: p.monophonic,
+            vel_cutoff: finite(p.velocity_to_cutoff, DEFAULT_VELOCITY_TO_CUTOFF).clamp(0.0, 6.0),
+            spread: finite(p.spread, 0.0).clamp(0.0, 1.0),
+            // Choke groups are a kit-piece concept: set by `KitParams::from_kit`.
+            choke_group: 0,
             // Register the clip off the audio thread (decoding allocates);
             // a missing or undecodable clip uses the oscillator fallback.
             sample_slot: p
@@ -207,6 +225,7 @@ impl PresetParams {
             && self.lfo_filter == 0.0
             && self.lfo_amp == 0.0
             && self.oscs.iter().take(self.count).all(|o| o.decay == 0.0)
+            && self.spread == 0.0
     }
 
     #[inline]
@@ -240,10 +259,9 @@ impl KitParams {
         let mut count = 0;
         if let Some(kit) = &p.kit {
             for piece in kit.pieces.iter().take(MAX_KIT_PIECES) {
-                pieces[count] = (
-                    piece.pitch,
-                    PresetParams::from_preset(&piece.voice.to_preset_stub()),
-                );
+                let mut params = PresetParams::from_preset(&piece.voice.to_preset_stub());
+                params.choke_group = piece.voice.choke_group.min(MAX_CHOKE_GROUP);
+                pieces[count] = (piece.pitch, params);
                 count += 1;
             }
             pieces[..count].sort_by_key(|(pitch, _)| *pitch);
@@ -373,10 +391,9 @@ impl Sound {
 
     /// One-shot drum-kit voices: the built-in eight-piece kit or a pack kit.
     /// Used for seek-chase suppression (a drum hit is never re-armed
-    /// mid-ring). The built-in kit additionally gets same-kind choking in the
-    /// renderer — that path is matched on `Sound::Builtin(Instrument::Drums)`
-    /// directly because it relies on [`Voice::drum`]/[`drum_kind`], which kit
-    /// voices do not populate.
+    /// mid-ring). The renderer additionally chokes drum voices: the built-in
+    /// kit by kind (via [`Voice::drum`]/[`drum_kind`]), pack kits by each
+    /// piece's `choke_group` (via [`Voice::choke_group`]).
     pub fn is_drums(&self) -> bool {
         matches!(self, Sound::Builtin(Instrument::Drums) | Sound::Kit(_))
     }
@@ -419,7 +436,7 @@ enum Kind {
     Lead,
     Preset,
     /// Embedded-clip playback (a preset or kit piece `sample` block): reads
-    /// `sample_buf` with linear interpolation, then shares the preset DSP tail.
+    /// `sample_buf` with cubic interpolation, then shares the preset DSP tail.
     Sample,
 }
 
@@ -589,11 +606,22 @@ pub struct Voice {
     filter_env_coef: f32,
     hold_left: u32,
     hold_value: f32,
+    /// Right-channel sample-and-hold value for `spread` presets.
+    hold_value_r: f32,
+    /// Velocity-scaled base filter cutoff of a preset/sample voice.
+    cutoff: f32,
+    /// Frequency multipliers of the two `spread` copies.
+    spread_ratio: [f32; 2],
+    /// Kit-piece choke group of the playing note (0 = none). The renderer
+    /// fades same-group voices on the same strip when a new piece starts.
+    pub choke_group: u8,
     noise_value: [f32; MAX_PRESET_OSCILLATORS],
     /// Decoded clip for `Kind::Sample`, resolved from its published slot.
     sample_buf: Option<&'static [f32]>,
-    /// Read position in clip frames (fractional; linear interp uses the rest).
+    /// Read position in clip frames (fractional; cubic interp uses the rest).
     sample_pos: f64,
+    /// Second read head for `spread` sample voices.
+    sample_pos2: f64,
     /// Clip frames advanced per output Hz: `clip_rate / pitch_hz(root)`.
     sample_ratio: f32,
     done: bool,
@@ -629,6 +657,30 @@ pub struct Voice {
 fn velocity_gain(v: f32) -> f32 {
     let v = v.clamp(0.0, 1.0);
     0.12 + 0.88 * v * v
+}
+
+/// Velocity at which a preset plays exactly at its `filter_cutoff`.
+const VELOCITY_CUTOFF_PIVOT: f32 = 0.8;
+/// Full detune between the two copies of a `spread = 1` voice, in cents
+/// (each copy sits half of it away from the played pitch).
+const SPREAD_CENTS: f32 = 14.0;
+/// Start-phase offset of the second copy at `spread = 1`, in cycles.
+const SPREAD_PHASE: f32 = 0.25;
+
+/// Velocity → brightness for preset voices: `cutoff * 2^(amount * (vel -
+/// 0.8))`, capped at 20 kHz. A fully open filter (20 kHz) is left alone so
+/// unfiltered presets keep their sound at every velocity.
+pub(crate) fn velocity_cutoff(cutoff: f32, amount: f32, vel: f32) -> f32 {
+    let cutoff = finite(cutoff, 20_000.0);
+    if cutoff >= 20_000.0 {
+        return cutoff;
+    }
+    let amount = finite(amount, 0.0).clamp(0.0, 6.0);
+    let delta = vel.clamp(0.0, 1.0) - VELOCITY_CUTOFF_PIVOT;
+    if amount == 0.0 || delta == 0.0 {
+        return cutoff;
+    }
+    (cutoff * 2f32.powf(amount * delta)).clamp(10.0, 20_000.0)
 }
 
 impl Voice {
@@ -673,9 +725,14 @@ impl Voice {
             filter_env_coef: 0.0,
             hold_left: 0,
             hold_value: 0.0,
+            hold_value_r: 0.0,
+            cutoff: 20_000.0,
+            spread_ratio: [1.0; 2],
+            choke_group: 0,
             noise_value: [0.0; MAX_PRESET_OSCILLATORS],
             sample_buf: None,
             sample_pos: 0.0,
+            sample_pos2: 0.0,
             sample_ratio: 0.0,
             done: false,
             ks: Vec::new(),
@@ -751,7 +808,9 @@ impl Voice {
         self.level = self.gain;
         self.sample_buf = None;
         self.sample_pos = 0.0;
+        self.sample_pos2 = 0.0;
         self.sample_ratio = 0.0;
+        self.choke_group = 0;
         match n.sound {
             Sound::Builtin(Instrument::Drums) => self.start_drum(),
             Sound::Builtin(Instrument::Piano) => {
@@ -1093,9 +1152,22 @@ impl Voice {
             finite(p.sustain, 0.7).clamp(0.0, 1.0),
             finite(p.release, 0.3).clamp(0.005, 20.0) / 5.0,
         );
-        self.fc = SvfCoefs::new(p.cutoff, p.resonance_q(), sr);
+        self.cutoff = velocity_cutoff(p.cutoff, p.vel_cutoff, self.vel);
+        self.fc = SvfCoefs::new(self.cutoff, p.resonance_q(), sr);
         self.hold_left = 0;
         self.hold_value = 0.0;
+        self.hold_value_r = 0.0;
+        self.choke_group = p.choke_group;
+        let spread = finite(p.spread, 0.0).clamp(0.0, 1.0);
+        if spread > 0.0 {
+            let half = 2f32.powf(spread * SPREAD_CENTS * 0.5 / 1200.0);
+            self.spread_ratio = [1.0 / half, half];
+            for k in 0..MAX_PRESET_OSCILLATORS {
+                self.ph[MAX_PRESET_OSCILLATORS + k] = spread * SPREAD_PHASE;
+            }
+        } else {
+            self.spread_ratio = [1.0; 2];
+        }
         self.pitch_env = finite(p.pitch_env_amount, 0.0).clamp(-48.0, 48.0);
         self.pitch_env_coef = t60_coef(finite(p.pitch_env_decay, 0.2).clamp(0.005, 10.0), sr);
         self.filter_env = finite(p.filter_env_amount, 0.0).clamp(-6.0, 6.0);
@@ -1507,14 +1579,16 @@ impl Voice {
 
         if self.ctl == 0 {
             let octaves = (self.filter_env + lfo * finite(p.lfo_filter, 0.0)).clamp(-8.0, 8.0);
-            let cutoff =
-                (finite(p.cutoff, 20_000.0) * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
+            let cutoff = (self.cutoff * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
             self.fc = SvfCoefs::new(cutoff, p.resonance_q(), self.sr);
         }
         self.ctl = (self.ctl + 1) % CONTROL_INTERVAL;
         self.filter_env *= self.filter_env_coef;
 
+        let spread = finite(p.spread, 0.0).clamp(0.0, 1.0);
+        let stereo = spread > 0.0;
         let mut sum = 0.0;
+        let mut sum_b = 0.0;
         let mut total = 0.0;
         for (k, o) in p.oscs.iter().take(p.count).enumerate() {
             // Defensive re-clamp: PresetParams may be built by hand, bypassing
@@ -1526,7 +1600,18 @@ impl Voice {
                 ..*o
             };
             let inc = (freq * o.ratio * self.inv_sr).clamp(0.0, 0.49);
-            let v = self.preset_osc_sample(k, o, inc, freq);
+            let (v, vb) = if stereo {
+                // Two copies detuned symmetrically around the played pitch;
+                // the second runs on the spare phase slots `ph[4..8]`.
+                let inc_a = (inc * self.spread_ratio[0]).min(0.49);
+                let inc_b = (inc * self.spread_ratio[1]).min(0.49);
+                (
+                    self.preset_osc_sample(k, o, inc_a, freq),
+                    self.spread_osc_sample(k, o, inc_b),
+                )
+            } else {
+                (self.preset_osc_sample(k, o, inc, freq), 0.0)
+            };
             let layer = if o.decay > 0.0 {
                 let env = self.e[k];
                 self.e[k] *= self.c[k];
@@ -1535,11 +1620,34 @@ impl Voice {
                 1.0
             };
             sum += v * o.level * layer;
+            sum_b += vb * o.level * layer;
             total += o.level;
         }
         let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        if stereo {
+            let scale = a * trem.clamp(0.0, 1.0) / total.max(1.0);
+            let (l, r) = spread_pan(sum * scale, sum_b * scale, spread);
+            return self.finish_preset_stereo(l, r, p);
+        }
         let raw = sum / total.max(1.0) * a * trem.clamp(0.0, 1.0);
         self.finish_preset_sample(raw, p)
+    }
+
+    /// The second `spread` copy of oscillator `k`: same waveform on the
+    /// spare phase slot `ph[4 + k]`. Noise layers reuse the first copy's
+    /// value (stereo noise would only smear the image).
+    fn spread_osc_sample(&mut self, k: usize, o: OscParams, inc: f32) -> f32 {
+        let j = MAX_PRESET_OSCILLATORS + k;
+        let v = match o.wave {
+            Waveform::Sine => sine(self.ph[j]),
+            Waveform::Triangle => 4.0 * (self.ph[j] - 0.5).abs() - 1.0,
+            Waveform::Saw => saw(self.ph[j], inc),
+            Waveform::Square => square(self.ph[j], inc),
+            Waveform::Pulse => pulse(self.ph[j], inc, o.width),
+            Waveform::Noise => return self.noise_value[k],
+        };
+        advance(&mut self.ph[j], inc);
+        v
     }
 
     fn preset_sample_legacy(&mut self, a: f32, p: PresetParams) -> (f32, f32) {
@@ -1586,8 +1694,28 @@ impl Voice {
         (y, y)
     }
 
+    /// Stereo twin of [`Voice::finish_preset_sample`] for `spread` voices:
+    /// the same hold/bitcrush/filter/gain tail per channel (`f1` left, `f2`
+    /// right, sharing the coefficients).
+    fn finish_preset_stereo(&mut self, l: f32, r: f32, p: PresetParams) -> (f32, f32) {
+        if self.hold_left == 0 {
+            self.hold_value = l;
+            self.hold_value_r = r;
+            self.hold_left = ((p.hold as f32 * self.sr / 44_100.0).round() as u32).max(1);
+        }
+        self.hold_left -= 1;
+        let (mut x, mut y) = (self.hold_value, self.hold_value_r);
+        if p.bits < 24 {
+            let q = (1u32 << (p.bits - 1)) as f32;
+            x = (x * q).round() / q;
+            y = (y * q).round() / q;
+        }
+        let g = p.gain * self.gain * 0.55;
+        (self.f1.low(&self.fc, x) * g, self.f2.low(&self.fc, y) * g)
+    }
+
     /// PCM clip playback for `sample` presets and kit pieces: the registered
-    /// buffer is read with linear interpolation at `2^((pitch - root)/12)`
+    /// buffer is read with cubic interpolation at `2^((pitch - root)/12)`
     /// times its declared rate — `self.freq` (the played note, with portamento
     /// plus the preset's pitch envelope and LFO) times `sample_ratio` sets the
     /// step — one-shot or looping while held, then shaped by the shared
@@ -1607,8 +1735,7 @@ impl Voice {
             let lfo = self.next_preset_lfo(p);
             if self.ctl == 0 {
                 let octaves = (self.filter_env + lfo * finite(p.lfo_filter, 0.0)).clamp(-8.0, 8.0);
-                let cutoff =
-                    (finite(p.cutoff, 20_000.0) * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
+                let cutoff = (self.cutoff * 2f32.powf(octaves)).clamp(10.0, self.sr * 0.47);
                 self.fc = SvfCoefs::new(cutoff, p.resonance_q(), self.sr);
             }
             self.ctl = (self.ctl + 1) % CONTROL_INTERVAL;
@@ -1627,21 +1754,29 @@ impl Voice {
         // +512× per output sample is far past any usable transposition.
         let inc = (freq * self.sample_ratio * self.inv_sr).clamp(0.0, 512.0) as f64;
 
+        let spread = finite(p.spread, 0.0).clamp(0.0, 1.0);
+        let stereo = spread > 0.0;
+        let mut raw_b = 0.0;
         let raw = match self.sample_buf {
             Some(buf) if !buf.is_empty() => {
                 let len = buf.len();
                 let pos = self.sample_pos;
-                let i = pos as usize;
-                let s0 = buf.get(i).copied().unwrap_or(0.0);
-                // At the loop seam the interp target wraps to the first
-                // frame so a seamless loop stays seamless.
-                let j = if p.sample_loop && i + 1 >= len {
-                    0
-                } else {
-                    i.saturating_add(1).min(len - 1)
-                };
-                let s1 = buf.get(j).copied().unwrap_or(0.0);
-                let v = s0 + (s1 - s0) * (pos - i as f64) as f32;
+                let v = read_clip(buf, pos, p.sample_loop);
+                let mut inc = inc;
+                if stereo {
+                    // A second read head, detuned symmetrically against the
+                    // first, drifts against it for a chorused stereo image.
+                    let pos2 = self.sample_pos2;
+                    let inc_b = inc * f64::from(self.spread_ratio[1]);
+                    inc *= f64::from(self.spread_ratio[0]);
+                    if p.sample_loop {
+                        raw_b = read_clip(buf, pos2, true);
+                        self.sample_pos2 = (pos2 + inc_b).rem_euclid(len as f64);
+                    } else if pos2 < len as f64 {
+                        raw_b = read_clip(buf, pos2, false);
+                        self.sample_pos2 = pos2 + inc_b;
+                    }
+                }
                 let next = pos + inc;
                 if p.sample_loop {
                     self.sample_pos = next.rem_euclid(len as f64);
@@ -1661,6 +1796,11 @@ impl Voice {
             }
         };
         let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        if stereo {
+            let g = a * trem.clamp(0.0, 1.0);
+            let (l, r) = spread_pan(raw * g, raw_b * g, spread);
+            return self.finish_preset_stereo(l, r, p);
+        }
         self.finish_preset_sample(raw * a * trem.clamp(0.0, 1.0), p)
     }
 
@@ -1696,6 +1836,51 @@ impl Voice {
         );
         value.clamp(-1.0, 1.0)
     }
+}
+
+/// Pans the two `spread` copies apart: at `spread` 1 copy A is hard left and
+/// copy B hard right; smaller values blend both into each side (each side's
+/// weights sum to 1, so coherent material keeps its level).
+#[inline]
+fn spread_pan(a: f32, b: f32, spread: f32) -> (f32, f32) {
+    let near = 0.5 + 0.5 * spread;
+    let far = 0.5 - 0.5 * spread;
+    (a * near + b * far, a * far + b * near)
+}
+
+/// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `x0` and
+/// `x1` at fraction `t` in `0..1`, using the outer neighbours `xm1`/`x2`.
+/// Exact at the sample points and far smoother than linear interpolation
+/// for resampled audio (less high-frequency imaging and droop).
+#[inline]
+pub(crate) fn hermite(xm1: f32, x0: f32, x1: f32, x2: f32, t: f32) -> f32 {
+    let c1 = 0.5 * (x1 - xm1);
+    let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
+    let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+    ((c3 * t + c2) * t + c1) * t + x0
+}
+
+/// Reads a mono clip at fractional frame `pos` with [`hermite`]
+/// interpolation. A looping clip wraps its neighbours around the seam (so a
+/// seamless loop stays seamless); a one-shot clamps them to its ends.
+#[inline]
+fn read_clip(buf: &[f32], pos: f64, looped: bool) -> f32 {
+    let len = buf.len();
+    if len == 0 {
+        return 0.0;
+    }
+    let i = pos.floor();
+    let t = (pos - i) as f32;
+    let i = i as i64;
+    let at = |k: i64| -> f32 {
+        let idx = if looped {
+            k.rem_euclid(len as i64) as usize
+        } else {
+            k.clamp(0, len as i64 - 1) as usize
+        };
+        buf[idx]
+    };
+    hermite(at(i - 1), at(i), at(i + 1), at(i + 2), t)
 }
 
 /// Band-limited pulse with duty `width`, DC removed.
@@ -1844,6 +2029,8 @@ mod tests {
             sample_hold: 3,
             gain: 0.9,
             monophonic: false,
+            velocity_to_cutoff: crate::packs::DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
@@ -2712,5 +2899,274 @@ mod tests {
         let x = render(Sound::Kit(KitParams::from_kit(&kit)), 36, 0.5, 0.4);
         assert!(x.iter().all(|s| s.is_finite()));
         assert!(rms(&x[(0.02 * SR) as usize..(0.08 * SR) as usize]) > 0.01);
+    }
+
+    /// Renders one note at `velocity`, returning the separate L/R channels.
+    fn render_stereo(
+        sound: Sound,
+        pitch: u8,
+        velocity: f32,
+        seconds: f32,
+        gate_seconds: f32,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut v = Voice::new(SR);
+        v.start(&NoteStart {
+            sound,
+            strip: 0,
+            pitch,
+            velocity,
+            gate: (gate_seconds * SR) as u64,
+            from_song: true,
+            age: 1,
+        });
+        let n = (seconds * SR) as usize;
+        let mut l = vec![0.0; n];
+        let mut r = vec![0.0; n];
+        for (cl, cr) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            if v.active {
+                v.render(cl, cr);
+            }
+        }
+        (l, r)
+    }
+
+    /// Energy above ~4 kHz relative to total energy: a one-pole high-pass
+    /// output's RMS over the signal's RMS (level-independent).
+    fn high_band_ratio(x: &[f32]) -> f32 {
+        let a = (-std::f32::consts::TAU * 4_000.0 / SR).exp();
+        let (mut lp, mut hi) = (0.0f32, Vec::with_capacity(x.len()));
+        for &s in x {
+            lp = s + (lp - s) * a;
+            hi.push(s - lp);
+        }
+        rms(&hi) / rms(x).max(1e-9)
+    }
+
+    fn filtered_saw() -> InstrumentPreset {
+        InstrumentPreset {
+            id: "test.dark-saw".into(),
+            name: "Dark Saw".into(),
+            oscillators: vec![OscillatorSpec {
+                waveform: Waveform::Saw,
+                ..Default::default()
+            }],
+            envelope: Envelope {
+                attack: 0.002,
+                decay: 0.2,
+                sustain: 0.8,
+                release: 0.1,
+            },
+            filter_cutoff: 1_500.0,
+            bit_depth: 24,
+            sample_hold: 1,
+            ..chip_preset()
+        }
+    }
+
+    #[test]
+    fn velocity_cutoff_pivots_at_point_eight() {
+        assert_eq!(velocity_cutoff(1_500.0, 2.0, 0.8), 1_500.0);
+        assert!((velocity_cutoff(1_500.0, 2.0, 0.3) - 750.0).abs() < 0.5);
+        assert!(velocity_cutoff(1_500.0, 2.0, 1.0) > 1_500.0 * 1.3);
+        // Off, or a fully open filter: never scaled.
+        assert_eq!(velocity_cutoff(1_500.0, 0.0, 0.1), 1_500.0);
+        assert_eq!(velocity_cutoff(20_000.0, 6.0, 0.0), 20_000.0);
+        assert_eq!(velocity_cutoff(19_000.0, 6.0, 1.0), 20_000.0);
+        assert!(velocity_cutoff(f32::NAN, f32::NAN, f32::NAN).is_finite());
+    }
+
+    #[test]
+    fn higher_velocity_opens_the_preset_filter() {
+        let sound = preset_sound(filtered_saw());
+        let soft = render_stereo(sound, 48, 0.4, 0.6, 0.5).0;
+        let hard = render_stereo(sound, 48, 1.0, 0.6, 0.5).0;
+        let range = (0.05 * SR) as usize..(0.45 * SR) as usize;
+        let (soft_hi, hard_hi) = (
+            high_band_ratio(&soft[range.clone()]),
+            high_band_ratio(&hard[range.clone()]),
+        );
+        assert!(
+            hard_hi > soft_hi * 1.25,
+            "velocity 1.0 should be brighter: high band {hard_hi} vs {soft_hi}"
+        );
+        // The modulated path (filter envelope armed) follows velocity too.
+        let mut modulated = filtered_saw();
+        modulated.filter_envelope = Some(FilterEnvelope {
+            amount_octaves: 1.0,
+            decay: 0.3,
+        });
+        let sound = preset_sound(modulated);
+        let soft = render_stereo(sound, 48, 0.4, 0.6, 0.5).0;
+        let hard = render_stereo(sound, 48, 1.0, 0.6, 0.5).0;
+        assert!(high_band_ratio(&hard[range.clone()]) > high_band_ratio(&soft[range]) * 1.25);
+    }
+
+    #[test]
+    fn velocity_to_cutoff_zero_keeps_timbre_fixed() {
+        let mut fixed = filtered_saw();
+        fixed.velocity_to_cutoff = 0.0;
+        let sound = preset_sound(fixed);
+        let soft = render_stereo(sound, 48, 0.4, 0.4, 0.3).0;
+        let hard = render_stereo(sound, 48, 1.0, 0.4, 0.3).0;
+        // Only the level differs: normalised waveforms match.
+        let (gs, gh) = (velocity_gain(0.4), velocity_gain(1.0));
+        let err = soft
+            .iter()
+            .zip(&hard)
+            .map(|(a, b)| (a / gs - b / gh).abs())
+            .fold(0.0f32, f32::max);
+        assert!(err < 1e-4, "timbre changed with velocity: {err}");
+        // And velocity 0.8 renders exactly the unscaled cutoff.
+        let mut v = Voice::new(SR);
+        v.start(&NoteStart {
+            sound: preset_sound(filtered_saw()),
+            strip: 0,
+            pitch: 48,
+            velocity: 0.8,
+            gate: 100,
+            from_song: true,
+            age: 1,
+        });
+        assert_eq!(v.cutoff, 1_500.0);
+    }
+
+    /// Max error of reading a sampled sine (period `period` frames) at
+    /// fractional positions with `read`, against the ideal sine.
+    fn interp_error(period: f32, read: impl Fn(&[f32], f64) -> f32) -> f32 {
+        let tau = std::f32::consts::TAU;
+        let buf: Vec<f32> = (0..2_000)
+            .map(|i| (i as f32 * tau / period).sin())
+            .collect();
+        let mut worst = 0.0f32;
+        // A transposition step (≈ +7 semitones) lands on every fraction.
+        let mut pos = 2.0f64;
+        while pos < 1_990.0 {
+            let ideal = (pos as f32 * tau / period).sin();
+            worst = worst.max((read(&buf, pos) - ideal).abs());
+            pos += 1.498_307;
+        }
+        worst
+    }
+
+    #[test]
+    fn cubic_clip_reads_beat_linear_on_a_transposed_sine() {
+        let linear = |buf: &[f32], pos: f64| {
+            let i = pos as usize;
+            let t = (pos - i as f64) as f32;
+            buf[i] + (buf[i + 1] - buf[i]) * t
+        };
+        let cubic = |buf: &[f32], pos: f64| read_clip(buf, pos, false);
+        for period in [8.0f32, 20.0, 50.0] {
+            let (lin, cub) = (interp_error(period, linear), interp_error(period, cubic));
+            assert!(
+                cub < lin * 0.5,
+                "period {period}: cubic error {cub} should be well below linear {lin}"
+            );
+        }
+        // Exact at the sample points.
+        let buf = [0.1, -0.4, 0.9, 0.3];
+        for (i, &x) in buf.iter().enumerate() {
+            assert_eq!(read_clip(&buf, i as f64, false), x);
+        }
+        assert_eq!(read_clip(&[], 0.5, true), 0.0);
+    }
+
+    #[test]
+    fn cubic_clip_reads_wrap_a_seamless_loop() {
+        // 4 whole cycles of a 25-frame sine: reading across the seam must
+        // continue the waveform (neighbours wrap), not clamp to the end.
+        let tau = std::f32::consts::TAU;
+        let buf: Vec<f32> = (0..100).map(|i| (i as f32 * tau / 25.0).sin()).collect();
+        for pos in [98.25f64, 99.0, 99.5, 99.9, 0.3] {
+            let ideal = (pos as f32 * tau / 25.0).sin();
+            let err = (read_clip(&buf, pos, true) - ideal).abs();
+            assert!(err < 2e-3, "seam read at {pos} off by {err}");
+        }
+        // A one-shot clamps instead: past the last frame it holds the end.
+        assert_eq!(read_clip(&buf, 99.0, false), buf[99]);
+    }
+
+    #[test]
+    fn transposed_sample_voice_tracks_an_ideal_sine() {
+        // The 220 Hz clip played a fifth up (pitch 67) should be a clean
+        // ~329.6 Hz sine: fit-free check against the ideal by correlating
+        // with the expected frequency over the sustained part.
+        let (l, _) = render_stereo(sample_sound(true), 67, 0.8, 0.6, 0.5);
+        let x = &l[(0.1 * SR) as usize..(0.4 * SR) as usize];
+        let f = 220.0 * 2f32.powf(7.0 / 12.0);
+        let (mut c, mut s) = (0.0f32, 0.0f32);
+        for (i, &v) in x.iter().enumerate() {
+            let w = std::f32::consts::TAU * f * i as f32 / SR;
+            c += v * w.cos();
+            s += v * w.sin();
+        }
+        let n = x.len() as f32;
+        let fundamental = 2.0 * (c * c + s * s).sqrt() / n / std::f32::consts::SQRT_2;
+        let total = rms(x);
+        // Almost all energy is at the transposed fundamental.
+        assert!(
+            fundamental / total > 0.99,
+            "residual too high: {fundamental} of {total}"
+        );
+    }
+
+    fn side_ratio(l: &[f32], r: &[f32]) -> f32 {
+        let side: Vec<f32> = l.iter().zip(r).map(|(a, b)| a - b).collect();
+        let mid: Vec<f32> = l.iter().zip(r).map(|(a, b)| a + b).collect();
+        rms(&side) / rms(&mid).max(1e-9)
+    }
+
+    #[test]
+    fn spread_zero_stays_mono_and_spread_widens() {
+        let mut wide = filtered_saw();
+        wide.oscillators.push(OscillatorSpec {
+            waveform: Waveform::Square,
+            level: 0.5,
+            frequency_ratio: 2.0,
+            ..Default::default()
+        });
+        let mono = render_stereo(preset_sound(wide.clone()), 57, 0.8, 0.8, 0.6);
+        assert!(
+            mono.0.iter().zip(&mono.1).all(|(a, b)| a == b),
+            "spread 0 must be mono"
+        );
+        let mut last = 0.0;
+        for spread in [0.3f32, 1.0] {
+            wide.spread = spread;
+            let (l, r) = render_stereo(preset_sound(wide.clone()), 57, 0.8, 0.8, 0.6);
+            assert!(l.iter().chain(&r).all(|s| s.is_finite() && s.abs() < 1.5));
+            let side = side_ratio(&l[(0.1 * SR) as usize..], &r[(0.1 * SR) as usize..]);
+            assert!(
+                side > last + 0.05,
+                "spread {spread}: side/mid {side} vs {last}"
+            );
+            last = side;
+            // Width must not cost (or add) much level.
+            let ratio = (rms(&l) + rms(&r)) / (2.0 * rms(&mono.0));
+            assert!(
+                (0.6..1.3).contains(&ratio),
+                "spread {spread} level ratio {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn spread_widens_sample_voices() {
+        let mut preset = sample_preset(true);
+        let (l, r) = render_stereo(preset_sound(preset.clone()), 64, 0.8, 0.6, 0.5);
+        assert!(
+            l.iter().zip(&r).all(|(a, b)| a == b),
+            "spread 0 sample must be mono"
+        );
+        preset.spread = 0.8;
+        let (l, r) = render_stereo(preset_sound(preset), 64, 0.8, 0.6, 0.5);
+        assert!(l.iter().chain(&r).all(|s| s.is_finite() && s.abs() < 1.5));
+        let side = side_ratio(&l[(0.2 * SR) as usize..], &r[(0.2 * SR) as usize..]);
+        assert!(side > 0.05, "spread sample stays mono: side/mid {side}");
+        // A spread one-shot still ends with its clip.
+        let mut one_shot = sample_preset(false);
+        one_shot.spread = 1.0;
+        let (l, _) = render_stereo(preset_sound(one_shot), 72, 0.8, 1.0, 0.9);
+        assert!(l[(0.5 * SR) as usize..].iter().all(|s| s.abs() < 1e-6));
     }
 }
