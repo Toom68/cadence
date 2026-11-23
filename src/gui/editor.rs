@@ -1083,10 +1083,11 @@ impl CadenceApp {
     }
 
     /// Piano-roll digit keys, called once text fields had their chance:
-    /// 1–6 pick the draw length (1/32 … 1 bar) and Shift+1–6 give the
-    /// selected notes that length. Digits are read from the physical key
-    /// so Shift+1 works on layouts where it types "!"; Cmd/Ctrl/Alt chords
-    /// (⌘1–3 switch tabs) are left alone.
+    /// 1–6 pick the draw length (1/32 … 1 bar), Shift+1–6 give the
+    /// selected notes that length and 0 zooms to fit; 7–9 pass through.
+    /// Digits are read from the physical key so Shift+1 works on layouts
+    /// where it types "!"; Cmd/Ctrl/Alt chords (⌘1–3 switch tabs) are left
+    /// alone.
     pub(super) fn roll_digit_keys(&mut self, ctx: &Context) {
         let Some((tid, pid)) = self.roll_key_target() else {
             return;
@@ -1105,7 +1106,13 @@ impl CadenceApp {
                     || modifiers.alt
                     || modifiers.mac_cmd) =>
                 {
-                    match digit_key(physical_key.unwrap_or(*key)).or_else(|| digit_key(*key)) {
+                    // Only 0 (fit) and 1–6 (lengths) mean anything here;
+                    // other digits stay in the input for whoever wants them.
+                    let used = |d: &usize| *d <= NOTE_LENGTHS.len();
+                    match digit_key(physical_key.unwrap_or(*key))
+                        .or_else(|| digit_key(*key))
+                        .filter(used)
+                    {
                         Some(d) => {
                             digits.push((d, modifiers.shift));
                             false
@@ -6260,6 +6267,46 @@ mod tests {
             }
             f.app.editor.chord_open = false;
         }
+    }
+
+    #[test]
+    fn roll_digit_keys_leave_unused_digits_alone() {
+        let (mut app, _, _) = app_with(Instrument::Piano, &[]);
+        app.focus = super::super::Focus::Editor;
+        app.tab = super::super::Tab::Editor;
+        let ctx = Context::default();
+        let key = |key: Key| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            events: [Key::Num3, Key::Num7, Key::Num8, Key::Num9]
+                .map(key)
+                .to_vec(),
+            ..Default::default()
+        };
+        let mut left = Vec::new();
+        let _ = ctx.run(input, |ctx| {
+            app.roll_digit_keys(ctx);
+            left = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        Event::Key { key, .. } => Some(*key),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            });
+        });
+        assert_eq!(app.editor.note_len, 2.0, "3 picked 1/8");
+        assert_eq!(
+            left,
+            vec![Key::Num7, Key::Num8, Key::Num9],
+            "7-9 pass through"
+        );
     }
 
     #[test]
