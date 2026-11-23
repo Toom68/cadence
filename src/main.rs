@@ -127,7 +127,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Command::RenderDemo(out) => render(&Project::demo(), &out),
-        Command::Render(song, out) => persistence::load_project(&song).and_then(|project| {
+        Command::Render(song, out) => load_song(&song).and_then(|project| {
             if same_file(&song, &out) {
                 Err("The output file must be different from the song file.".into())
             } else {
@@ -135,7 +135,7 @@ fn main() -> ExitCode {
             }
         }),
         Command::RenderStems(song, dir) => {
-            persistence::load_project(&song).and_then(|project| render_stems(&project, &dir))
+            load_song(&song).and_then(|project| render_stems(&project, &dir))
         }
         Command::Check(song) => check(&song),
         Command::NewPack(id, out) => new_pack(&id, &out),
@@ -284,8 +284,29 @@ fn render_stems(project: &Project, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check(song: &Path) -> Result<(), String> {
+/// Loads and validates a song like the app's Open does: audio this
+/// computer's store lacks is picked up from the song's `<name> Audio`
+/// folder (written by "Save Copy with Audio…") or the song's own folder.
+fn load_song(song: &Path) -> Result<Project, String> {
     let project = persistence::load_project(song)?;
+    let found = persistence::import_song_audio(&project, song);
+    if !found.staged.is_empty() {
+        eprintln!(
+            "Found {} audio file{} beside the song and added {} to the audio store.",
+            found.staged.len(),
+            if found.staged.len() == 1 { "" } else { "s" },
+            if found.staged.len() == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        );
+    }
+    Ok(project)
+}
+
+fn check(song: &Path) -> Result<(), String> {
+    let project = load_song(song)?;
     let events = project.events(false);
     let audible = project.events(true);
     println!("OK: {}", song.display());
