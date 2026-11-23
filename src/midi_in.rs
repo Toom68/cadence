@@ -473,6 +473,8 @@ struct Shared {
     ports: Vec<String>,
     connected: Vec<String>,
     scanned: bool,
+    /// Why MIDI input cannot work at all this session, if it cannot.
+    unavailable: Option<String>,
 }
 
 /// Owns the background MIDI input thread. Dropping it stops the thread and
@@ -493,10 +495,24 @@ impl MidiInputHandle {
         let (commands, rx) = crossbeam_channel::unbounded();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let thread_shared = Arc::clone(&shared);
-        let thread = std::thread::Builder::new()
+        let (thread_tx, thread_wake) = (tx.clone(), Arc::clone(&wake));
+        let thread = match std::thread::Builder::new()
             .name("cadence-midi-in".to_owned())
-            .spawn(move || run(pref, rx, tx, wake, thread_shared))
-            .ok();
+            .spawn(move || run(pref, rx, thread_tx, thread_wake, thread_shared))
+        {
+            Ok(thread) => Some(thread),
+            Err(err) => {
+                // Otherwise Preferences would say "Looking for MIDI
+                // devices…" forever.
+                mark_unavailable(
+                    &shared,
+                    &tx,
+                    &*wake,
+                    format!("could not start the MIDI input thread ({err})"),
+                );
+                None
+            }
+        };
         Self {
             events,
             commands,
@@ -539,6 +555,12 @@ impl MidiInputHandle {
         self.lock().scanned
     }
 
+    /// Why MIDI input cannot work this session (no MIDI service, or the
+    /// input thread could not start); `None` while it works.
+    pub fn unavailable(&self) -> Option<String> {
+        self.lock().unavailable.clone()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -553,6 +575,20 @@ fn emit(tx: &Sender<MidiInputEvent>, wake: &(dyn Fn() + Send + Sync), event: Mid
         Err(TrySendError::Full(_)) => wake(),
         Err(TrySendError::Disconnected(_)) => {}
     }
+}
+
+/// Records that MIDI input cannot work this session and tells the GUI.
+fn mark_unavailable(
+    shared: &Mutex<Shared>,
+    tx: &Sender<MidiInputEvent>,
+    wake: &(dyn Fn() + Send + Sync),
+    reason: String,
+) {
+    let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+    s.scanned = true;
+    s.unavailable = Some(reason.clone());
+    drop(s);
+    emit(tx, wake, MidiInputEvent::Unavailable(reason));
 }
 
 /// An open input port.
@@ -573,8 +609,7 @@ fn run(
     let scanner = match midir::MidiInput::new(CLIENT_NAME) {
         Ok(scanner) => scanner,
         Err(err) => {
-            shared.lock().unwrap_or_else(|p| p.into_inner()).scanned = true;
-            emit(&tx, &*wake, MidiInputEvent::Unavailable(err.to_string()));
+            mark_unavailable(&shared, &tx, &*wake, err.to_string());
             return;
         }
     };
@@ -1038,6 +1073,31 @@ mod tests {
 
         let steady = plan_connections(&MidiInputPref::All, &avail, &avail, None);
         assert_eq!(steady, ConnectionPlan::default(), "nothing to do");
+    }
+
+    #[test]
+    fn an_unavailable_service_is_reported_not_left_scanning() {
+        let (tx, events) = bounded(4);
+        let (commands, _rx) = crossbeam_channel::unbounded();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let handle = MidiInputHandle {
+            events,
+            commands,
+            shared: Arc::clone(&shared),
+            fast_scan: false,
+            _thread: None,
+        };
+        assert!(!handle.scanned() && handle.unavailable().is_none());
+        let woken = std::sync::atomic::AtomicBool::new(false);
+        let wake = || woken.store(true, std::sync::atomic::Ordering::Relaxed);
+        mark_unavailable(&shared, &tx, &wake, "no thread".to_owned());
+        assert!(handle.scanned(), "Preferences stops saying \"Looking…\"");
+        assert_eq!(handle.unavailable().as_deref(), Some("no thread"));
+        assert_eq!(
+            handle.drain(),
+            vec![MidiInputEvent::Unavailable("no thread".to_owned())]
+        );
+        assert!(woken.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]
