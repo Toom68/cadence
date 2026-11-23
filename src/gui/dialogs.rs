@@ -1582,6 +1582,7 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Change a note's length", Mouse("Drag its right edge")),
             ("Erase", Mouse("Right-click / right-drag")),
             ("Set velocity", Mouse("Drag in the velocity lane")),
+            ("See the other tracks' notes behind", Mouse("Click Ghosts")),
             ("Hear a pitch", Mouse("Click or drag the keys")),
             (
                 "Select every note of a pitch",

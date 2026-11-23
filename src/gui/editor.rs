@@ -205,6 +205,68 @@ pub(super) fn note_is_live(n: &Note, playing_at: Option<f64>) -> bool {
     playing_at.is_some_and(|t| t >= n.start && t < n.start + n.duration)
 }
 
+/// Most ghost notes the roll paints; a dense arrangement stays cheap.
+const MAX_GHOST_NOTES: usize = 4096;
+
+/// Another track's note as the piano roll shows it behind the pattern:
+/// pattern-relative `start`/`duration` (clipped to the pattern) and the
+/// owning track's colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GhostNote {
+    pitch: u8,
+    start: f64,
+    duration: f64,
+    color: [u8; 3],
+}
+
+/// The notes every other melodic track (not `tid`, not a drum grid) plays
+/// during `origin .. origin + len` of the song, mapped onto the pattern's
+/// own steps — the ghost layer. Clip loops repeat their pattern; notes
+/// crossing the window edges are clipped. At most [`MAX_GHOST_NOTES`].
+fn ghost_notes(project: &Project, tid: u64, origin: f64, len: f64) -> Vec<GhostNote> {
+    let mut out = Vec::new();
+    let end = origin + len;
+    for track in project
+        .tracks
+        .iter()
+        .filter(|t| t.id != tid && !t.shows_drum_grid())
+    {
+        for clip in &track.clips {
+            let Some(pat) = ops::pattern(track, clip.pattern_id) else {
+                continue;
+            };
+            let plen = pat.length.max(1) as f64;
+            if clip.start >= end || clip.start + clip.span(plen) <= origin {
+                continue;
+            }
+            // Only the repetitions that overlap the window.
+            let first = ((origin - clip.start) / plen).floor().max(0.0) as u32;
+            let last = (((end - clip.start) / plen).ceil().max(0.0) as u32).min(clip.loop_count());
+            for rep in first..last {
+                let rep_start = clip.start + f64::from(rep) * plen - origin;
+                for n in &pat.notes {
+                    let s = rep_start + n.start;
+                    let e = s + n.duration;
+                    if e <= 0.0 || s >= len {
+                        continue;
+                    }
+                    if out.len() >= MAX_GHOST_NOTES {
+                        return out;
+                    }
+                    let start = s.max(0.0);
+                    out.push(GhostNote {
+                        pitch: n.pitch,
+                        start,
+                        duration: e.min(len) - start,
+                        color: track.color,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Length of a note drawn by dragging from `start` to the pointer at
 /// `pointer_step`: whole snap cells reaching past the pointer, at least one.
 fn draw_duration(start: f64, pointer_step: f64, snap: f64) -> f64 {
@@ -564,6 +626,9 @@ pub(super) struct EditorView {
     pub chord_bass: ops::ChordBass,
     /// Tints piano-roll rows whose pitch class is in the song key's scale.
     pub scale_highlight: bool,
+    /// Shows the other melodic tracks' notes, read-only, as faint outlines
+    /// behind the pattern (where they play against its clip). View state.
+    pub ghost_notes: bool,
     /// Snaps drawn notes and vertical note drags onto the song key's scale
     /// tones. Session view state like `scale_highlight` — never serialized.
     /// Inert on the C-major default (treated as "no key chosen") and on drum
@@ -629,6 +694,7 @@ impl Default for EditorView {
             chord_inversion: 0,
             chord_bass: ops::ChordBass::default(),
             scale_highlight: false,
+            ghost_notes: false,
             scale_snap: false,
             kb_pointer: None,
             kb_down: false,
@@ -1830,6 +1896,18 @@ impl CadenceApp {
             {
                 act = Some(ToolAction::ScaleHighlight);
             }
+            if tb
+                .toggle(
+                    None,
+                    "Ghosts",
+                    ed.ghost_notes,
+                    "Show the other tracks' notes faintly behind this pattern, where they play \
+                     against its clip (read-only)",
+                )
+                .clicked()
+            {
+                ed.ghost_notes = !ed.ghost_notes;
+            }
             tb.separator();
             if let Some(a) = note_edit_items(tb, targets, &quantize_tip) {
                 act = Some(a);
@@ -2361,6 +2439,35 @@ impl CadenceApp {
         let color = theme::rgb(track.color);
         let visible_lo = roll.pitch_at(roll.grid.bottom() - 0.5).unwrap_or(0);
         let visible_hi = roll.pitch_at(roll.grid.top()).unwrap_or(LAST_PITCH);
+        // Ghost layer: other tracks' notes as faint outlines, computed once
+        // per frame and only while the toggle is on.
+        if self.editor.ghost_notes {
+            if let Some(origin) = self.pattern_song_origin(track, pid) {
+                for g in ghost_notes(&self.project, tid, origin, pat.length as f64) {
+                    if g.pitch < visible_lo || g.pitch > visible_hi {
+                        continue;
+                    }
+                    let r = roll.note_rect(&Note {
+                        id: 0,
+                        pitch: g.pitch,
+                        start: g.start,
+                        duration: g.duration,
+                        velocity: 0.0,
+                    });
+                    if r.right() < roll.grid.left() || r.left() > roll.grid.right() {
+                        continue;
+                    }
+                    let c = theme::rgb(g.color);
+                    p.rect_filled(r, 3.0, c.gamma_multiply(0.10));
+                    p.rect_stroke(
+                        r,
+                        3.0,
+                        Stroke::new(1.0_f32, c.gamma_multiply(0.55)),
+                        StrokeKind::Inside,
+                    );
+                }
+            }
+        }
         let label_font = theme::body_font(9.5);
         let playing_at = self
             .pattern_playhead(track, pid)
@@ -2495,6 +2602,22 @@ impl CadenceApp {
         covering_pattern(track, self.transport.position)
             .filter(|(p, _)| *p == pid)
             .map(|(_, local)| local)
+    }
+
+    /// Song step where pattern `pid` of `track` starts for the ghost and
+    /// chord layers: the repetition under the playhead when the playhead
+    /// sits in one of its clips, else its earliest clip. `None` when the
+    /// pattern isn't in the arrangement.
+    fn pattern_song_origin(&self, track: &Track, pid: u64) -> Option<f64> {
+        if let Some(local) = self.pattern_playhead(track, pid) {
+            return Some(self.transport.position - local);
+        }
+        track
+            .clips
+            .iter()
+            .filter(|c| c.pattern_id == pid)
+            .map(|c| c.start)
+            .min_by(f64::total_cmp)
     }
 
     /// Pitches of `track` sounding under the playhead while the transport
@@ -5049,6 +5172,129 @@ mod tests {
         let mut app = CadenceApp::headless(project);
         app.select_track(tid);
         (app, tid, pid)
+    }
+
+    /// A track of `inst` whose only pattern (`len` steps, `notes`) plays
+    /// in one clip at `start` repeated `loops` times.
+    fn placed_track(
+        project: &mut Project,
+        inst: Instrument,
+        len: u32,
+        notes: &[(u8, f64, f64)],
+        start: f64,
+        loops: u32,
+    ) -> u64 {
+        let tid = ops::add_track(project, inst).unwrap();
+        let t = ops::track_mut(project, tid).unwrap();
+        let pat = &mut t.patterns[0];
+        pat.length = len;
+        pat.notes.clear();
+        for &(pitch, s, d) in notes {
+            ops::add_note(pat, pitch, s, d, 0.8);
+        }
+        t.clips[0].start = start;
+        t.clips[0].loops = loops;
+        tid
+    }
+
+    #[test]
+    fn ghost_notes_map_other_tracks_onto_the_pattern_window() {
+        let mut project = Project::empty();
+        project.tracks.clear();
+        let me = placed_track(
+            &mut project,
+            Instrument::Piano,
+            16,
+            &[(60, 0.0, 1.0)],
+            16.0,
+            1,
+        );
+        let bass = placed_track(
+            &mut project,
+            Instrument::Bass,
+            8,
+            &[(40, 0.0, 2.0), (43, 5.0, 3.0)],
+            12.0,
+            2,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Lead,
+            16,
+            &[(50, 4.0, 8.0)],
+            24.0,
+            1,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Drums,
+            16,
+            &[(36, 0.0, 1.0)],
+            16.0,
+            1,
+        );
+        let mut ghosts = ghost_notes(&project, me, 16.0, 16.0);
+        ghosts.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let got: Vec<(u8, f64, f64)> = ghosts
+            .iter()
+            .map(|g| (g.pitch, g.start, g.duration))
+            .collect();
+        // Bass rep 1 starts at song 12 (local -4), rep 2 at 20 (local 4);
+        // the lead's long note is clipped at the pattern end.
+        assert_eq!(
+            got,
+            vec![
+                (43, 1.0, 3.0),
+                (40, 4.0, 2.0),
+                (43, 9.0, 3.0),
+                (50, 12.0, 4.0)
+            ]
+        );
+        let bass_color = ops::track(&project, bass).unwrap().color;
+        assert_eq!(
+            ghosts[0].color, bass_color,
+            "ghosts keep their track colour"
+        );
+        assert!(
+            ghosts.iter().all(|g| g.pitch != 60 && g.pitch != 36),
+            "own notes and drum grids are left out"
+        );
+        assert!(ghost_notes(&project, me, 200.0, 16.0).is_empty());
+    }
+
+    #[test]
+    fn ghost_layer_follows_the_toggle_and_the_pattern_clip() {
+        let mut project = Project::empty();
+        project.tracks.clear();
+        let me = placed_track(
+            &mut project,
+            Instrument::Piano,
+            16,
+            &[(60, 0.0, 1.0)],
+            32.0,
+            1,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Bass,
+            64,
+            &[(40, 34.0, 2.0)],
+            0.0,
+            1,
+        );
+        let mut app = CadenceApp::headless(project);
+        app.select_track(me);
+        let track = ops::track(&app.project, me).unwrap();
+        let pid = track.patterns[0].id;
+        assert_eq!(app.pattern_song_origin(track, pid), Some(32.0));
+        // Inside the clip the playhead picks the repetition it is in.
+        app.transport.position = 40.0;
+        let track = ops::track(&app.project, me).unwrap();
+        assert_eq!(app.pattern_song_origin(track, pid), Some(32.0));
+        let mut f = Frames::new(app, 1360.0, 860.0);
+        f.app.editor.ghost_notes = true;
+        f.steps(3);
+        assert!(f.app.editor.ghost_notes, "paints with ghosts on");
     }
 
     fn pattern_of(app: &CadenceApp, tid: u64, pid: u64) -> &Pattern {
