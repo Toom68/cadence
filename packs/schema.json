@@ -103,6 +103,20 @@
         },
         "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
         "monophonic": { "type": "boolean", "default": false },
+        "velocity_to_cutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 6,
+          "default": 2,
+          "description": "Velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off. A fully open filter (`filter_cutoff` 20000) is never scaled."
+        },
+        "spread": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "description": "Stereo width. 0 = mono (the classic sound). Above 0 the voice renders a second copy of its oscillators (or a second read head of its sample), detuned by up to ±7 cents and phase-offset, and pans the two copies apart; 1 = fully separated."
+        },
         "hidden": {
           "type": "boolean",
           "default": false,
@@ -215,6 +229,27 @@
           "description": "Sample-and-hold interval in samples. 1 = off; higher values add aliasing grit."
         },
         "gain": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
+        "velocity_to_cutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 6,
+          "default": 2,
+          "description": "Same as the preset field: velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off. A fully open filter (`filter_cutoff` 20000) is never scaled."
+        },
+        "spread": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "description": "Same as the preset field: stereo width. 0 = mono (the classic sound). Above 0 the voice renders a second copy of its oscillators (or a second read head of its sample), detuned by up to ±7 cents and phase-offset, and pans the two copies apart; 1 = fully separated."
+        },
+        "choke_group": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16,
+          "default": 0,
+          "description": "Choke group (0 = none). Starting this piece quickly fades out every still-sounding piece of the same group on the same track — give the closed, pedal and open hi-hats the same group so a closed hat cuts a ringing open hat."
+        },
         "sample": {
           "$ref": "#/$defs/sample",
           "description": "Optional embedded PCM clip for this piece: the piece plays the clip transposed around its `root_pitch` instead of synthesizing oscillators. May be the voice's only sound source."
@@ -236,7 +271,7 @@
           "type": "integer",
           "minimum": 8000,
           "maximum": 192000,
-          "description": "Declared rate of the clip in Hz; playback resamples with linear interpolation."
+          "description": "Declared rate of the clip in Hz; playback resamples with 4-point cubic (Hermite) interpolation."
         },
         "root_pitch": {
           "type": "integer",

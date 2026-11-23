@@ -35,6 +35,10 @@ A pack (`schema_version: 1`) has an `id` (slug, becomes the file name), a `name`
 
 `envelope` (`attack`/`decay`/`release` in seconds, `sustain` 0–1), `filter_cutoff` (100–20000 Hz), `bit_depth` (4–24; lower = crunchier), `sample_hold` (1–64; 1 = off), `gain`, and `monophonic` all have defaults — omit what you don't need. The optional `audition_note`/`audition_duration` fields described above tune previews and editor centering only. Parsing is strict: unknown fields are rejected.
 
+Optional voicing fields (all default to the classic behaviour when omitted, so older packs and songs load unchanged):
+
+- `velocity_to_cutoff` (0–6 octaves, default 2) — velocity opens the low-pass filter: the cutoff is scaled by 2^(`velocity_to_cutoff` × (velocity − 0.8)), so velocity 0.8 plays exactly at `filter_cutoff`, harder notes are brighter and softer notes darker. 0 turns it off; a fully open filter (`filter_cutoff` 20000) is never scaled. Applies to oscillator presets, sample presets and kit pieces.
+
 Limits: 2 MB per pack file, 128 instruments per pack, 4 oscillators per instrument.
 
 ## Where packs live

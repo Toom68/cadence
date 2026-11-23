@@ -91,6 +91,14 @@ pub const MAX_KIT_PIECES: usize = 32;
 /// Maximum kit piece display-name length in characters.
 pub const MAX_KIT_NAME_LEN: usize = 64;
 
+/// Highest kit-piece `choke_group` (0 = the piece never chokes or is choked).
+pub const MAX_CHOKE_GROUP: u8 = 16;
+
+/// Default `velocity_to_cutoff`: octaves of filter-cutoff swing across the
+/// full velocity range, centred on velocity 0.8 (where the cutoff is exactly
+/// `filter_cutoff`).
+pub const DEFAULT_VELOCITY_TO_CUTOFF: f32 = 2.0;
+
 /// Maximum *decoded* sample payload in bytes for a preset `sample` block.
 /// The clip is stored as base64 little-endian 16-bit mono PCM inside the
 /// preset JSON, so 2 MiB of decoded data is ~2.8 MB of JSON text —
@@ -567,6 +575,23 @@ pub struct InstrumentPreset {
     pub gain: f32,
     #[serde(default)]
     pub monophonic: bool,
+    /// Velocity → brightness: the filter cutoff is scaled by
+    /// `2^(velocity_to_cutoff * (velocity - 0.8))`, so velocity 0.8 plays
+    /// exactly at `filter_cutoff`, harder notes open the filter and softer
+    /// ones close it. Octaves per full velocity range, 0.0..=6.0 (0 = off,
+    /// default [`DEFAULT_VELOCITY_TO_CUTOFF`]). A fully open filter
+    /// (`filter_cutoff` 20000) is never scaled.
+    #[serde(
+        default = "default_velocity_to_cutoff",
+        skip_serializing_if = "is_default_velocity_to_cutoff"
+    )]
+    pub velocity_to_cutoff: f32,
+    /// Stereo width 0.0..=1.0 (default 0 = mono, unchanged). Above 0 the
+    /// voice renders a second, slightly detuned and phase-offset copy of its
+    /// oscillators (or a second read head of its sample) and pans the two
+    /// copies apart.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub spread: f32,
     /// True for legacy synth emulations of General-MIDI instruments: the
     /// library demotes these to a "Legacy synth emulations" section instead of
     /// its main list. Purely presentational — hidden presets still parse,
@@ -610,6 +635,18 @@ pub struct InstrumentPreset {
 
 fn default_filter_cutoff() -> f32 {
     20_000.0
+}
+fn default_velocity_to_cutoff() -> f32 {
+    DEFAULT_VELOCITY_TO_CUTOFF
+}
+fn is_default_velocity_to_cutoff(value: &f32) -> bool {
+    *value == DEFAULT_VELOCITY_TO_CUTOFF
+}
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
+}
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 fn is_default_filter_resonance(value: &f32) -> bool {
     *value == 0.0
@@ -672,6 +709,21 @@ pub struct KitVoice {
     pub sample_hold: u32,
     #[serde(default = "default_gain")]
     pub gain: f32,
+    /// Same as [`InstrumentPreset::velocity_to_cutoff`].
+    #[serde(
+        default = "default_velocity_to_cutoff",
+        skip_serializing_if = "is_default_velocity_to_cutoff"
+    )]
+    pub velocity_to_cutoff: f32,
+    /// Same as [`InstrumentPreset::spread`].
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub spread: f32,
+    /// Choke group 0..=[`MAX_CHOKE_GROUP`] (0 = none, the default). Starting
+    /// a piece fades out every still-sounding voice of the same group on the
+    /// same track — e.g. give the closed and open hats group 1 so a closed
+    /// hat cuts the ringing open hat.
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub choke_group: u8,
     /// Optional embedded PCM clip ([`SampleSpec`]): a piece may be a sample
     /// instead of oscillators (the `oscillators` requirement is waived while
     /// `sample` is present).
@@ -693,6 +745,9 @@ impl Default for KitVoice {
             bit_depth: default_bit_depth(),
             sample_hold: default_sample_hold(),
             gain: default_gain(),
+            velocity_to_cutoff: default_velocity_to_cutoff(),
+            spread: 0.0,
+            choke_group: 0,
             sample: None,
         }
     }
@@ -721,6 +776,8 @@ impl KitVoice {
             sample_hold: self.sample_hold,
             gain: self.gain,
             monophonic: false,
+            velocity_to_cutoff: self.velocity_to_cutoff,
+            spread: self.spread,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
@@ -912,6 +969,13 @@ fn validate_preset_at(p: &InstrumentPreset, base: &str) -> Result<(), String> {
         "sample hold",
     )?;
     check_range(&field(base, "gain"), p.gain, 0.0, 1.0)?;
+    check_range(
+        &field(base, "velocity_to_cutoff"),
+        p.velocity_to_cutoff,
+        0.0,
+        6.0,
+    )?;
+    check_range(&field(base, "spread"), p.spread, 0.0, 1.0)?;
     check_range_int(
         &field(base, "audition_note"),
         p.audition_note,
@@ -994,6 +1058,13 @@ fn validate_kit(kit: &KitSpec, base: &str) -> Result<(), String> {
         )?;
         check_range_int(&field(&piece_base, "pitch"), piece.pitch, 0, 127, "pitch")?;
         validate_preset_at(&piece.voice.to_preset_stub(), &field(&piece_base, "voice"))?;
+        check_range_int(
+            &field(&field(&piece_base, "voice"), "choke_group"),
+            piece.voice.choke_group,
+            0,
+            MAX_CHOKE_GROUP,
+            "choke group",
+        )?;
         if let Some(&first) = pitch_owner.get(&piece.pitch) {
             return Err(format!(
                 "{piece_base}.pitch: pitch {} is already used by kit piece {first}",
@@ -1298,6 +1369,8 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
             sample_hold: 4,
             gain: 0.8,
             monophonic: false,
+            velocity_to_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
@@ -1667,6 +1740,8 @@ mod tests {
             sample_hold: 4,
             gain: 0.8,
             monophonic: true,
+            velocity_to_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
@@ -1704,6 +1779,8 @@ mod tests {
             sample_hold: 1,
             gain: 0.9,
             monophonic: false,
+            velocity_to_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
             hidden: false,
             audition_note: 60,
             audition_duration: 0.8,
