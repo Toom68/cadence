@@ -34,7 +34,7 @@ Get the latest build from **[Releases](https://github.com/Toom68/cadence/release
 
 **First launch:** the builds are not code-signed yet. On Windows, SmartScreen may warn once — **More info → Run anyway**. On macOS, right-click Cadence and choose **Open** the first time.
 
-**Updates:** once installed, Cadence checks for a new version each time it opens (and once a day while it stays open) and shows an update button in the status bar. One click downloads it, verifies its signature against the release key built into the app, and installs it when you restart (or when you quit). Turn the automatic check off in **Help → Check for Updates…** — it only asks github.com for the newest version number; nothing about you or your songs is sent.
+**Updates:** once installed, Cadence checks for a new version each time it opens (and once a day while it stays open) and shows an update button in the status bar. One click downloads it, verifies its signature against the release key built into the app, and installs it when you restart (or when you quit); the Update dialog shows the release notes and the download's progress, with a Cancel button. If an update doesn't finish installing, the next launch says so and links the release page. Turn the automatic check off in **Help → Check for Updates…** — it only asks github.com for the newest version number; nothing about you or your songs is sent.
 
 An audio output device is needed to hear playback; editing, saving and WAV export work without one, and Cadence picks up a device that appears later. Pick your output from the audio indicator in the status bar.
 
@@ -171,8 +171,8 @@ Keep `cadence-release.key` out of the repo and back it up (a password manager is
 
 **Each release:**
 
-1. Bump `version` in `Cargo.toml`, run `cargo check` (refreshes `Cargo.lock`), commit and push to `main`.
-2. `git tag v1.2.3` and `git push origin v1.2.3` — the tag must match `Cargo.toml`.
+1. On an up-to-date, clean `main`: `scripts/release.sh 1.2.3 "what changed"` (add `--notes notes.md` for a longer what's-new text). It bumps `Cargo.toml` and `Cargo.lock`, runs `cargo fmt --check`, clippy and the full test suite, and commits `1.2.3: what changed` — or stops and undoes the bump if a check fails.
+2. Run the commands it prints (`git push origin HEAD:main && git tag -a v1.2.3 -m … && git push origin v1.2.3`), or pass `--push` to step 1 to run them directly. The tag must match `Cargo.toml`; its message is shown in the app's Update dialog as the release notes.
 3. CI publishes the release. Installed copies offer it within a day, or at once via **Help → Check for Updates…**.
 
 ## Project files

@@ -9,13 +9,16 @@
 //! the normal unsaved-changes guard, and the installer starts only once
 //! the window is really closing.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use crossbeam_channel::{Receiver, TryRecvError};
 use egui::{Context, OpenUrl, RichText, Ui, ViewportCommand};
 
 use super::dialogs::{self, Dialog};
 use super::theme::{self, Palette};
 use super::{CadenceApp, StatusKind};
-use crate::update::{self, InstallMode, Prepared, Release, UpdatePrefs};
+use crate::update::{self, HandoffOutcome, InstallMode, Prepared, Release, Transfer, UpdatePrefs};
 use crate::APP_VERSION;
 
 /// Where the update flow stands.
@@ -47,7 +50,13 @@ pub(super) struct UpdateState {
     manual: bool,
     pub(super) prefs: UpdatePrefs,
     pub(super) mode: Option<InstallMode>,
-    prepared: Option<Prepared>,
+    /// The verified update and the version it installs.
+    prepared: Option<(Prepared, String)>,
+    /// The running download's progress and Cancel switch.
+    transfer: Option<Arc<Transfer>>,
+    /// The last update handed off didn't land (version, message): shown
+    /// at the top of the Update dialog until it is closed.
+    notice: Option<(String, String)>,
     /// Install as the window closes; `relaunch` reopens Cadence afterwards.
     pub(super) install_on_quit: Option<bool>,
     rx: Option<Receiver<Msg>>,
@@ -69,6 +78,41 @@ impl UpdateState {
     fn busy(&self) -> bool {
         matches!(self.phase, Phase::Checking | Phase::Downloading(_))
     }
+
+    /// Download progress: (bytes so far, expected total if known).
+    fn progress(&self) -> Option<(u64, Option<u64>)> {
+        self.transfer.as_ref().map(|t| t.progress())
+    }
+
+    fn cancelling(&self) -> bool {
+        self.transfer.as_ref().is_some_and(|t| t.is_cancelled())
+    }
+}
+
+/// `12.3 MB` style sizes for the progress line.
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+}
+
+/// "42%" when the size is known, else the bytes so far.
+fn progress_text(done: u64, total: Option<u64>) -> String {
+    match total {
+        Some(total) if total > 0 => format!(
+            "{}% — {} of {}",
+            (done.min(total) * 100 / total),
+            megabytes(done),
+            megabytes(total)
+        ),
+        _ => format!("{} downloaded", megabytes(done)),
+    }
+}
+
+/// What the user is told when the previous run's update didn't install.
+fn unfinished_message(version: &str) -> String {
+    format!(
+        "The update to Cadence {version} didn't finish — download it from {}",
+        update::notes_url(version)
+    )
 }
 
 /// Runs `job` on a worker thread and wakes the UI with its answer.
@@ -114,6 +158,42 @@ impl CadenceApp {
         }
     }
 
+    /// At launch: did the update the previous run handed off land? Says so
+    /// in the status line; a failed one also opens the Update dialog once
+    /// (unless another dialog, like crash recovery, is up).
+    pub(super) fn review_previous_update(&mut self) {
+        if !self.io_enabled {
+            return;
+        }
+        let mode = self
+            .update
+            .mode
+            .clone()
+            .unwrap_or_else(update::install_mode);
+        let outcome = update::review_handoff(&mode);
+        self.apply_handoff_outcome(outcome);
+    }
+
+    fn apply_handoff_outcome(&mut self, outcome: Option<HandoffOutcome>) {
+        match outcome {
+            Some(HandoffOutcome::Installed { version }) => {
+                self.set_status(
+                    StatusKind::Success,
+                    format!("Cadence updated to {version}."),
+                );
+            }
+            Some(HandoffOutcome::Unfinished { version, first }) => {
+                let message = unfinished_message(&version);
+                self.set_status(StatusKind::Warning, message.clone());
+                if first && matches!(self.dialog, Dialog::None) {
+                    self.dialog = Dialog::Update;
+                }
+                self.update.notice = Some((version, message));
+            }
+            None => {}
+        }
+    }
+
     /// Saves the update settings — never from headless tests.
     fn store_update_prefs(&self) {
         if self.io_enabled {
@@ -153,11 +233,21 @@ impl CadenceApp {
             .clone()
             .unwrap_or_else(|| InstallMode::Manual(String::new()));
         self.update.phase = Phase::Downloading(release.clone());
+        let transfer = Arc::new(Transfer::new(release.size));
+        self.update.transfer = Some(Arc::clone(&transfer));
         self.update.rx = spawn(ctx, move || {
             Msg::Downloaded(
-                update::download(&release).and_then(|file| update::prepare(&mode, file)),
+                update::download(&release, &transfer).and_then(|file| update::prepare(&mode, file)),
             )
         });
+    }
+
+    /// Cancel in the Update dialog: curl is killed and the partial file
+    /// removed on the worker thread; its answer puts the offer back.
+    fn cancel_update_download(&mut self) {
+        if let Some(transfer) = &self.update.transfer {
+            transfer.cancel();
+        }
     }
 
     /// Picks up a finished check or download. Called once per frame.
@@ -170,11 +260,14 @@ impl CadenceApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.update.rx = None;
+                self.update.transfer = None;
                 self.update.phase = Phase::Failed("The update check stopped unexpectedly.".into());
                 return;
             }
         };
         self.update.rx = None;
+        let cancelled = self.update.cancelling();
+        self.update.transfer = None;
         let manual = self.update.manual;
         match msg {
             Msg::Checked(result) => {
@@ -212,9 +305,15 @@ impl CadenceApp {
                         StatusKind::Success,
                         format!("Cadence {} is downloaded and verified.", release.version),
                     );
+                    self.update.prepared = Some((prepared, release.version.clone()));
                     self.update.phase = Phase::Ready(release);
                 }
-                self.update.prepared = Some(prepared);
+            }
+            Msg::Downloaded(Err(err)) if cancelled || err == update::CANCELLED => {
+                if let Phase::Downloading(release) = std::mem::take(&mut self.update.phase) {
+                    self.update.phase = Phase::Available(release);
+                }
+                self.set_status(StatusKind::Info, "Update download cancelled.");
             }
             Msg::Downloaded(Err(err)) => {
                 self.set_status(StatusKind::Warning, format!("Update not installed: {err}"));
@@ -230,13 +329,13 @@ impl CadenceApp {
         let Some(relaunch) = self.update.install_on_quit.take() else {
             return true;
         };
-        let Some(prepared) = self.update.prepared.take() else {
+        let Some((prepared, version)) = self.update.prepared.take() else {
             return true;
         };
-        match update::launch(&prepared, relaunch) {
+        match update::launch(&prepared, &version, relaunch) {
             Ok(()) => true,
             Err(err) => {
-                self.update.prepared = Some(prepared);
+                self.update.prepared = Some((prepared, version));
                 self.set_status(StatusKind::Error, format!("Update not installed: {err}"));
                 false
             }
@@ -247,7 +346,12 @@ impl CadenceApp {
     fn update_pill(&self) -> Option<String> {
         match &self.update.phase {
             Phase::Available(r) => Some(format!("Update {} available", r.version)),
-            Phase::Downloading(_) => Some("Downloading update…".to_owned()),
+            Phase::Downloading(_) => Some(match self.update.progress() {
+                Some((done, Some(total))) if total > 0 => {
+                    format!("Downloading update… {}%", done.min(total) * 100 / total)
+                }
+                _ => "Downloading update…".to_owned(),
+            }),
             Phase::Ready(_) if self.update.install_on_quit.is_some() => {
                 Some("Update installs when you quit".to_owned())
             }
@@ -261,6 +365,9 @@ impl CadenceApp {
         let Some(label) = self.update_pill() else {
             return;
         };
+        if matches!(self.update.phase, Phase::Downloading(_)) {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
         ui.add_space(theme::GAP_M);
         if theme::text_button(ui, pal, &label, theme::CONTROL_S, "Open the update details")
             .clicked()
@@ -283,6 +390,16 @@ impl CadenceApp {
         let mut auto = self.update.prefs.auto_check;
         let mut closed = false;
         let mut action = None;
+        let progress = self.update.progress();
+        let cancelling = self.update.cancelling();
+        let notice = self
+            .update
+            .notice
+            .clone()
+            .filter(|_| !matches!(phase, Phase::Ready(_)));
+        if matches!(phase, Phase::Downloading(_)) {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
         let resp = dialogs::show_dialog(ctx, "cadence-update", pal, dialogs::W_COMPACT, |ui| {
             let title = match &phase {
                 Phase::Idle | Phase::Checking => "Checking for updates…".to_owned(),
@@ -297,8 +414,37 @@ impl CadenceApp {
             let body = |ui: &mut Ui, text: &str| {
                 ui.label(RichText::new(text).color(pal.text_dim));
             };
+            if let Some((version, message)) = &notice {
+                ui.label(RichText::new(message.as_str()).color(pal.warn));
+                ui.hyperlink_to(
+                    format!("Cadence {version} release page"),
+                    update::notes_url(version),
+                );
+                ui.add_space(theme::GAP_S);
+            }
             match &phase {
-                Phase::Idle | Phase::Checking | Phase::Downloading(_) => {
+                Phase::Downloading(_) => {
+                    let (done, total) = progress.unwrap_or((0, None));
+                    match total {
+                        Some(total) if total > 0 => {
+                            let fraction = (done as f32 / total as f32).clamp(0.0, 1.0);
+                            ui.add(egui::ProgressBar::new(fraction).desired_height(8.0));
+                        }
+                        _ => {
+                            ui.spinner();
+                        }
+                    }
+                    let text = if cancelling {
+                        "Cancelling…".to_owned()
+                    } else {
+                        format!(
+                            "{} · You can keep working meanwhile.",
+                            progress_text(done, total)
+                        )
+                    };
+                    body(ui, &text);
+                }
+                Phase::Idle | Phase::Checking => {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         body(ui, "You can keep working meanwhile.");
@@ -328,6 +474,25 @@ impl CadenceApp {
                     "Cadence will close, update and reopen. If the song has unsaved changes \
                      you can save them first.",
                 ),
+            }
+            let notes = match &phase {
+                Phase::Available(r) | Phase::Downloading(r) | Phase::Ready(r) => r.notes.as_deref(),
+                _ => None,
+            };
+            if let Some(notes) = notes {
+                ui.add_space(theme::GAP_S);
+                ui.label(RichText::new("What's new").strong());
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("cadence-update-notes")
+                        .max_height(160.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(notes).color(pal.text_dim)).wrap(),
+                            );
+                        });
+                });
             }
             ui.add_space(theme::GAP_M);
             ui.checkbox(&mut auto, "Check for updates automatically");
@@ -362,6 +527,14 @@ impl CadenceApp {
                         action = Some(Action::Install { relaunch: false });
                     }
                 }
+                Phase::Downloading(_) => {
+                    if theme::primary_button(ui, pal, "Close").clicked() {
+                        closed = true;
+                    }
+                    if theme::secondary_button(ui, "Cancel Download").clicked() && !cancelling {
+                        action = Some(Action::Cancel);
+                    }
+                }
                 Phase::Failed(_) => {
                     if theme::primary_button(ui, pal, "Close").clicked() {
                         closed = true;
@@ -394,6 +567,17 @@ impl CadenceApp {
             }
             Some(Action::Open(url)) => ctx.open_url(OpenUrl::new_tab(url)),
             Some(Action::Skip(version)) => {
+                if self
+                    .update
+                    .notice
+                    .as_ref()
+                    .is_some_and(|(v, _)| *v == version)
+                {
+                    self.update.notice = None;
+                    if self.io_enabled {
+                        update::forget_handoff();
+                    }
+                }
                 self.update.prefs.skipped = Some(version);
                 self.store_update_prefs();
                 self.update.phase = Phase::Idle;
@@ -412,9 +596,14 @@ impl CadenceApp {
                 }
             }
             Some(Action::Retry) => self.start_update_check(ctx, true),
+            Some(Action::Cancel) => self.cancel_update_download(),
             None => {}
         }
-        !closed && !resp.should_close()
+        let keep = !closed && !resp.should_close();
+        if !keep {
+            self.update.notice = None;
+        }
+        keep
     }
 }
 
@@ -424,6 +613,7 @@ enum Action {
     Skip(String),
     Install { relaunch: bool },
     Retry,
+    Cancel,
 }
 
 #[cfg(test)]
@@ -436,6 +626,7 @@ mod tests {
         Release {
             version: "9.9.9".into(),
             asset: Some("Cadence-9.9.9-windows-x64-setup.exe".into()),
+            ..Release::default()
         }
     }
 
@@ -509,5 +700,87 @@ mod tests {
         app.update.rx = Some(rx);
         app.poll_updates();
         assert_eq!(app.update.phase, Phase::Available(release()));
+    }
+
+    #[test]
+    fn download_shows_progress_notes_and_cancels_cleanly() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let ctx = Context::default();
+        let release = Release {
+            size: Some(1_000_000),
+            notes: Some("Faster startup.\n- Fixed the mixer".repeat(40)),
+            ..release()
+        };
+        app.update.mode = Some(InstallMode::WindowsSetup);
+        app.update.phase = Phase::Downloading(release.clone());
+        let transfer = Arc::new(Transfer::new(release.size));
+        app.update.transfer = Some(Arc::clone(&transfer));
+        assert_eq!(app.update_pill().as_deref(), Some("Downloading update… 0%"));
+        app.dialog = Dialog::Update;
+        for _ in 0..3 {
+            frame(&mut app, &ctx);
+        }
+        assert!(matches!(app.dialog, Dialog::Update));
+
+        app.cancel_update_download();
+        assert!(transfer.is_cancelled());
+        assert!(app.update.cancelling());
+        frame(&mut app, &ctx);
+        // The worker answers; the offer comes back without an error.
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        tx.send(Msg::Downloaded(Err(update::CANCELLED.into())))
+            .unwrap();
+        app.update.rx = Some(rx);
+        app.poll_updates();
+        assert_eq!(app.update.phase, Phase::Available(release));
+        assert!(app.update.transfer.is_none());
+        frame(&mut app, &ctx);
+    }
+
+    #[test]
+    fn progress_reads_as_percent_or_megabytes() {
+        assert_eq!(
+            progress_text(250_000, Some(1_000_000)),
+            "25% — 0.2 MB of 1.0 MB"
+        );
+        assert_eq!(progress_text(2_500_000, None), "2.5 MB downloaded");
+        assert!(progress_text(5, Some(1)).starts_with("100%"));
+    }
+
+    #[test]
+    fn an_unfinished_update_is_reported_with_the_release_page() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let ctx = Context::default();
+        app.apply_handoff_outcome(Some(HandoffOutcome::Unfinished {
+            version: "9.9.9".into(),
+            first: true,
+        }));
+        assert!(matches!(app.dialog, Dialog::Update));
+        let (version, message) = app.update.notice.clone().unwrap();
+        assert_eq!(version, "9.9.9");
+        assert!(message.contains("didn't finish"), "{message}");
+        assert!(message.contains(&update::notes_url("9.9.9")), "{message}");
+        assert!(app.status.as_ref().is_some_and(|s| s.text == message));
+        frame(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::Update));
+
+        // Later launches only use the status line.
+        let mut app = CadenceApp::headless(Project::demo());
+        app.apply_handoff_outcome(Some(HandoffOutcome::Unfinished {
+            version: "9.9.9".into(),
+            first: false,
+        }));
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.status.is_some());
+
+        let mut app = CadenceApp::headless(Project::demo());
+        app.apply_handoff_outcome(Some(HandoffOutcome::Installed {
+            version: "9.9.9".into(),
+        }));
+        assert!(app
+            .status
+            .as_ref()
+            .is_some_and(|s| s.text == "Cadence updated to 9.9.9."));
+        assert!(app.update.notice.is_none());
     }
 }
