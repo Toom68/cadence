@@ -4551,11 +4551,11 @@ impl CadenceApp {
         let out = toolbar_row(ui, pal, ("drum-tools", tid), |tb| {
             velocity_item(tb, pal, &mut ed.velocity);
             tb.separator();
-            // Fill opens the groove menu: a popup under the row button, or
+            // Grooves opens the groove menu: a popup under the row button, or
             // a submenu when the button sits in the toolbar's ⋯ overflow.
             if tb.in_menu() {
                 tb.item(0.0, |ui| {
-                    ui.menu_button("Fill", |ui| {
+                    ui.menu_button("Grooves", |ui| {
                         if let Some(g) = groove_menu(ui) {
                             act = Some(ToolAction::Groove(g));
                         }
@@ -4564,7 +4564,7 @@ impl CadenceApp {
             } else {
                 let resp = tb.button(
                     Some(theme::Icon::Wand),
-                    "Fill",
+                    "Grooves",
                     "Stamp a groove into this pattern — four on the floor, rock, boom bap, \
                      trap, house, dembow, a fill…",
                 );
@@ -6263,17 +6263,35 @@ mod tests {
     }
 
     #[test]
-    fn fill_button_opens_the_groove_menu() {
+    fn grooves_button_opens_the_groove_menu() {
         let mut f = Frames::demo(1360.0, 860.0);
         f.step();
         f.select(0);
         f.steps(2);
         assert!(!egui::Popup::is_any_open(&f.ctx));
-        // Velocity, then Fill.
-        let fill = f.app.editor.layout.tools.1[1];
-        f.click(fill.center());
+        // Velocity, then Grooves.
+        let grooves = f.app.editor.layout.tools.1[1];
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, f.size)),
+            time: Some(f.time),
+            ..Default::default()
+        };
+        let app = &mut f.app;
+        let out = f.ctx.run(input, |ctx| app.frame(ctx));
+        let label: String = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if grooves.contains(t.visual_bounding_rect().center()) => {
+                    Some(t.galley.text().to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(label.contains("Grooves"), "button label: {label:?}");
+        f.click(grooves.center());
         f.steps(2);
-        assert!(egui::Popup::is_any_open(&f.ctx), "Fill opens its menu");
+        assert!(egui::Popup::is_any_open(&f.ctx), "Grooves opens its menu");
     }
 
     #[test]

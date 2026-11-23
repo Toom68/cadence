@@ -1749,7 +1749,7 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Hear a piece", Mouse("Click its name")),
             (
                 "Stamp a groove (rock, house, trap…) or a fill",
-                Mouse("Click Fill"),
+                Mouse("Click Grooves"),
             ),
         ],
     },
