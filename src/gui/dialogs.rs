@@ -543,7 +543,7 @@ impl CadenceApp {
         else {
             self.set_status(
                 StatusKind::Warning,
-                "Select a melodic track with a pattern to arpeggiate.",
+                "To use the Arpeggiator, select a melodic track (not drums or audio) that has a pattern.",
             );
             return;
         };
@@ -557,7 +557,7 @@ impl CadenceApp {
         let Some((track_id, pattern_id)) = self.arp_target() else {
             self.set_status(
                 StatusKind::Error,
-                "Select a melodic track with a pattern to arpeggiate.",
+                "To use the Arpeggiator, select a melodic track (not drums or audio) that has a pattern.",
             );
             return None;
         };
@@ -1575,12 +1575,9 @@ const EDITOR_SECTIONS: &[Section] = &[
         rows: &[
             ("Open or close it", Mouse("Click Chords above the roll")),
             ("Hear a chord", Mouse("Hover a chord")),
+            ("Add it at the pointer or playhead", Mouse("Click a chord")),
             (
-                "Stamp it at the pointer or playhead",
-                Mouse("Click a chord"),
-            ),
-            (
-                "Stamp a progression, a chord per bar",
+                "Add a progression, one chord per bar",
                 Mouse("Click a preset"),
             ),
             (

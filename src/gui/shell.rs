@@ -698,7 +698,9 @@ impl CadenceApp {
             }
         }
         if menu_item(ui, pal, "Arpeggiator…", "", self.can_arpeggiate(), None)
-            .on_hover_text("Select a melodic track with a pattern to arpeggiate")
+            .on_hover_text(
+                "Turn a chord into a run of notes (select a melodic track with a pattern)",
+            )
             .clicked()
         {
             self.open_arpeggiator();
@@ -720,7 +722,7 @@ impl CadenceApp {
             }
             menu_sep(ui, pal);
             if menu_item(ui, pal, "Audio Track", "", room, None)
-                .on_hover_text("A lane for imported WAV clips")
+                .on_hover_text("A track for imported WAV clips")
                 .clicked()
             {
                 self.add_audio_track();
@@ -770,8 +772,10 @@ impl CadenceApp {
             }
         }
         menu_sep(ui, pal);
-        if menu_item(ui, pal, "Track Settings", "", selected.is_some(), None)
-            .on_hover_text("Name, color, sound, volume and pan of the selected track")
+        if menu_item(ui, pal, "Show Track Panel", "", selected.is_some(), None)
+            .on_hover_text(
+                "Open the side panel with the selected track's name, color, sound, volume and pan",
+            )
             .clicked()
         {
             self.side_tab = sidebar::SideTab::Track;
@@ -1241,7 +1245,11 @@ impl CadenceApp {
             None => (
                 pal.accent,
                 "Audio ready",
-                format!("{} voice(s) sounding", self.transport.voices),
+                format!(
+                    "{} note{} playing",
+                    self.transport.voices,
+                    sidebar::plural(self.transport.voices)
+                ),
             ),
         };
         StatusAudio::Ready {

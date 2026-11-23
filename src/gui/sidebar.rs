@@ -92,10 +92,13 @@ pub(super) fn pack_title(preset_id: &str) -> String {
         .join(" ")
 }
 
+/// One line about a preset: a plain description of how it sounds first
+/// ("Bright, plucked, lo-fi sound"), then the synth recipe as detail
+/// ("saw + square · 8-bit · hold ×2").
 pub(super) fn preset_summary(p: &InstrumentPreset) -> String {
     if let Some(kit) = &p.kit {
         let n = kit.pieces.len();
-        return format!("kit · {n} piece{}", plural(n));
+        return format!("Drum kit · {n} sound{}", plural(n));
     }
     let waves: Vec<String> = p
         .oscillators
@@ -113,10 +116,41 @@ pub(super) fn preset_summary(p: &InstrumentPreset) -> String {
     if p.sample_hold > 1 {
         parts.push(format!("hold ×{}", p.sample_hold));
     }
-    if p.monophonic {
-        parts.push("mono".into());
+    format!("{} — {}", preset_character(p), parts.join(" · "))
+}
+
+/// How a preset sounds, in words: its loudest wave's tone, the shape of its
+/// envelope, lo-fi grit, and whether it plays one note at a time.
+fn preset_character(p: &InstrumentPreset) -> String {
+    use crate::packs::Waveform;
+    let loudest = p
+        .oscillators
+        .iter()
+        .max_by(|a, b| a.level.total_cmp(&b.level))
+        .map(|o| o.waveform);
+    let mut words = vec![match loudest {
+        None => "Silent",
+        Some(Waveform::Sine) => "Pure",
+        Some(Waveform::Triangle) => "Soft",
+        Some(Waveform::Saw) => "Bright",
+        Some(Waveform::Square) => "Hollow",
+        Some(Waveform::Pulse) => "Reedy",
+        Some(Waveform::Noise) => "Noisy",
+    }];
+    let env = &p.envelope;
+    if env.attack >= 0.25 {
+        words.push("swelling");
+    } else if env.sustain <= 0.15 && env.decay <= 0.8 {
+        words.push("plucked");
     }
-    parts.join(" · ")
+    if p.bit_depth < 24 || p.sample_hold > 1 {
+        words.push("lo-fi");
+    }
+    let mut text = format!("{} sound", words.join(", "));
+    if p.monophonic {
+        text.push_str(", one note at a time");
+    }
+    text
 }
 
 /// Which slice of the instrument library the browser lists.
@@ -394,9 +428,8 @@ impl QuickSound {
             Self::BuiltIn(i) => i.description().to_owned(),
             Self::Preset(p) => format!("{}\n\n{}", p.description, preset_summary(p)),
             Self::Font(f) => format!(
-                "{}\n\nGM program {} · {} · {}.sf2",
+                "{}\n\n{} · from {}",
                 f.program_name(),
-                f.program,
                 gm_family(f.program),
                 f.name
             ),
@@ -889,7 +922,7 @@ impl CadenceApp {
                             },
                             || {
                                 format!(
-                                    "{label}\n\nSoundFont {font_name} · GM program {program} · {}\n\nDouble-click to add, or drag onto the arrangement.",
+                                    "{label}\n\n{} · from {font_name}\n\nDouble-click to add, or drag onto the arrangement.",
                                     gm_family(program)
                                 )
                             },
@@ -2371,7 +2404,6 @@ impl CadenceApp {
                         for (program, label) in programs {
                             if ui
                                 .selectable_label(font.program == program, label)
-                                .on_hover_text(format!("GM program {program} · {family}"))
                                 .clicked()
                             {
                                 pick = Some(program);
@@ -3549,6 +3581,27 @@ mod tests {
             r#"{{"id":"{id}","name":"{id}","oscillators":[{{}}]}}"#
         ))
         .expect("minimal preset parses")
+    }
+
+    #[test]
+    fn preset_summary_leads_with_how_it_sounds() {
+        let lead: InstrumentPreset = serde_json::from_str(
+            r#"{"id":"x.lead","name":"Lead","oscillators":[
+                {"waveform":"saw","level":0.8},{"waveform":"square","level":0.4}],
+                "envelope":{"attack":0.005,"decay":0.2,"sustain":0.1,"release":0.1},
+                "bit_depth":8,"sample_hold":2,"monophonic":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            preset_summary(&lead),
+            "Bright, plucked, lo-fi sound, one note at a time — saw + square · 8-bit · hold ×2"
+        );
+        let pad: InstrumentPreset = serde_json::from_str(
+            r#"{"id":"x.pad","name":"Pad","oscillators":[{"waveform":"triangle"}],
+                "envelope":{"attack":0.8,"decay":0.5,"sustain":0.8,"release":1.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(preset_summary(&pad), "Soft, swelling sound — triangle");
     }
 
     fn catalog(ids: &[&str]) -> PackCatalog {

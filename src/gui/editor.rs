@@ -311,7 +311,9 @@ impl ChordStripTab {
             ChordStripTab::Borrowed => {
                 "Colour chords from the parallel key plus secondary dominants"
             }
-            ChordStripTab::Progressions => "One-click genre/mood loops stamped one chord per bar",
+            ChordStripTab::Progressions => {
+                "Ready-made progressions by genre or mood, one chord per bar"
+            }
         }
     }
 }
@@ -1031,7 +1033,7 @@ impl CadenceApp {
                 pal,
                 theme::Icon::Note,
                 "Audio track",
-                "Audio lanes hold imported WAV clips, not notes — right-click a lane in the arrangement to import a file.",
+                "Audio tracks hold imported WAV clips, not notes — right-click the track in the arrangement to import a file.",
                 None,
             );
             return;
@@ -2510,7 +2512,7 @@ impl CadenceApp {
                 pal,
                 theme::Icon::Keyboard,
                 "Audio track",
-                "Audio lanes play imported WAV clips, not notes.",
+                "Audio tracks play imported WAV clips, not notes.",
                 None,
             );
             return;
@@ -3069,7 +3071,7 @@ impl CadenceApp {
         if ops::track(&self.project, track_id).is_some_and(|t| t.audio) {
             self.set_status(
                 StatusKind::Warning,
-                "Recording targets MIDI tracks — audio lanes only hold imported WAV clips.",
+                "Recording needs an instrument track — audio tracks only hold imported WAV clips.",
             );
             return None;
         }
@@ -3258,7 +3260,7 @@ impl CadenceApp {
         if track.shows_drum_grid() {
             self.set_status(
                 StatusKind::Warning,
-                "Chords stamp into melodic tracks — the drum grid has no chord tones.",
+                "Chords go on melodic tracks such as piano, bass or lead — drum tracks can't play chords.",
             );
             return;
         }
@@ -3284,7 +3286,7 @@ impl CadenceApp {
         let spacing = self.editor.chord_spacing;
         let direction = self.editor.chord_direction;
         let mut new = Vec::new();
-        self.edit(&format!("Stamp {symbol}"), None, |p| {
+        self.edit(&format!("Add chord {symbol}"), None, |p| {
             if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
                 new = if spacing > 0.0 {
                     ops::stamp_strum(pat, step, &pitches, spacing, direction, duration, velocity)
@@ -3296,7 +3298,7 @@ impl CadenceApp {
         if new.is_empty() {
             self.set_status(
                 StatusKind::Warning,
-                format!("Could not stamp {symbol} — the pattern is at the note limit."),
+                format!("Couldn't add {symbol} — the pattern already holds the most notes it can."),
             );
             return;
         }
@@ -3308,7 +3310,7 @@ impl CadenceApp {
         }
         self.set_status(
             StatusKind::Success,
-            format!("Stamped {symbol} — {n} note{}.", sidebar::plural(n)),
+            format!("Added {symbol} — {n} note{}.", sidebar::plural(n)),
         );
     }
 
@@ -3329,7 +3331,7 @@ impl CadenceApp {
         if track.shows_drum_grid() {
             self.set_status(
                 StatusKind::Warning,
-                "Chords stamp into melodic tracks — the drum grid has no chord tones.",
+                "Chords go on melodic tracks such as piano, bass or lead — drum tracks can't play chords.",
             );
             return;
         }
@@ -3369,7 +3371,7 @@ impl CadenceApp {
         if !span.is_finite() || span < bar * 0.5 || n == 0 {
             self.set_status(
                 StatusKind::Warning,
-                "No room for a progression here — stamp closer to the start.",
+                "No room for a progression here — click closer to the start of the pattern.",
             );
             return;
         }
@@ -3385,7 +3387,7 @@ impl CadenceApp {
         let spacing = self.editor.chord_spacing;
         let strum = (spacing > 0.0).then_some((spacing, self.editor.chord_direction));
         let mut new = Vec::new();
-        self.edit(&format!("Stamp {}", preset.name), None, |p| {
+        self.edit(&format!("Add {}", preset.name), None, |p| {
             if let Some(pat) = ops::pattern_mut(p, track_id, pid) {
                 new = ops::stamp_progression(pat, step, &seq, slot, duration, velocity, strum);
             }
@@ -3394,7 +3396,7 @@ impl CadenceApp {
             self.set_status(
                 StatusKind::Warning,
                 format!(
-                    "Could not stamp {} — the pattern is at the note limit.",
+                    "Couldn't add {} — the pattern already holds the most notes it can.",
                     preset.name
                 ),
             );
@@ -3410,7 +3412,7 @@ impl CadenceApp {
         }
         self.set_status(
             StatusKind::Success,
-            format!("Stamped {} — {n} note{}.", preset.name, sidebar::plural(n)),
+            format!("Added {} — {n} note{}.", preset.name, sidebar::plural(n)),
         );
     }
 
@@ -3630,7 +3632,9 @@ impl CadenceApp {
                     }
                 })
                 .response
-                .on_hover_text("Strum spacing between chord tones (Block stamps them together)");
+                .on_hover_text(
+                    "Strum: the delay between a chord's notes (Block plays them all at once)",
+                );
             });
             tb.enabled(strumming).item(72.0, |ui| {
                 theme::combo(("chord-direction", tid), ed.chord_direction.label(), 70.0)
@@ -3691,7 +3695,7 @@ impl CadenceApp {
                                 }
                                 if resp
                                     .on_hover_text(format!(
-                                        "{symbol} — click to stamp at the pointer or playhead"
+                                        "{symbol} — click to add it at the pointer or playhead"
                                     ))
                                     .clicked()
                                 {
@@ -5091,7 +5095,7 @@ mod tests {
         app.stamp_diatonic_chord(0, &ctx);
         assert_eq!(stamped_pitches(&app, tid, pid), vec![48, 60, 64, 67]);
         assert!(
-            status_text(&app).contains("Stamped C"),
+            status_text(&app).contains("Added C"),
             "status: {}",
             status_text(&app)
         );
