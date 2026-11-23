@@ -1586,7 +1586,10 @@ impl Voice {
         self.ctl = (self.ctl + 1) % CONTROL_INTERVAL;
         self.filter_env *= self.filter_env_coef;
 
+        let spread = finite(p.spread, 0.0).clamp(0.0, 1.0);
+        let stereo = spread > 0.0;
         let mut sum = 0.0;
+        let mut sum_b = 0.0;
         let mut total = 0.0;
         for (k, o) in p.oscs.iter().take(p.count).enumerate() {
             // Defensive re-clamp: PresetParams may be built by hand, bypassing
@@ -1598,7 +1601,18 @@ impl Voice {
                 ..*o
             };
             let inc = (freq * o.ratio * self.inv_sr).clamp(0.0, 0.49);
-            let v = self.preset_osc_sample(k, o, inc, freq);
+            let (v, vb) = if stereo {
+                // Two copies detuned symmetrically around the played pitch;
+                // the second runs on the spare phase slots `ph[4..8]`.
+                let inc_a = (inc * self.spread_ratio[0]).min(0.49);
+                let inc_b = (inc * self.spread_ratio[1]).min(0.49);
+                (
+                    self.preset_osc_sample(k, o, inc_a, freq),
+                    self.spread_osc_sample(k, o, inc_b),
+                )
+            } else {
+                (self.preset_osc_sample(k, o, inc, freq), 0.0)
+            };
             let layer = if o.decay > 0.0 {
                 let env = self.e[k];
                 self.e[k] *= self.c[k];
@@ -1607,11 +1621,34 @@ impl Voice {
                 1.0
             };
             sum += v * o.level * layer;
+            sum_b += vb * o.level * layer;
             total += o.level;
         }
         let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        if stereo {
+            let scale = a * trem.clamp(0.0, 1.0) / total.max(1.0);
+            let (l, r) = spread_pan(sum * scale, sum_b * scale, spread);
+            return self.finish_preset_stereo(l, r, p);
+        }
         let raw = sum / total.max(1.0) * a * trem.clamp(0.0, 1.0);
         self.finish_preset_sample(raw, p)
+    }
+
+    /// The second `spread` copy of oscillator `k`: same waveform on the
+    /// spare phase slot `ph[4 + k]`. Noise layers reuse the first copy's
+    /// value (stereo noise would only smear the image).
+    fn spread_osc_sample(&mut self, k: usize, o: OscParams, inc: f32) -> f32 {
+        let j = MAX_PRESET_OSCILLATORS + k;
+        let v = match o.wave {
+            Waveform::Sine => sine(self.ph[j]),
+            Waveform::Triangle => 4.0 * (self.ph[j] - 0.5).abs() - 1.0,
+            Waveform::Saw => saw(self.ph[j], inc),
+            Waveform::Square => square(self.ph[j], inc),
+            Waveform::Pulse => pulse(self.ph[j], inc, o.width),
+            Waveform::Noise => return self.noise_value[k],
+        };
+        advance(&mut self.ph[j], inc);
+        v
     }
 
     fn preset_sample_legacy(&mut self, a: f32, p: PresetParams) -> (f32, f32) {
@@ -1658,6 +1695,26 @@ impl Voice {
         (y, y)
     }
 
+    /// Stereo twin of [`Voice::finish_preset_sample`] for `spread` voices:
+    /// the same hold/bitcrush/filter/gain tail per channel (`f1` left, `f2`
+    /// right, sharing the coefficients).
+    fn finish_preset_stereo(&mut self, l: f32, r: f32, p: PresetParams) -> (f32, f32) {
+        if self.hold_left == 0 {
+            self.hold_value = l;
+            self.hold_value_r = r;
+            self.hold_left = ((p.hold as f32 * self.sr / 44_100.0).round() as u32).max(1);
+        }
+        self.hold_left -= 1;
+        let (mut x, mut y) = (self.hold_value, self.hold_value_r);
+        if p.bits < 24 {
+            let q = (1u32 << (p.bits - 1)) as f32;
+            x = (x * q).round() / q;
+            y = (y * q).round() / q;
+        }
+        let g = p.gain * self.gain * 0.55;
+        (self.f1.low(&self.fc, x) * g, self.f2.low(&self.fc, y) * g)
+    }
+
     /// PCM clip playback for `sample` presets and kit pieces: the registered
     /// buffer is read with cubic interpolation at `2^((pitch - root)/12)`
     /// times its declared rate — `self.freq` (the played note, with portamento
@@ -1698,11 +1755,29 @@ impl Voice {
         // +512× per output sample is far past any usable transposition.
         let inc = (freq * self.sample_ratio * self.inv_sr).clamp(0.0, 512.0) as f64;
 
+        let spread = finite(p.spread, 0.0).clamp(0.0, 1.0);
+        let stereo = spread > 0.0;
+        let mut raw_b = 0.0;
         let raw = match self.sample_buf {
             Some(buf) if !buf.is_empty() => {
                 let len = buf.len();
                 let pos = self.sample_pos;
                 let v = read_clip(buf, pos, p.sample_loop);
+                let mut inc = inc;
+                if stereo {
+                    // A second read head, detuned symmetrically against the
+                    // first, drifts against it for a chorused stereo image.
+                    let pos2 = self.sample_pos2;
+                    let inc_b = inc * f64::from(self.spread_ratio[1]);
+                    inc *= f64::from(self.spread_ratio[0]);
+                    if p.sample_loop {
+                        raw_b = read_clip(buf, pos2, true);
+                        self.sample_pos2 = (pos2 + inc_b).rem_euclid(len as f64);
+                    } else if pos2 < len as f64 {
+                        raw_b = read_clip(buf, pos2, false);
+                        self.sample_pos2 = pos2 + inc_b;
+                    }
+                }
                 let next = pos + inc;
                 if p.sample_loop {
                     self.sample_pos = next.rem_euclid(len as f64);
@@ -1722,6 +1797,11 @@ impl Voice {
             }
         };
         let trem = 1.0 - finite(p.lfo_amp, 0.0).clamp(0.0, 1.0) * (0.5 + 0.5 * lfo);
+        if stereo {
+            let g = a * trem.clamp(0.0, 1.0);
+            let (l, r) = spread_pan(raw * g, raw_b * g, spread);
+            return self.finish_preset_stereo(l, r, p);
+        }
         self.finish_preset_sample(raw * a * trem.clamp(0.0, 1.0), p)
     }
 
@@ -1757,6 +1837,16 @@ impl Voice {
         );
         value.clamp(-1.0, 1.0)
     }
+}
+
+/// Pans the two `spread` copies apart: at `spread` 1 copy A is hard left and
+/// copy B hard right; smaller values blend both into each side (each side's
+/// weights sum to 1, so coherent material keeps its level).
+#[inline]
+fn spread_pan(a: f32, b: f32, spread: f32) -> (f32, f32) {
+    let near = 0.5 + 0.5 * spread;
+    let far = 0.5 - 0.5 * spread;
+    (a * near + b * far, a * far + b * near)
 }
 
 /// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `x0` and
@@ -3019,5 +3109,65 @@ mod tests {
             fundamental / total > 0.99,
             "residual too high: {fundamental} of {total}"
         );
+    }
+
+    fn side_ratio(l: &[f32], r: &[f32]) -> f32 {
+        let side: Vec<f32> = l.iter().zip(r).map(|(a, b)| a - b).collect();
+        let mid: Vec<f32> = l.iter().zip(r).map(|(a, b)| a + b).collect();
+        rms(&side) / rms(&mid).max(1e-9)
+    }
+
+    #[test]
+    fn spread_zero_stays_mono_and_spread_widens() {
+        let mut wide = filtered_saw();
+        wide.oscillators.push(OscillatorSpec {
+            waveform: Waveform::Square,
+            level: 0.5,
+            frequency_ratio: 2.0,
+            ..Default::default()
+        });
+        let mono = render_stereo(preset_sound(wide.clone()), 57, 0.8, 0.8, 0.6);
+        assert!(
+            mono.0.iter().zip(&mono.1).all(|(a, b)| a == b),
+            "spread 0 must be mono"
+        );
+        let mut last = 0.0;
+        for spread in [0.3f32, 1.0] {
+            wide.spread = spread;
+            let (l, r) = render_stereo(preset_sound(wide.clone()), 57, 0.8, 0.8, 0.6);
+            assert!(l.iter().chain(&r).all(|s| s.is_finite() && s.abs() < 1.5));
+            let side = side_ratio(&l[(0.1 * SR) as usize..], &r[(0.1 * SR) as usize..]);
+            assert!(
+                side > last + 0.05,
+                "spread {spread}: side/mid {side} vs {last}"
+            );
+            last = side;
+            // Width must not cost (or add) much level.
+            let ratio = (rms(&l) + rms(&r)) / (2.0 * rms(&mono.0));
+            assert!(
+                (0.6..1.3).contains(&ratio),
+                "spread {spread} level ratio {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn spread_widens_sample_voices() {
+        let mut preset = sample_preset(true);
+        let (l, r) = render_stereo(preset_sound(preset.clone()), 64, 0.8, 0.6, 0.5);
+        assert!(
+            l.iter().zip(&r).all(|(a, b)| a == b),
+            "spread 0 sample must be mono"
+        );
+        preset.spread = 0.8;
+        let (l, r) = render_stereo(preset_sound(preset), 64, 0.8, 0.6, 0.5);
+        assert!(l.iter().chain(&r).all(|s| s.is_finite() && s.abs() < 1.5));
+        let side = side_ratio(&l[(0.2 * SR) as usize..], &r[(0.2 * SR) as usize..]);
+        assert!(side > 0.05, "spread sample stays mono: side/mid {side}");
+        // A spread one-shot still ends with its clip.
+        let mut one_shot = sample_preset(false);
+        one_shot.spread = 1.0;
+        let (l, _) = render_stereo(preset_sound(one_shot), 72, 0.8, 1.0, 0.9);
+        assert!(l[(0.5 * SR) as usize..].iter().all(|s| s.abs() < 1e-6));
     }
 }
