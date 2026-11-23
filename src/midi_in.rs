@@ -214,7 +214,10 @@ pub enum MidiInputPref {
     /// Every input port, including ones plugged in later (the default).
     #[default]
     All,
-    /// One port, by its display name; reconnects when it comes back.
+    /// One port, by its display name; reconnects when it comes back. With
+    /// several identical devices the name carries a `#2`-style number from
+    /// enumeration order, which only identifies the same unit within a
+    /// session (see [`plan_connections`]).
     Device(String),
 }
 
@@ -303,7 +306,8 @@ pub fn strip_alsa_address(name: &str) -> &str {
 }
 
 /// Makes port display names unique: a second identical controller becomes
-/// `"Name #2"`, a third `"Name #3"`, in enumeration order.
+/// `"Name #2"`, a third `"Name #3"`, in enumeration order — so a number
+/// can move to another unit when they are re-plugged in a different order.
 pub fn unique_names(names: &[String]) -> Vec<String> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     names
@@ -348,41 +352,85 @@ pub struct ConnectionPlan {
     pub close: Vec<(String, CloseReason)>,
     /// Ports to open (names), in enumeration order.
     pub open: Vec<String>,
+    /// Open connections to keep whose port is now listed under another
+    /// name, `(old, new)` — an identical device came or went, so the
+    /// `#2` numbering shifted.
+    pub rename: Vec<(String, String)>,
+}
+
+/// Index of the only entry matching `pred`, if exactly one does.
+fn only_index(list: &[PortEntry], pred: impl Fn(&PortEntry) -> bool) -> Option<usize> {
+    let mut hits = list.iter().enumerate().filter(|(_, e)| pred(e));
+    let (first, _) = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
+/// Where the connected port `c` is in `available` now: the same name and
+/// id, or — when its id identifies one port in both lists — the same id
+/// under a renumbered name.
+fn current_index(c: &PortEntry, available: &[PortEntry], connected: &[PortEntry]) -> Option<usize> {
+    available.iter().position(|a| a == c).or_else(|| {
+        only_index(connected, |e| e.id == c.id)?;
+        only_index(available, |a| a.id == c.id)
+    })
 }
 
 /// Decides which ports to close and open so the live connections match
 /// `pref` given the ports `available` now. A connected port that vanished,
 /// or whose id changed (re-plugged), is closed; with [`MidiInputPref::All`]
 /// every available port is opened, with a device pick only that one.
+///
+/// `pinned` is the port id a device pick last connected to. Identical
+/// devices are told apart only by their `#2` numbering, which follows
+/// enumeration order and so can shift when one is re-plugged; while the
+/// pinned unit is listed it stays the pick whatever it is called now, and
+/// only otherwise is the exact saved name matched. Ids are not saved, so
+/// after a restart (or on a backend whose ids change on re-plug) the
+/// saved `"Name #2"` simply means the second such device enumerated.
 pub fn plan_connections(
     pref: &MidiInputPref,
     available: &[PortEntry],
     connected: &[PortEntry],
+    pinned: Option<&str>,
 ) -> ConnectionPlan {
-    let wanted = |name: &str| match pref {
+    let target = match pref {
+        MidiInputPref::Device(pick) => pinned
+            .and_then(|id| only_index(available, |a| a.id == id))
+            .or_else(|| available.iter().position(|a| &a.name == pick)),
+        _ => None,
+    };
+    let wanted = |i: usize| match pref {
         MidiInputPref::None => false,
         MidiInputPref::All => true,
-        MidiInputPref::Device(pick) => pick == name,
+        MidiInputPref::Device(_) => target == Some(i),
     };
     let mut plan = ConnectionPlan::default();
-    let mut keep = BTreeSet::new();
+    let mut kept = BTreeSet::new();
+    let mut gone = Vec::new();
     for c in connected {
-        if available.contains(c) {
-            if wanted(&c.name) {
-                keep.insert(c.name.as_str());
-            } else {
-                plan.close.push((c.name.clone(), CloseReason::Deselected));
+        match current_index(c, available, connected) {
+            Some(i) if wanted(i) && kept.insert(i) => {
+                if available[i].name != c.name {
+                    plan.rename
+                        .push((c.name.clone(), available[i].name.clone()));
+                }
             }
-        } else if available.iter().any(|a| a.name == c.name) {
-            plan.close.push((c.name.clone(), CloseReason::Replugged));
-        } else {
-            plan.close.push((c.name.clone(), CloseReason::Unplugged));
+            Some(_) => plan.close.push((c.name.clone(), CloseReason::Deselected)),
+            None => gone.push(c),
         }
     }
-    for a in available {
-        if wanted(&a.name) && !keep.contains(a.name.as_str()) {
+    for (i, a) in available.iter().enumerate() {
+        if wanted(i) && !kept.contains(&i) {
             plan.open.push(a.name.clone());
         }
+    }
+    for c in gone {
+        let reason = if plan.open.contains(&c.name) {
+            CloseReason::Replugged
+        } else {
+            CloseReason::Unplugged
+        };
+        plan.close.push((c.name.clone(), reason));
     }
     plan
 }
@@ -531,6 +579,8 @@ fn run(
         }
     };
     let mut live: Vec<Live> = Vec::new();
+    // Port id of the unit a device pick follows (see `plan_connections`).
+    let mut pinned: Option<String> = None;
     let mut next_conn: u64 = 1;
     let mut failed: BTreeSet<String> = BTreeSet::new();
     let mut fast = false;
@@ -549,6 +599,7 @@ fn run(
                 &scanner,
                 &pref,
                 &mut live,
+                &mut pinned,
                 &mut next_conn,
                 &mut failed,
                 initial,
@@ -565,6 +616,7 @@ fn run(
         match commands.recv_timeout(wait) {
             Ok(Command::SetPref(p)) => {
                 pref = p;
+                pinned = None;
                 failed.clear();
                 next_scan = Instant::now();
             }
@@ -592,6 +644,7 @@ fn scan(
     scanner: &midir::MidiInput,
     pref: &MidiInputPref,
     live: &mut Vec<Live>,
+    pinned: &mut Option<String>,
     next_conn: &mut u64,
     failed: &mut BTreeSet<String>,
     initial: bool,
@@ -619,7 +672,7 @@ fn scan(
         })
         .collect();
     let connected: Vec<PortEntry> = live.iter().map(|l| l.entry.clone()).collect();
-    let plan = plan_connections(pref, &available, &connected);
+    let plan = plan_connections(pref, &available, &connected, pinned.as_deref());
     for (name, reason) in &plan.close {
         let Some(i) = live.iter().position(|l| &l.entry.name == name) else {
             continue;
@@ -637,6 +690,15 @@ fn scan(
             },
         );
     }
+    // Closes went first, so every old name is still that of one live entry.
+    let renames: Vec<(usize, &String)> = plan
+        .rename
+        .iter()
+        .filter_map(|(old, new)| Some((live.iter().position(|l| &l.entry.name == old)?, new)))
+        .collect();
+    for (i, new) in renames {
+        live[i].entry.name = new.clone();
+    }
     for name in &plan.open {
         let Some(i) = available.iter().position(|a| &a.name == name) else {
             continue;
@@ -645,6 +707,9 @@ fn scan(
         match open_port(&ports[i], name, id, tx, wake) {
             Ok(conn) => {
                 *next_conn += 1;
+                if matches!(pref, MidiInputPref::Device(_)) {
+                    *pinned = Some(available[i].id.clone());
+                }
                 failed.remove(name);
                 live.push(Live {
                     entry: available[i].clone(),
@@ -952,11 +1017,11 @@ mod tests {
     #[test]
     fn plan_follows_the_preference() {
         let avail = [entry("A", "1"), entry("B", "2")];
-        let all = plan_connections(&MidiInputPref::All, &avail, &[]);
+        let all = plan_connections(&MidiInputPref::All, &avail, &[], None);
         assert_eq!(all.open, vec!["A", "B"]);
         assert!(all.close.is_empty());
 
-        let none = plan_connections(&MidiInputPref::None, &avail, &avail);
+        let none = plan_connections(&MidiInputPref::None, &avail, &avail, None);
         assert_eq!(
             none.close,
             vec![
@@ -967,11 +1032,11 @@ mod tests {
         assert!(none.open.is_empty());
 
         let pick = MidiInputPref::Device("B".to_owned());
-        let one = plan_connections(&pick, &avail, &[entry("A", "1")]);
+        let one = plan_connections(&pick, &avail, &[entry("A", "1")], None);
         assert_eq!(one.close, vec![("A".to_owned(), CloseReason::Deselected)]);
         assert_eq!(one.open, vec!["B"]);
 
-        let steady = plan_connections(&MidiInputPref::All, &avail, &avail);
+        let steady = plan_connections(&MidiInputPref::All, &avail, &avail, None);
         assert_eq!(steady, ConnectionPlan::default(), "nothing to do");
     }
 
@@ -987,7 +1052,7 @@ mod tests {
     fn plan_handles_hot_plugging() {
         let pick = MidiInputPref::Device("Keys".to_owned());
         // Unplugged: the live connection is closed, nothing opens.
-        let gone = plan_connections(&pick, &[], &[entry("Keys", "7")]);
+        let gone = plan_connections(&pick, &[], &[entry("Keys", "7")], None);
         assert_eq!(
             gone.close,
             vec![("Keys".to_owned(), CloseReason::Unplugged)]
@@ -995,14 +1060,14 @@ mod tests {
         assert!(gone.open.is_empty());
         // Missing at startup: nothing to do until it shows up.
         assert_eq!(
-            plan_connections(&pick, &[entry("Other", "1")], &[]),
+            plan_connections(&pick, &[entry("Other", "1")], &[], None),
             ConnectionPlan::default()
         );
         // Back again: reconnects.
-        let back = plan_connections(&pick, &[entry("Keys", "9")], &[]);
+        let back = plan_connections(&pick, &[entry("Keys", "9")], &[], None);
         assert_eq!(back.open, vec!["Keys"]);
         // Re-plugged between two scans under a new id: reopen.
-        let replug = plan_connections(&pick, &[entry("Keys", "9")], &[entry("Keys", "7")]);
+        let replug = plan_connections(&pick, &[entry("Keys", "9")], &[entry("Keys", "7")], None);
         assert_eq!(
             replug.close,
             vec![("Keys".to_owned(), CloseReason::Replugged)],
@@ -1014,8 +1079,59 @@ mod tests {
             &MidiInputPref::All,
             &[entry("A", "1"), entry("C", "3")],
             &[entry("A", "1"), entry("B", "2")],
+            None,
         );
         assert_eq!(all.close, vec![("B".to_owned(), CloseReason::Unplugged)]);
         assert_eq!(all.open, vec!["C"]);
+    }
+
+    #[test]
+    fn identical_devices_keep_their_connections_when_renumbered() {
+        // Two "X" units; the first is unplugged, so the second is now
+        // listed as plain "X". Its connection is kept, just renamed.
+        let plan = plan_connections(
+            &MidiInputPref::All,
+            &[entry("X", "B")],
+            &[entry("X", "A"), entry("X #2", "B")],
+            None,
+        );
+        assert_eq!(plan.close, vec![("X".to_owned(), CloseReason::Unplugged)]);
+        assert_eq!(plan.rename, vec![("X #2".to_owned(), "X".to_owned())]);
+        assert!(plan.open.is_empty());
+        // Shared ids (a backend that cannot tell them apart) fall back to
+        // exact names.
+        let shared = plan_connections(
+            &MidiInputPref::All,
+            &[entry("X", "0")],
+            &[entry("X", "0"), entry("X #2", "0")],
+            None,
+        );
+        assert_eq!(
+            shared.close,
+            vec![("X #2".to_owned(), CloseReason::Unplugged)]
+        );
+        assert!(shared.rename.is_empty() && shared.open.is_empty());
+    }
+
+    #[test]
+    fn a_device_pick_follows_its_unit_not_the_numbering() {
+        let pick = MidiInputPref::Device("X #2".to_owned());
+        // Unit B was picked as "X #2"; re-plugged, it now enumerates first.
+        let swapped = [entry("X", "B"), entry("X #2", "A")];
+        let back = plan_connections(&pick, &swapped, &[], Some("B"));
+        assert_eq!(back.open, vec!["X"], "B, not the unit now called X #2");
+        let kept = plan_connections(&pick, &swapped, &[entry("X #2", "B")], Some("B"));
+        assert_eq!(kept.rename, vec![("X #2".to_owned(), "X".to_owned())]);
+        assert!(kept.close.is_empty() && kept.open.is_empty());
+        // With the pinned unit absent the exact saved name decides: only
+        // the other unit is left, and it is not called "X #2".
+        let alone = plan_connections(&pick, &[entry("X", "A")], &[], Some("B"));
+        assert_eq!(alone, ConnectionPlan::default());
+        // Without a pin (fresh launch) the saved name is matched as is.
+        let fresh = plan_connections(&pick, &swapped, &[], None);
+        assert_eq!(fresh.open, vec!["X #2"]);
+        // A pin from another unit never overrides "None".
+        let off = plan_connections(&MidiInputPref::None, &swapped, &[], Some("B"));
+        assert_eq!(off, ConnectionPlan::default());
     }
 }
