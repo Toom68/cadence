@@ -61,6 +61,7 @@
                 "decay": 0.09
               },
               "filter_cutoff": 6500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.1,
               "bit_depth": 24,
               "gain": 0.85
@@ -110,6 +111,7 @@
                 "release": 0.08
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.8
@@ -164,6 +166,7 @@
                 "decay": 0.1
               },
               "filter_cutoff": 8000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.75
@@ -206,6 +209,7 @@
                 "release": 0.02
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.65
@@ -245,6 +249,7 @@
                 "decay": 0.05
               },
               "filter_cutoff": 7000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.4,
               "bit_depth": 24,
               "gain": 0.55
@@ -276,6 +281,7 @@
                 "decay": 0.03
               },
               "filter_cutoff": 8000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.35,
               "bit_depth": 24,
               "gain": 0.5
@@ -328,6 +334,7 @@
                 "decay": 0.14
               },
               "filter_cutoff": 3000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.8
@@ -367,6 +374,7 @@
                 "decay": 0.15
               },
               "filter_cutoff": 8500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -419,6 +427,7 @@
                 "decay": 0.11
               },
               "filter_cutoff": 4000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.78
@@ -465,6 +474,7 @@
                 "decay": 0.8
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.35,
               "bit_depth": 24,
               "gain": 0.6
@@ -517,6 +527,7 @@
                 "decay": 0.09
               },
               "filter_cutoff": 5500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.75
@@ -563,6 +574,7 @@
                 "decay": 0.6
               },
               "filter_cutoff": 10000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -605,6 +617,7 @@
                 "release": 0.25
               },
               "filter_cutoff": 14000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.4,
               "bit_depth": 24,
               "gain": 0.5
@@ -643,6 +656,7 @@
                 "decay": 1.0
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -707,6 +721,7 @@
                 "decay": 0.11
               },
               "filter_cutoff": 5000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "gain": 0.8
@@ -756,6 +771,7 @@
                 "release": 0.12
               },
               "filter_cutoff": 7500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.75
@@ -798,6 +814,7 @@
                 "release": 0.03
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.6
@@ -837,6 +854,7 @@
                 "decay": 0.04
               },
               "filter_cutoff": 5000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.5
@@ -889,6 +907,7 @@
                 "decay": 0.16
               },
               "filter_cutoff": 2800.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.78
@@ -928,6 +947,7 @@
                 "decay": 0.12
               },
               "filter_cutoff": 5500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.5
@@ -980,6 +1000,7 @@
                 "decay": 0.13
               },
               "filter_cutoff": 3600.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.76
@@ -1026,6 +1047,7 @@
                 "decay": 1.0
               },
               "filter_cutoff": 10000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -1078,6 +1100,7 @@
                 "decay": 0.1
               },
               "filter_cutoff": 4800.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.72
@@ -1128,6 +1151,7 @@
                 "release": 0.45
               },
               "filter_cutoff": 9500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.35,
               "bit_depth": 24,
               "gain": 0.55
@@ -1170,6 +1194,7 @@
                 "release": 0.3
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.35,
               "bit_depth": 24,
               "gain": 0.5
@@ -1220,6 +1245,7 @@
                 "release": 0.25
               },
               "filter_cutoff": 11000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.45,
               "bit_depth": 24,
               "gain": 0.55
@@ -1284,6 +1310,7 @@
                 "decay": 0.14
               },
               "filter_cutoff": 4500.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "gain": 0.85
             }
@@ -1340,6 +1367,7 @@
                 "decay": 0.05
               },
               "filter_cutoff": 7000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.1,
               "bit_depth": 24,
               "gain": 0.85
@@ -1382,6 +1410,7 @@
                 "release": 0.015
               },
               "filter_cutoff": 11000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.35,
               "bit_depth": 24,
               "gain": 0.6
@@ -1435,6 +1464,7 @@
                 "decay": 0.08
               },
               "filter_cutoff": 7500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.8
@@ -1489,6 +1519,7 @@
                 "decay": 0.15
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "gain": 0.75
@@ -1539,6 +1570,7 @@
                 "decay": 0.09
               },
               "filter_cutoff": 1200.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.6,
               "bit_depth": 24,
               "gain": 0.6
@@ -1578,6 +1610,7 @@
                 "decay": 0.04
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -1609,6 +1642,7 @@
                 "decay": 0.025
               },
               "filter_cutoff": 11000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.5
@@ -1662,6 +1696,7 @@
                 "decay": 0.1
               },
               "filter_cutoff": 4000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.2,
               "bit_depth": 24,
               "gain": 0.78
@@ -1701,6 +1736,7 @@
                 "decay": 0.1
               },
               "filter_cutoff": 11000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.55
@@ -1755,6 +1791,7 @@
                 "decay": 0.05
               },
               "filter_cutoff": 2500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.4,
               "bit_depth": 24,
               "gain": 0.6
@@ -1807,6 +1844,7 @@
                 "decay": 0.08
               },
               "filter_cutoff": 5500.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "gain": 0.75
@@ -1853,6 +1891,7 @@
                 "decay": 0.9
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "gain": 0.55
@@ -1906,6 +1945,7 @@
                 "decay": 0.07
               },
               "filter_cutoff": 7000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "gain": 0.72
@@ -1960,6 +2000,7 @@
                 "decay": 0.5
               },
               "filter_cutoff": 10000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.25,
               "bit_depth": 24,
               "gain": 0.55
@@ -2016,6 +2057,7 @@
                 "decay": 0.18
               },
               "filter_cutoff": 3000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.85
@@ -2053,6 +2095,7 @@
                 "decay": 0.2
               },
               "filter_cutoff": 2200.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.85
@@ -2101,6 +2144,7 @@
                 "decay": 0.09
               },
               "filter_cutoff": 900.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.55,
               "bit_depth": 12,
               "sample_hold": 2,
@@ -2147,6 +2191,7 @@
                 "decay": 0.07
               },
               "filter_cutoff": 6000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.85
@@ -2192,6 +2237,7 @@
                 "decay": 0.16
               },
               "filter_cutoff": 5000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.8
@@ -2229,6 +2275,7 @@
                 "decay": 0.11
               },
               "filter_cutoff": 4000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.85
@@ -2262,6 +2309,7 @@
                 "release": 0.02
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2296,6 +2344,7 @@
                 "release": 0.05
               },
               "filter_cutoff": 8000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.8
@@ -2338,6 +2387,7 @@
                 "release": 0.08
               },
               "filter_cutoff": 9000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2376,6 +2426,7 @@
                 "decay": 0.12
               },
               "filter_cutoff": 2600.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.7,
               "bit_depth": 12,
               "sample_hold": 2,
@@ -2424,6 +2475,7 @@
                 "amplitude": 0.0
               },
               "filter_cutoff": 3200.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.45,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2451,6 +2503,7 @@
                 "release": 0.015
               },
               "filter_cutoff": 13000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.15,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2488,6 +2541,7 @@
                 "decay": 0.14
               },
               "filter_cutoff": 3000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.8
@@ -2521,6 +2575,7 @@
                 "amplitude": 0.0
               },
               "filter_cutoff": 14000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.3,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2565,6 +2620,7 @@
                 "amplitude": 0.0
               },
               "filter_cutoff": 1800.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.65,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2604,6 +2660,7 @@
                 "decay": 0.8
               },
               "filter_cutoff": 16000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.5,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2641,6 +2698,7 @@
                 "decay": 0.1
               },
               "filter_cutoff": 5000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.75
@@ -2695,6 +2753,7 @@
                 "decay": 0.9
               },
               "filter_cutoff": 2200.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.7,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2735,6 +2794,7 @@
                 "release": 0.12
               },
               "filter_cutoff": 12000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.55,
               "bit_depth": 24,
               "sample_hold": 1,
@@ -2772,6 +2832,7 @@
                 "decay": 0.08
               },
               "filter_cutoff": 4000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.8
@@ -2808,6 +2869,7 @@
                 "decay": 0.06
               },
               "filter_cutoff": 6000.0,
+              "velocity_to_cutoff": 2.0,
               "bit_depth": 24,
               "sample_hold": 1,
               "gain": 0.75
@@ -2842,6 +2904,7 @@
                 "release": 0.01
               },
               "filter_cutoff": 15000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.4,
               "bit_depth": 12,
               "sample_hold": 2,
@@ -2887,6 +2950,7 @@
                 "decay": 0.15
               },
               "filter_cutoff": 2600.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.6,
               "bit_depth": 8,
               "sample_hold": 4,
@@ -2920,6 +2984,7 @@
                 "amplitude": 0.55
               },
               "filter_cutoff": 7000.0,
+              "velocity_to_cutoff": 2.0,
               "filter_resonance": 0.5,
               "bit_depth": 24,
               "sample_hold": 1,

@@ -368,6 +368,11 @@ pub struct Renderer {
     count_in: f64,
     /// Remaining count-in (in steps) at which the next count-in click fires.
     count_in_click: f64,
+    /// Count-in length (in steps) the current count-in started with; its
+    /// accents fall on bar lines measured from here.
+    count_in_len: f64,
+    /// A seek-chase of held notes waits for the count-in to finish.
+    chase_pending: bool,
     voices: Vec<Voice>,
     age: u64,
     strips: Vec<Strip>,
@@ -430,6 +435,8 @@ impl Renderer {
             metronome: false,
             count_in: 0.0,
             count_in_click: 0.0,
+            count_in_len: 0.0,
+            chase_pending: false,
             voices: (0..MAX_VOICES).map(|_| Voice::new(sr)).collect(),
             age: 0,
             strips: vec![Strip::new(sr); STRIPS],
@@ -590,11 +597,7 @@ impl Renderer {
             } => {
                 let old = self.load(song);
                 self.set_loop_region(loop_region);
-                self.play(start_step, looping);
-                if count_in.is_finite() && count_in > EPS {
-                    self.count_in = count_in.min(STEPS_PER_BAR as f64 * 4.0);
-                    self.count_in_click = self.count_in;
-                }
+                self.start(start_step, looping, count_in);
                 Some(old)
             }
             Command::Pause => {
@@ -727,11 +730,19 @@ impl Renderer {
         self.dc_l = DcBlock::new(self.sr);
         self.dc_r = DcBlock::new(self.sr);
         self.panic_left = 0;
+        self.rms_power = 0.0;
     }
 
     /// Starts the transport at `start_step` (clamped into the song). Notes already sounding
     /// at that point are chased so held chords and pads are heard immediately.
     pub fn play(&mut self, start_step: f64, looping: bool) {
+        self.start(start_step, looping, 0.0);
+    }
+
+    /// [`Self::play`] with an optional count-in (in steps). The seek-chase of
+    /// held notes is deferred until the count-in ends, so only the clicks are
+    /// heard while it runs.
+    fn start(&mut self, start_step: f64, looping: bool, count_in: f64) {
         if self.panic_left > 0 {
             self.hard_reset();
         }
@@ -746,17 +757,34 @@ impl Renderer {
         self.looping = looping;
         self.playing = true;
         self.count_in = 0.0;
+        self.chase_pending = false;
         self.resync();
-        if start > 0.0 {
-            let sps = self.samples_per_step();
-            for i in 0..self.next_event {
-                let ev = self.song.events[i];
-                if ev.end > start + 0.25 {
-                    if let Some(tp) = self.song.tracks.get(ev.track).copied() {
-                        if tp.audible && !tp.sound.is_drums() {
-                            let gate = ((ev.end - start) * sps) as u64;
-                            self.note_on(ev.track, &tp, ev.pitch, ev.velocity, gate, true);
-                        }
+        if count_in.is_finite() && count_in > EPS {
+            self.count_in = count_in.min(STEPS_PER_BAR as f64 * 4.0);
+            self.count_in_click = self.count_in;
+            self.count_in_len = self.count_in;
+            self.chase_pending = true;
+        } else {
+            self.chase_held_notes();
+        }
+    }
+
+    /// Starts every note sounding across the current clock (seek-chase) so
+    /// held chords and pads are heard straight away. Allocation-free.
+    fn chase_held_notes(&mut self) {
+        self.chase_pending = false;
+        let start = self.clock;
+        if start <= 0.0 {
+            return;
+        }
+        let sps = self.samples_per_step();
+        for i in 0..self.next_event {
+            let ev = self.song.events[i];
+            if ev.end > start + 0.25 {
+                if let Some(tp) = self.song.tracks.get(ev.track).copied() {
+                    if tp.audible && !tp.sound.is_drums() {
+                        let gate = ((ev.end - start) * sps) as u64;
+                        self.note_on(ev.track, &tp, ev.pitch, ev.velocity, gate, true);
                     }
                 }
             }
@@ -792,12 +820,14 @@ impl Renderer {
     pub fn pause(&mut self) {
         self.playing = false;
         self.count_in = 0.0;
+        self.chase_pending = false;
         self.release_song_voices();
     }
 
     pub fn device_lost(&mut self) {
         self.playing = false;
         self.count_in = 0.0;
+        self.chase_pending = false;
         self.hard_reset();
     }
 
@@ -805,6 +835,7 @@ impl Renderer {
     pub fn stop(&mut self) {
         self.playing = false;
         self.count_in = 0.0;
+        self.chase_pending = false;
         self.clock = 0.0;
         self.next_event = 0;
         self.next_beat = 0.0;
@@ -1034,11 +1065,13 @@ impl Renderer {
     }
 
     /// Runs the count-in while the clock waits: clicks on each of its beats
-    /// (the first accented) and counts down. Returns the frames to render.
+    /// (the first, and every bar line after it, accented) and counts down.
+    /// Returns the frames to render.
     fn count_in_step(&mut self, max: usize) -> usize {
         let sps = self.samples_per_step();
         if self.count_in_click > 0.0 && self.count_in <= self.count_in_click + EPS {
-            let accent = (self.count_in_click / STEPS_PER_BAR as f64).fract().abs() < 1e-6;
+            let bars = (self.count_in_len - self.count_in_click) / STEPS_PER_BAR as f64;
+            let accent = (bars - bars.round()).abs() < 1e-6;
             self.click.trigger(accent, self.sr);
             self.count_in_click -= STEPS_PER_BEAT as f64;
         }
@@ -1230,6 +1263,11 @@ impl Renderer {
             let seg = if counting {
                 self.count_in_step(n - pos)
             } else if was_playing {
+                if self.chase_pending {
+                    // The count-in just ended: start the held notes now, on
+                    // the first transport frame, not inside its last click.
+                    self.chase_held_notes();
+                }
                 self.transport_step(n - pos)
             } else {
                 n - pos
@@ -1634,6 +1672,25 @@ mod tests {
             peaks.master_rms
         );
         assert_eq!(peaks.glue_reduction_db, 0.0, "glue is off");
+    }
+
+    #[test]
+    fn hard_reset_clears_the_rms_meter() {
+        let p = one_note_project(Instrument::Pad, 60, 0.0, 16.0);
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (mut l, mut rr) = (vec![0.0; 256], vec![0.0; 256]);
+        let mut peaks = BlockPeaks::default();
+        for _ in 0..100 {
+            peaks = BlockPeaks::default();
+            r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+        }
+        assert!(peaks.master_rms > 0.005, "pad is sounding");
+        r.device_lost();
+        let mut peaks = BlockPeaks::default();
+        r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+        assert_eq!(peaks.master_rms, 0.0, "no stale RMS after a hard reset");
     }
 
     #[test]
@@ -2063,6 +2120,74 @@ mod tests {
             peak(96_000, 98_000) > 0.05,
             "the kick plays after the count-in"
         );
+    }
+
+    #[test]
+    fn count_in_defers_the_seek_chase_until_it_ends() {
+        // A pad held over the whole bar, started mid-bar with a one-bar
+        // count-in: only the clicks may sound until the transport rolls.
+        let p = one_note_project(Instrument::Pad, 60, 0.0, 16.0);
+        let mut r = Renderer::new(SR);
+        let _ = r.apply(Command::Play {
+            song: Box::new(SongData::from_project(&p)),
+            start_step: 8.0,
+            looping: false,
+            loop_region: None,
+            count_in: STEPS_PER_BAR as f64,
+        });
+        let (l, _) = run(&mut r, 140_000);
+        let lat = r.latency();
+        let peak = |from: usize, to: usize| {
+            l[lat + from..lat + to]
+                .iter()
+                .fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        assert!(peak(0, 2_000) > 0.1, "the count-in clicks");
+        for beat in 1..4 {
+            let at = beat * 24_000;
+            assert!(
+                peak(at - 21_000, at - 1_000) < 0.01,
+                "no chased pad before beat {beat} ({})",
+                peak(at - 21_000, at - 1_000)
+            );
+        }
+        assert!(peak(74_000, 95_900) < 0.01, "no pad during the count-in");
+        assert!(
+            peak(100_000, 138_000) > 0.01,
+            "the held chord sounds after the count-in"
+        );
+    }
+
+    #[test]
+    fn count_in_accents_its_first_click_and_bar_lines() {
+        // A bar and a half of count-in (6 beats): beats 0 and 4 are accented,
+        // measured from the count-in start, not from the song's bar grid.
+        let p = one_note_project(Instrument::Drums, 36, 0.0, 1.0);
+        let mut r = Renderer::new(SR);
+        let _ = r.apply(Command::Play {
+            song: Box::new(SongData::from_project(&p)),
+            start_step: 0.0,
+            looping: false,
+            loop_region: None,
+            count_in: STEPS_PER_BEAT as f64 * 6.0,
+        });
+        let (l, _) = run(&mut r, 6 * 24_000);
+        let lat = r.latency();
+        let peak = |beat: usize| {
+            let at = lat + beat * 24_000;
+            l[at..at + 2_000].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        for beat in [1, 2, 3, 5] {
+            assert!(peak(beat) > 0.05, "click on beat {beat}");
+            for accent in [0, 4] {
+                assert!(
+                    peak(accent) > peak(beat) * 1.2,
+                    "beat {accent} accented over beat {beat} ({} vs {})",
+                    peak(accent),
+                    peak(beat)
+                );
+            }
+        }
     }
 
     #[test]

@@ -15,6 +15,7 @@
       ],
       "envelope": { "attack": 0.005, "decay": 0.12, "sustain": 0.0, "release": 0.08 },
       "filter_cutoff": 4000.0,
+      "velocity_to_cutoff": 2.0,
       "bit_depth": 8,
       "sample_hold": 4,
       "gain": 0.8,

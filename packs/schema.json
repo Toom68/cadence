@@ -107,8 +107,8 @@
           "type": "number",
           "minimum": 0,
           "maximum": 6,
-          "default": 2,
-          "description": "Velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off. A fully open filter (`filter_cutoff` 20000) is never scaled."
+          "default": 0,
+          "description": "Velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off (the default when omitted, so older packs and songs sound unchanged); 2 is a good expressive value and is what the bundled packs use. A fully open filter (`filter_cutoff` 20000) is never scaled."
         },
         "spread": {
           "type": "number",
@@ -233,8 +233,8 @@
           "type": "number",
           "minimum": 0,
           "maximum": 6,
-          "default": 2,
-          "description": "Same as the preset field: velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off. A fully open filter (`filter_cutoff` 20000) is never scaled."
+          "default": 0,
+          "description": "Same as the preset field: velocity → brightness, in octaves of filter-cutoff swing across the full velocity range. The cutoff is scaled by 2^(velocity_to_cutoff * (velocity - 0.8)): velocity 0.8 plays exactly at `filter_cutoff`, harder notes open the filter, softer ones close it. 0 = off (the default when omitted, so older packs and songs sound unchanged); 2 is a good expressive value and is what the bundled packs use. A fully open filter (`filter_cutoff` 20000) is never scaled."
         },
         "spread": {
           "type": "number",
