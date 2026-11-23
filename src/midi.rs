@@ -499,6 +499,7 @@ pub fn import_midi(bytes: &[u8]) -> Result<Project, String> {
         markers: Vec::new(),
         chord_events: Vec::new(),
         buses: default_buses(),
+        glue: 0.0,
     };
     project
         .validate()

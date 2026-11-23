@@ -1221,6 +1221,16 @@ pub struct Project {
     ///   rejected at parse time.
     #[serde(default = "default_buses", skip_serializing_if = "buses_are_default")]
     pub buses: [Bus; NUM_BUSES],
+    /// Master "glue" bus compression, 0..=1 (0 = off, a true bypass). Songs
+    /// saved before it existed have no `glue` key and load as 0; 0 is not
+    /// written.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub glue: f32,
+}
+
+/// `skip_serializing_if` for optional amounts that default to 0.
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
 }
 
 snapshot_clone!(Project {
@@ -1236,6 +1246,7 @@ snapshot_clone!(Project {
     markers,
     chord_events,
     buses,
+    glue,
 });
 
 /// Pitch-class names with ASCII sharps, indexed by `pitch % 12` (C = 0).
@@ -1810,6 +1821,7 @@ impl Project {
             markers: Vec::new(),
             chord_events: Vec::new(),
             buses: default_buses(),
+            glue: 0.0,
         }
     }
 
@@ -1904,6 +1916,7 @@ impl Project {
             1.0,
             self.master_volume.is_finite(),
         )?;
+        check_range("Master glue", self.glue, 0.0, 1.0, self.glue.is_finite())?;
         if self.tracks.len() > MAX_TRACKS {
             return Err(format!("A song can have at most {MAX_TRACKS} tracks."));
         }
@@ -2255,6 +2268,7 @@ impl Project {
         self.swing = finite_or(self.swing, 0.0).clamp(0.0, MAX_SWING);
         self.bars = self.bars.clamp(MIN_BARS, MAX_BARS);
         self.master_volume = finite_or_f32(self.master_volume, 0.8).clamp(0.0, 1.0);
+        self.glue = finite_or_f32(self.glue, 0.0).clamp(0.0, 1.0);
         self.tracks.truncate(MAX_TRACKS);
         let max_pos = MAX_PATTERN_STEPS as f64;
         let mut track_ids = HashSet::new();
@@ -2869,12 +2883,33 @@ fn demo_project() -> Project {
             ChordEvent::new(10, ChordQuality::Dominant9, 96.0),
         ],
         buses: default_buses(),
+        glue: 0.0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn master_glue_defaults_off_validates_and_normalizes() {
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[]}"#;
+        let mut p: Project = serde_json::from_str(legacy).unwrap();
+        assert_eq!(p.glue, 0.0);
+        p.validate().unwrap();
+        assert!(!serde_json::to_string(&p).unwrap().contains("glue"));
+        p.glue = 0.4;
+        let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.glue, 0.4);
+        for bad in [1.5, -0.1, f32::NAN] {
+            p.glue = bad;
+            assert!(p.validate().is_err(), "glue {bad} rejected");
+            p.normalize();
+            p.validate().unwrap();
+        }
+        assert_eq!(Project::empty().glue, 0.0);
+        assert_eq!(Project::demo().glue, 0.0);
+    }
 
     #[test]
     fn track_eq_defaults_flat_validates_and_normalizes() {

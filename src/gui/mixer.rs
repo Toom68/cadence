@@ -911,6 +911,15 @@ fn eq_text(db: f32) -> String {
     }
 }
 
+/// Master glue knob caption: "Off" at 0 (a true bypass), else the amount.
+fn glue_text(glue: f32) -> String {
+    if glue <= 0.0 {
+        "Off".to_owned()
+    } else {
+        format!("{:.0}%", glue * 100.0)
+    }
+}
+
 /// "Master" or "Bus A": the route's short name.
 fn route_label(bus: u8) -> String {
     if bus == 0 {
@@ -1967,7 +1976,16 @@ impl CadenceApp {
             title.width(),
         );
         y += 20.0 + 14.0 + GAP_XS;
-        let _ = pal;
+
+        // Glue knob along the bottom when the strip is tall enough.
+        let ks: f32 = if compact { 20.0 } else { 28.0 };
+        let knob_h = ks + 30.0;
+        let has_glue = inner.bottom() - y >= knob_h + GAP_XS + 120.0;
+        let bottom = if has_glue {
+            inner.bottom() - knob_h - GAP_XS
+        } else {
+            inner.bottom()
+        };
 
         // Group: fader column | dB scale | meter L | meter R, centered.
         let ro_w = look.readout_w();
@@ -1976,7 +1994,38 @@ impl CadenceApp {
         let meters_w = 2.0 * mw + 3.0;
         let group_w = ro_w + GAP_XS + scale_w + 2.0 + meters_w;
         let gx = inner.left() + (inner.width() - group_w) * 0.5;
-        let zone = Rect::from_min_max(pos2(inner.left(), y), inner.max);
+        let zone = Rect::from_min_max(pos2(inner.left(), y), pos2(inner.right(), bottom));
+
+        if has_glue {
+            let knob_w = ks.max(KNOB_MIN_W);
+            let mut kui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt("mixer.master.glue")
+                    .max_rect(Rect::from_min_size(
+                        pos2(inner.center().x - knob_w * 0.5, bottom + GAP_XS),
+                        vec2(knob_w, knob_h),
+                    ))
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            let glue = self.project.glue;
+            let mut v = glue;
+            if mixer_knob(
+                &mut kui,
+                look,
+                &mut v,
+                0.0,
+                false,
+                "Glue",
+                &glue_text(glue),
+                pal.accent,
+                ks,
+            )
+            .changed()
+            {
+                let v = if v < 0.01 { 0.0 } else { v.clamp(0.0, 1.0) };
+                self.edit("Master glue", Some("glue"), |p| p.glue = v);
+            }
+        }
 
         let volume = self.project.master_volume;
         paint_readout(

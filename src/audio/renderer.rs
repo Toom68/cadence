@@ -5,8 +5,8 @@
 //! After construction nothing here allocates; commands only swap pointers.
 
 use super::dsp::{
-    soft_clip, time_coef, DcBlock, Limiter, PingPongDelay, Reverb, Smoother, Svf, SvfCoefs,
-    ThreeBandEq,
+    soft_clip, time_coef, DcBlock, GlueCompressor, Limiter, PingPongDelay, Reverb, Smoother, Svf,
+    SvfCoefs, ThreeBandEq,
 };
 use super::font::{FontBank, FontSynth};
 use super::meter::BlockPeaks;
@@ -381,6 +381,8 @@ pub struct Renderer {
     click_buf: Vec<f32>,
     delay: PingPongDelay,
     reverb: Reverb,
+    /// Master bus compressor ahead of the limiter; bypassed at glue 0.
+    glue: GlueCompressor,
     limiter: Limiter,
     dc_l: DcBlock,
     dc_r: DcBlock,
@@ -432,6 +434,7 @@ impl Renderer {
             click_buf: vec![0.0; MAX_BLOCK],
             delay: PingPongDelay::new(sr),
             reverb: Reverb::new(sr),
+            glue: GlueCompressor::new(sr),
             limiter: Limiter::new(sr),
             dc_l: DcBlock::new(sr),
             dc_r: DcBlock::new(sr),
@@ -472,6 +475,7 @@ impl Renderer {
         fresh.metronome = self.metronome;
         fresh.loop_region = self.loop_region;
         fresh.master.snap(Self::master_gain(&fresh.song));
+        fresh.glue.set_amount(fresh.song.glue, true);
         for (strip, p) in fresh.strips.iter_mut().zip(fresh.song.tracks.iter()) {
             strip.set(p, fresh.sr, true);
         }
@@ -609,6 +613,7 @@ impl Renderer {
         } else {
             self.master.target = Self::master_gain(&song);
         }
+        self.glue.set_amount(song.glue, snap);
         let old = std::mem::replace(&mut self.song, song);
         self.font_bank.retain_tracks(&self.song.tracks);
         self.resync();
@@ -676,6 +681,7 @@ impl Renderer {
         }
         self.delay.clear();
         self.reverb.clear();
+        self.glue.clear();
         self.limiter.clear();
         self.click.env = 0.0;
         self.dc_l = DcBlock::new(self.sr);
@@ -1268,6 +1274,8 @@ impl Renderer {
             *ml = self.dc_l.process(*ml * g + c);
             *mr = self.dc_r.process(*mr * g + c);
         }
+        self.glue
+            .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
         self.limiter
             .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
 
@@ -1420,6 +1428,39 @@ mod tests {
             "low shelf raises bass energy ({e_flat} -> {e_boost})"
         );
         assert!(bl.iter().chain(&br).all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn master_glue_is_neutral_off_and_compresses_on() {
+        let mut p = one_note_project(Instrument::Pad, 48, 0.0, 16.0);
+        p.master_volume = 1.0;
+        p.tracks[0].volume = 1.0;
+        for pitch in [55, 60, 63, 67, 72] {
+            p.tracks[0].patterns[0]
+                .notes
+                .push(Note::new(pitch, 0.0, 16.0, 1.0));
+        }
+        p.validate().unwrap();
+        let (dl, dr) = render_song(&p, 96_000);
+        let mut json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("glue").is_none(), "glue 0 is not saved");
+        json.as_object_mut().unwrap().remove("glue");
+        let legacy: Project = serde_json::from_value(json).unwrap();
+        assert_eq!(render_song(&legacy, 96_000), (dl.clone(), dr.clone()));
+        p.glue = 1.0;
+        p.validate().unwrap();
+        let (gl, gr) = render_song(&p, 96_000);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let (dry, glued) = (rms(&dl[48_000..]), rms(&gl[48_000..]));
+        assert!(dry > 0.01);
+        assert!(
+            glued < dry * 0.95,
+            "glue turns the pad down ({dry} -> {glued})"
+        );
+        assert!(gl
+            .iter()
+            .chain(&gr)
+            .all(|x| x.is_finite() && x.abs() <= 0.892));
     }
 
     #[test]

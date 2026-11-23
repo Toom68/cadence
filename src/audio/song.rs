@@ -224,6 +224,8 @@ pub struct SongData {
     pub bpm: f64,
     pub total_steps: f64,
     pub master_volume: f32,
+    /// Master glue compression amount, 0..=1 (0 = bypass).
+    pub glue: f32,
 }
 
 impl SongData {
@@ -347,6 +349,7 @@ impl SongData {
             },
             total_steps: project.total_steps().max(1.0),
             master_volume: unit(project.master_volume),
+            glue: unit(project.glue),
         }
     }
 
@@ -361,6 +364,7 @@ impl SongData {
             bpm: 120.0,
             total_steps: 16.0,
             master_volume: 0.8,
+            glue: 0.0,
         }
     }
 

@@ -796,6 +796,125 @@ impl PingPongDelay {
     }
 }
 
+/// Gentle stereo-linked bus compressor for the master ("glue"): RMS-style
+/// detection, soft knee, ~2:1, 10 ms attack / 120 ms release, no automatic
+/// make-up gain. One `amount` (0..=1) lowers the threshold from -6 to
+/// -24 dBFS and fades the ratio in over the first fifth of its travel, so
+/// 0 is a true bypass — the block is not touched at all.
+#[derive(Clone, Copy, Debug)]
+pub struct GlueCompressor {
+    amount: Smoother,
+    /// Detector: smoothed mean square of the louder channel.
+    power: f32,
+    power_coef: f32,
+    /// Smoothed gain reduction in dB (>= 0).
+    env_db: f32,
+    attack: f32,
+    release: f32,
+    /// Largest gain reduction (dB) in the last processed block.
+    pub gain_reduction_db: f32,
+}
+
+impl GlueCompressor {
+    pub const RATIO: f32 = 2.0;
+    pub const KNEE_DB: f32 = 6.0;
+    pub const ATTACK_SECONDS: f32 = 0.010;
+    pub const RELEASE_SECONDS: f32 = 0.120;
+    const DETECTOR_SECONDS: f32 = 0.005;
+
+    pub fn new(sample_rate: f32) -> Self {
+        GlueCompressor {
+            amount: Smoother::new(0.0, 0.05, sample_rate),
+            power: 0.0,
+            power_coef: 1.0 - time_coef(Self::DETECTOR_SECONDS, sample_rate),
+            env_db: 0.0,
+            attack: 1.0 - time_coef(Self::ATTACK_SECONDS, sample_rate),
+            release: 1.0 - time_coef(Self::RELEASE_SECONDS, sample_rate),
+            gain_reduction_db: 0.0,
+        }
+    }
+
+    /// Sets the glue amount (clamped to 0..=1); `snap` skips the ramp.
+    pub fn set_amount(&mut self, amount: f32, snap: bool) {
+        let a = if amount.is_finite() {
+            amount.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if snap {
+            self.amount.snap(a);
+        } else {
+            self.amount.target = a;
+        }
+    }
+
+    /// Threshold in dBFS for a glue `amount`.
+    pub fn threshold_db(amount: f32) -> f32 {
+        -6.0 - 18.0 * amount
+    }
+
+    /// Static gain reduction (dB, >= 0) for a detector level `x_db`.
+    #[inline]
+    fn curve(over_db: f32, slope: f32) -> f32 {
+        let half = Self::KNEE_DB * 0.5;
+        if over_db <= -half {
+            0.0
+        } else if over_db >= half {
+            slope * over_db
+        } else {
+            let t = over_db + half;
+            slope * t * t / (2.0 * Self::KNEE_DB)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.power = 0.0;
+        self.env_db = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+
+    /// Off and fully released: `process` leaves the signal untouched.
+    pub fn is_bypassed(&self) -> bool {
+        self.amount.value == 0.0 && self.amount.target == 0.0 && self.env_db == 0.0
+    }
+
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let amount = self.amount.skip(l.len());
+        if self.is_bypassed() {
+            self.power = 0.0;
+            self.gain_reduction_db = 0.0;
+            return;
+        }
+        let threshold = Self::threshold_db(amount);
+        let slope = (1.0 - 1.0 / Self::RATIO) * (amount * 5.0).min(1.0);
+        let mut max_gr = 0.0f32;
+        for (sl, sr) in l.iter_mut().zip(r.iter_mut()) {
+            let p = (*sl * *sl).max(*sr * *sr);
+            self.power = flush(self.power + (p - self.power) * self.power_coef);
+            // 10·log10 of a mean square is the RMS level in dB.
+            let level_db = 10.0 * self.power.max(1e-12).log10();
+            let gr = Self::curve(level_db - threshold, slope);
+            let coef = if gr > self.env_db {
+                self.attack
+            } else {
+                self.release
+            };
+            self.env_db = flush(self.env_db + (gr - self.env_db) * coef);
+            if self.env_db > 0.0 {
+                let g = 10f32.powf(-self.env_db / 20.0);
+                *sl *= g;
+                *sr *= g;
+            }
+            max_gr = max_gr.max(self.env_db);
+        }
+        if amount == 0.0 && self.env_db < 1e-3 {
+            // Released while switched off: back to a true bypass.
+            self.env_db = 0.0;
+        }
+        self.gain_reduction_db = max_gr;
+    }
+}
+
 /// Stereo-linked look-ahead peak limiter followed by a soft safety clip.
 #[derive(Clone, Debug)]
 pub struct Limiter {
@@ -1005,6 +1124,78 @@ mod tests {
         }
         assert!(out.is_finite() && out < 4.0);
         assert!(eq.is_bypassed(), "a glide back to 0 dB ends in bypass");
+    }
+
+    fn crest_db(l: &[f32], r: &[f32]) -> f32 {
+        let peak = l.iter().chain(r).fold(0.0f32, |m, x| m.max(x.abs()));
+        let rms_lr = ((rms(l).powi(2) + rms(r).powi(2)) * 0.5).sqrt();
+        db(peak) - db(rms_lr)
+    }
+
+    /// Loud, dense material with a slow swell: two detuned partials whose
+    /// level swings between -24 and -2 dBFS at 1.5 Hz.
+    fn dense_swell(sr: f32, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut rng = Rng::new(11);
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr;
+                let env = 0.06 + 0.74 * (0.5 + 0.5 * (TAU * 1.5 * t).sin()).powi(2);
+                let x = (TAU * 110.0 * t).sin() * 0.6 + (TAU * 331.0 * t).sin() * 0.3;
+                let n = rng.noise() * 0.1;
+                (env * (x + n), env * (x * 0.9 - n))
+            })
+            .unzip()
+    }
+
+    #[test]
+    fn glue_off_is_a_true_bypass() {
+        let sr = 48_000.0;
+        let (src_l, src_r) = dense_swell(sr, 24_000);
+        let mut glue = GlueCompressor::new(sr);
+        let (mut l, mut r) = (src_l.clone(), src_r.clone());
+        for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            glue.process(a, b);
+        }
+        assert!(glue.is_bypassed());
+        assert_eq!((l, r), (src_l, src_r));
+    }
+
+    #[test]
+    fn glue_lowers_crest_factor_and_releases_when_switched_off() {
+        let sr = 48_000.0;
+        let (src_l, src_r) = dense_swell(sr, 96_000);
+        let mut glue = GlueCompressor::new(sr);
+        glue.set_amount(0.7, true);
+        let (mut l, mut r) = (src_l.clone(), src_r.clone());
+        let mut most = 0.0f32;
+        for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            glue.process(a, b);
+            most = most.max(glue.gain_reduction_db);
+        }
+        let (before, after) = (crest_db(&src_l, &src_r), crest_db(&l, &r));
+        assert!(
+            after < before - 0.5,
+            "glue tames the swell: crest {before:.2} dB -> {after:.2} dB"
+        );
+        assert!(
+            most > 2.0 && most < 12.0,
+            "gentle, not squashing ({most} dB)"
+        );
+        // No make-up gain: the output never gets louder than the input.
+        let peak = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak(&l) <= peak(&src_l) + 1e-6);
+        // Switched off, it releases and returns to a bit-exact bypass.
+        glue.set_amount(0.0, false);
+        let mut quiet = vec![0.01f32; 256];
+        let mut quiet_r = quiet.clone();
+        for _ in 0..400 {
+            glue.process(&mut quiet, &mut quiet_r);
+            quiet.fill(0.01);
+            quiet_r.fill(0.01);
+        }
+        assert!(glue.is_bypassed());
+        glue.process(&mut quiet, &mut quiet_r);
+        assert!(quiet.iter().all(|&x| x == 0.01));
     }
 
     #[test]
