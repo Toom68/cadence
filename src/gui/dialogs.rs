@@ -993,6 +993,12 @@ impl CadenceApp {
         let live_device = self.engine.as_ref().map(|e| e.device_name());
         let audio_error = self.audio_error.clone();
         let list_devices = self.io_enabled;
+        let mut midi_pick: Option<crate::midi_in::MidiInputPref> = None;
+        let midi_pref = self.midi_pref.clone();
+        let midi_ports = self
+            .midi_in
+            .as_ref()
+            .map(|h| (h.ports(), h.connected(), h.scanned()));
         const COMBO_W: f32 = 260.0;
         let resp = show_dialog(ctx, "cadence-preferences", pal, W_FORM, |ui| {
             header(ui, pal, "PREFERENCES", "Cadence settings");
@@ -1039,6 +1045,11 @@ impl CadenceApp {
             ui.add(egui::Label::new(RichText::new(note).small().color(pal.text_faint)).truncate());
             ui.add_space(theme::GAP_M);
 
+            ui.label(theme::kicker_text(pal, "MIDI INPUT"));
+            ui.add_space(theme::GAP_XS);
+            midi_pick = midi_input_picker(ui, pal, &midi_pref, midi_ports.as_ref(), COMBO_W);
+            ui.add_space(theme::GAP_M);
+
             ui.label(theme::kicker_text(pal, "UPDATES"));
             ui.add_space(theme::GAP_XS);
             ui.checkbox(&mut auto, "Check for updates automatically");
@@ -1059,6 +1070,9 @@ impl CadenceApp {
         }
         if let Some(device) = device_pick {
             self.set_audio_device(device);
+        }
+        if let Some(pref) = midi_pick {
+            self.set_midi_input(pref);
         }
         if auto != self.update.prefs.auto_check {
             self.update.prefs.auto_check = auto;
@@ -1315,6 +1329,71 @@ fn form_label(ui: &mut Ui, pal: Palette, text: &str) {
     ui.label(RichText::new(text).color(pal.text_dim));
 }
 
+/// Port lists from the MIDI input thread: `(ports, connected, scanned)`.
+type MidiPorts = (Vec<String>, Vec<String>, bool);
+
+/// Preferences ▸ MIDI input: None / All inputs / one device, plus a line
+/// saying what is connected. A saved device that is unplugged stays listed
+/// (it reconnects when it comes back). Returns the pick, if one was made.
+fn midi_input_picker(
+    ui: &mut Ui,
+    pal: Palette,
+    current: &crate::midi_in::MidiInputPref,
+    ports: Option<&MidiPorts>,
+    width: f32,
+) -> Option<crate::midi_in::MidiInputPref> {
+    use crate::midi_in::MidiInputPref;
+    let mut pick = None;
+    let names: &[String] = ports.map_or(&[], |p| p.0.as_slice());
+    theme::combo("prefs-midi-input", current.label(), width).show_ui(ui, |ui| {
+        let mut choice = |ui: &mut Ui, pref: MidiInputPref, text: String| {
+            if ui.selectable_label(*current == pref, text).clicked() {
+                pick = Some(pref);
+            }
+        };
+        choice(ui, MidiInputPref::None, "None".to_owned());
+        choice(ui, MidiInputPref::All, "All inputs".to_owned());
+        for name in names {
+            choice(ui, MidiInputPref::Device(name.clone()), name.clone());
+        }
+        if let MidiInputPref::Device(saved) = current {
+            if !names.contains(saved) {
+                choice(ui, current.clone(), format!("{saved} (not connected)"));
+            }
+        }
+    });
+    let note = midi_input_note(current, ports);
+    ui.add(egui::Label::new(RichText::new(note).small().color(pal.text_faint)).truncate());
+    pick.filter(|p| p != current)
+}
+
+/// The status line under the MIDI input picker.
+pub(super) fn midi_input_note(
+    pref: &crate::midi_in::MidiInputPref,
+    ports: Option<&MidiPorts>,
+) -> String {
+    use crate::midi_in::MidiInputPref;
+    let Some((names, connected, scanned)) = ports else {
+        return "MIDI input is not available in this session.".to_owned();
+    };
+    if *pref == MidiInputPref::None {
+        return "MIDI input is off.".to_owned();
+    }
+    if !connected.is_empty() {
+        return format!("Playing the selected track from {}.", connected.join(", "));
+    }
+    if !scanned {
+        return "Looking for MIDI devices…".to_owned();
+    }
+    match pref {
+        MidiInputPref::Device(name) => {
+            format!("Waiting for {name} — it connects when plugged in.")
+        }
+        _ if names.is_empty() => "No MIDI devices found — plug one in.".to_owned(),
+        _ => "Connecting…".to_owned(),
+    }
+}
+
 // ----- help content -------------------------------------------------------------
 
 /// Pages of the Help dialog.
@@ -1397,6 +1476,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Return to start", Shortcut(&super::SC_HOME)),
             ("Loop on / off", Shortcut(&super::SC_LOOP)),
             ("Record what you play", Shortcut(&super::SC_RECORD)),
+            ("Play a MIDI keyboard", Menu("Preferences ▸ MIDI input")),
             ("Metronome", Menu("Transport menu")),
             ("Tap the tempo", Mouse("Click TAP in rhythm")),
             ("Move the playhead", Mouse("Click the ruler")),
@@ -1648,6 +1728,11 @@ const KEYBOARD_SECTIONS: &[Section] = &[Section {
             Mouse("The key shown on each pad"),
         ),
         ("Record into the pattern", Shortcut(&super::SC_RECORD)),
+        ("Use a MIDI keyboard", Menu("Preferences ▸ MIDI input")),
+        (
+            "Hold notes while recording",
+            Mouse("Hold the sustain pedal"),
+        ),
     ],
 }];
 
@@ -1997,9 +2082,11 @@ mod tests {
                 bytes: 3 << 20,
             })
         });
+        // Four sections (appearance, audio output, MIDI input, updates):
+        // about 455 px of content.
         let prefs_h = check("cadence-preferences", || Dialog::Preferences);
         assert!(
-            prefs_h < 420.0,
+            prefs_h < 490.0,
             "preferences dialog stretched to {prefs_h} px"
         );
     }

@@ -4,6 +4,8 @@
 //! - [`model`]: song data model (projects, tracks, patterns, notes).
 //! - [`audio`]: real-time engine and offline WAV rendering.
 //! - [`midi`]: Standard MIDI File import/export.
+//! - [`midi_in`]: hardware MIDI controller input (port scanning, parsing,
+//!   sustain-pedal note tracking).
 //! - [`persistence`]: safe project save/load and crash recovery.
 //! - [`packs`]: data-driven JSON instrument packs (validation, install, catalog).
 //! - [`font`]: SoundFont (`.sf2`) instruments — user font directory, GM program
@@ -16,6 +18,7 @@ pub mod audio;
 pub mod font;
 pub mod gui;
 pub mod midi;
+pub mod midi_in;
 pub mod model;
 pub mod packs;
 pub mod persistence;

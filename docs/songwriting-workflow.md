@@ -74,6 +74,12 @@ The **Keyboard** tab (⌘/Ctrl+3) is a playable instrument: a full-width piano o
 
 Arm **Record** (the transport ● button, **R**, or Transport → Record) and notes you play are quantized to the Snap grid and written into the selected track's pattern — live while playing, or step-recorded at the playhead while stopped (it advances one step per note). Recording targets MIDI tracks; audio lanes only hold imported WAV clips. **Edit → Arpeggiator…** writes a generated chord run into the current pattern instead — pick the song key, chord, direction, rate, octaves and velocity.
 
+#### MIDI keyboards and controllers
+
+Plug in a MIDI keyboard (USB class-compliant devices need no driver) and play: notes sound on the selected track at the velocity you play them, on any tab and whether or not the transport is running. With **Record** armed they are recorded exactly like computer-keyboard notes — same Snap quantize, same one-undo-step take, the same count-in and step recording — with your velocity stored on each note. Holding the **sustain pedal** (CC 64) keeps recorded notes going until you lift it. A computer key and a controller key on the same pitch are tracked separately, so neither releases the other.
+
+Choose the input in **File → Preferences… → MIDI input**: *All inputs* (the default — every connected device, including ones plugged in later), a single device, or *None*. The choice is remembered. Cadence rescans every few seconds (every second while Preferences is open), reconnects a device when it is plugged back in, and reports connects and disconnects in the status bar; unplugging ends any held notes. Live play-through uses the same short preview as the computer keyboard, so how long you hold a key affects the recorded length, not the preview. Only notes, velocity and the sustain pedal are used — pitch bend, mod wheel and other controllers are ignored.
+
 ## 5. Arrange clips
 
 The **arranger** shows every track's clips on a shared timeline. Its toolbar holds the song-length field, the **Snap** selector (Bar / Beat / 1/16), zoom buttons and **Fit**, the **Follow** playhead toggle, a loop-region readout with ✕ while a region exists, **Marker**, **Split**, and a selection count. Horizontal zoom is **=** / **−**, **⌘/Ctrl+wheel**, or **View → Zoom In/Out**; **View → Fit Song in Arranger** fits the whole song.

@@ -53,6 +53,7 @@ and `update.rs` tests use inline fixtures signed by a throwaway key.
 | `src/model.rs` | song model (`Project`, `Track`, `Pattern`, `Note`, `Clip`), limits, `validate`, demo song |
 | `src/audio/` | real-time `AudioEngine` and offline `export_wav` (same DSP) |
 | `src/midi.rs` | Standard MIDI File import/export |
+| `src/midi_in.rs` | hardware MIDI controller input (midir): pure parsing/sustain/connection planning + a background port thread; headless `CadenceApp` never opens it |
 | `src/persistence.rs` | atomic `.cadence` save/load (20 MB cap), crash-recovery autosave, `data_dir()` |
 | `src/packs.rs` | JSON instrument packs: schema types, validation, install, catalog |
 | `src/font.rs` | SoundFont (`.sf2`) instruments: user font dir, GM program names, catalog |
