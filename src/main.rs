@@ -284,7 +284,8 @@ fn render_stems(project: &Project, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Loads and validates a song like the app's Open does: audio this
+/// Loads and validates a song for `--render`/`--render-stems` like the
+/// app's Open does (`--check` stays read-only instead): audio this
 /// computer's store lacks is picked up from the song's `<name> Audio`
 /// folder (written by "Save Copy with Audio…") or the song's own folder.
 fn load_song(song: &Path) -> Result<Project, String> {
@@ -306,7 +307,22 @@ fn load_song(song: &Path) -> Result<Project, String> {
 }
 
 fn check(song: &Path) -> Result<(), String> {
-    let project = load_song(song)?;
+    // Read-only: report audio beside the song, never copy it into the store.
+    let project = persistence::load_project(song)?;
+    let found = persistence::find_song_audio(&project, song);
+    if !found.staged.is_empty() {
+        eprintln!(
+            "Found {} audio file{} beside the song (not copied: --check is read-only; \
+             opening or rendering the song adds {} to the audio store).",
+            found.staged.len(),
+            if found.staged.len() == 1 { "" } else { "s" },
+            if found.staged.len() == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        );
+    }
     let events = project.events(false);
     let audible = project.events(true);
     println!("OK: {}", song.display());
@@ -348,11 +364,11 @@ fn check(song: &Path) -> Result<(), String> {
         events.len(),
         audible.len()
     );
-    let missing_audio = persistence::missing_audio_refs(&project);
+    let missing_audio = found.missing;
     if !missing_audio.is_empty() {
         println!(
-            "  WARNING: {} audio clip file{} not in this PC's audio store; \
-             those clips play and export as silence: {}",
+            "  WARNING: {} audio clip file{} not in this PC's audio store or beside \
+             the song; those clips play and export as silence: {}",
             missing_audio.len(),
             if missing_audio.len() == 1 { "" } else { "s" },
             missing_audio.join(", ")

@@ -34,7 +34,7 @@ use crate::model::{AudioClip, Clip, Instrument, Project, Track};
 pub use history::History;
 
 use dialogs::Dialog;
-use files::{Document, ExportJob, PendingAction};
+use files::{Document, DropImport, ExportJob, PendingAction};
 use theme::{Palette, ThemeChoice};
 use transport::TransportState;
 
@@ -202,6 +202,8 @@ pub struct CadenceApp {
     focus: Focus,
     dialog: Dialog,
     export: Option<ExportJob>,
+    /// Dropped WAVs/SoundFonts being staged on a worker (see `files.rs`).
+    drop_import: Option<DropImport>,
     /// File ▸ "Normalize WAV Export": loudness-normalize WAV exports to
     /// [`crate::audio::DEFAULT_TARGET_LUFS`]. Off by default; remembered in
     /// eframe storage like the theme (never in the song).
@@ -358,6 +360,7 @@ impl CadenceApp {
             focus: Focus::Arranger,
             dialog: Dialog::None,
             export: None,
+            drop_import: None,
             export_normalize: false,
             status: None,
             engine_dirty: false,
@@ -470,6 +473,7 @@ impl CadenceApp {
         self.transport.loop_region = None;
         self.project = project;
         self.history.reset();
+        self.drop_import_song_replaced();
         self.doc.path = path;
         self.doc.saved_state = clean.then(|| self.history.state());
         self.autosaved_state = self.history.state();

@@ -164,9 +164,9 @@ pub fn stage_audio_file(source: &Path) -> Result<StagedAudio, String> {
     stage_audio_file_into(&audio_dir(), source)
 }
 
-/// The store-parameterized core of [`stage_audio_file`] — tests point it at
-/// a temp directory, production callers go through [`audio_dir`].
-fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, String> {
+/// [`stage_audio_file`] into an explicit store (the drop worker captures
+/// [`audio_dir`] up front; tests point it at a temp directory).
+pub fn stage_audio_file_into(dir: &Path, source: &Path) -> Result<StagedAudio, String> {
     let shown = source.display();
     let meta = fs::metadata(source).map_err(|err| format!("Could not open {shown}: {err}"))?;
     if !meta.is_file() {
@@ -241,6 +241,23 @@ pub fn song_audio_dir(song: &Path) -> PathBuf {
         _ => PathBuf::from("."),
     };
     parent.join(format!("{stem} Audio"))
+}
+
+/// Names of the `.wav` files directly in `folder` (a song's
+/// [`song_audio_dir`]); empty when it is missing or unreadable. Cleanup
+/// treats these names as in use.
+pub fn audio_folder_names(folder: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".wav"))
+        .collect();
+    names.sort();
+    names
 }
 
 /// Every audio-store name `project` references, sorted and deduplicated.
@@ -343,6 +360,30 @@ pub fn import_song_audio(project: &Project, song: &Path) -> SongAudioImport {
 
 /// [`import_song_audio`] into an explicit audio store.
 pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> SongAudioImport {
+    resolve_song_audio(store, project, song, true)
+}
+
+/// Read-only [`import_song_audio`] (for `cadence --check`): reports which
+/// missing files the song's `<stem> Audio` folder or own folder could
+/// supply (in `staged`) without copying anything into the store.
+pub fn find_song_audio(project: &Project, song: &Path) -> SongAudioImport {
+    find_song_audio_in(&audio_dir(), project, song)
+}
+
+/// [`find_song_audio`] against an explicit audio store.
+pub fn find_song_audio_in(store: &Path, project: &Project, song: &Path) -> SongAudioImport {
+    resolve_song_audio(store, project, song, false)
+}
+
+/// Shared core of [`import_song_audio_into`] / [`find_song_audio_in`]:
+/// `stage` copies each usable file into `store`, otherwise it is only
+/// checked.
+fn resolve_song_audio(
+    store: &Path,
+    project: &Project,
+    song: &Path,
+    stage: bool,
+) -> SongAudioImport {
     let mut result = SongAudioImport::default();
     let beside = song_audio_dir(song);
     let own = beside.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -351,10 +392,14 @@ pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> S
             result.missing.push(name);
             continue;
         }
-        let staged = [beside.join(&name), own.join(&name)]
+        let usable = [beside.join(&name), own.join(&name)]
             .iter()
-            .any(|candidate| stage_named_audio(store, candidate, &name).is_ok());
-        if staged {
+            .any(|candidate| match checked_named_audio(candidate, &name) {
+                Ok(bytes) if stage => stage_bytes(store, &name, &bytes).is_ok(),
+                Ok(_) => true,
+                Err(_) => false,
+            });
+        if usable {
             result.staged.push(name);
         } else {
             result.missing.push(name);
@@ -363,9 +408,9 @@ pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> S
     result
 }
 
-/// Copies the WAV at `source` into `store` as `name` after checking it
+/// Reads the WAV at `source` for the store name `name` after checking it
 /// decodes (and, for `<hash>.wav` names, that the content hash matches).
-fn stage_named_audio(store: &Path, source: &Path, name: &str) -> Result<(), String> {
+fn checked_named_audio(source: &Path, name: &str) -> Result<Vec<u8>, String> {
     let bytes = read_capped(source, MAX_AUDIO_FILE_BYTES)
         .ok_or_else(|| format!("Could not read {}", source.display()))?;
     decode_wav_f32(&bytes)?;
@@ -378,13 +423,18 @@ fn stage_named_audio(store: &Path, source: &Path, name: &str) -> Result<(), Stri
             source.display()
         ));
     }
+    Ok(bytes)
+}
+
+/// Writes checked audio `bytes` into `store` as `name`.
+fn stage_bytes(store: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     fs::create_dir_all(store).map_err(|err| {
         format!(
             "Could not create the audio store {}: {err}",
             store.display()
         )
     })?;
-    write_file_atomic(&store.join(name), &bytes)
+    write_file_atomic(&store.join(name), bytes)
 }
 
 /// Reads a regular file of at most `max` bytes; `None` for anything else.
@@ -406,7 +456,12 @@ fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
 /// clip or song keeps its WAV, since another song may reference it), so
 /// the import path warns once this passes a generous bound.
 pub fn audio_store_bytes() -> u64 {
-    fs::read_dir(audio_dir())
+    audio_store_bytes_in(&audio_dir())
+}
+
+/// [`audio_store_bytes`] for an explicit store folder.
+pub fn audio_store_bytes_in(store: &Path) -> u64 {
+    fs::read_dir(store)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
@@ -429,9 +484,10 @@ pub struct UnusedAudio {
 }
 
 /// Lists the `.wav` files directly in `store` whose names are not in
-/// `referenced`. Only plain staged-style names count (subfolders, temp files
-/// and anything else in the folder are never offered). Read-only: deleting
-/// is a separate explicit step, [`remove_audio_files`].
+/// `referenced` (ignoring ASCII case). Only plain staged-style names count
+/// (subfolders, temp files and anything else in the folder are never
+/// offered). Read-only: deleting is a separate explicit step,
+/// [`remove_audio_files`].
 pub fn unused_audio_files_in(
     store: &Path,
     referenced: &std::collections::BTreeSet<String>,
@@ -440,10 +496,12 @@ pub fn unused_audio_files_in(
     let Ok(entries) = fs::read_dir(store) else {
         return unused;
     };
+    let referenced = audio_names_folded(referenced);
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let wav = name.to_ascii_lowercase().ends_with(".wav");
-        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&name) {
+        let folded = name.to_ascii_lowercase();
+        let wav = folded.ends_with(".wav");
+        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&folded) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -454,6 +512,15 @@ pub fn unused_audio_files_in(
     }
     unused.files.sort();
     unused
+}
+
+/// `names` ASCII-lowercased: store names are ASCII-only, and on
+/// case-insensitive disks (macOS, Windows) `Take.WAV` and `take.wav` are
+/// the same file — cleanup must treat a reference in either case as use.
+pub fn audio_names_folded(
+    names: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    names.iter().map(|n| n.to_ascii_lowercase()).collect()
 }
 
 /// Deletes `files` (an [`UnusedAudio`] list the user confirmed). Returns how
@@ -1183,6 +1250,38 @@ mod tests {
         }
     }
 
+    /// `find_song_audio_in` reports what an open would stage, copying
+    /// nothing; a bogus file beside the song still counts as missing.
+    #[test]
+    fn find_song_audio_reports_without_copying() {
+        let out = temp_dir("find-out");
+        let store = temp_dir("find-store");
+        let song = out.join("Song.cadence");
+        let folder = song_audio_dir(&song);
+        fs::create_dir_all(&folder).unwrap();
+        write_test_wav(&folder, "take.wav");
+        fs::write(folder.join("bad.wav"), b"not a wav").unwrap();
+        let mut project = crate::model::Project::empty();
+        let mut track = crate::model::create_audio_track("Audio");
+        for name in ["take.wav", "bad.wav", "gone.wav"] {
+            track
+                .audio_clips
+                .push(crate::model::AudioClip::new(name, "Clip", 0.0, 16.0));
+        }
+        project.tracks.push(track);
+
+        let found = find_song_audio_in(&store, &project, &song);
+        assert_eq!(found.staged, ["take.wav"]);
+        assert_eq!(found.missing, ["bad.wav", "gone.wav"]);
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 0);
+        // The staging variant agrees, and does copy.
+        assert_eq!(import_song_audio_into(&store, &project, &song), found);
+        assert!(store.join("take.wav").is_file());
+        for dir in [out, store] {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
     #[test]
     fn unused_audio_lists_only_unreferenced_staged_wavs() {
         let store = temp_dir("unused");
@@ -1214,6 +1313,31 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&store);
         let _ = fs::remove_dir_all(&src);
+    }
+
+    /// On case-insensitive disks `Take.WAV` and `take.wav` are one file, so
+    /// a reference in either case keeps it.
+    #[test]
+    fn unused_audio_matches_names_ignoring_ascii_case() {
+        let store = temp_dir("unused-case");
+        fs::write(store.join("ABCDEF0123456789.WAV"), b"x").unwrap();
+        fs::write(store.join("Take.wav"), b"x").unwrap();
+        let referenced: std::collections::BTreeSet<String> =
+            ["abcdef0123456789.wav".to_owned(), "TAKE.WAV".to_owned()].into();
+        assert!(unused_audio_files_in(&store, &referenced).files.is_empty());
+        let _ = fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn audio_folder_names_lists_only_wav_files() {
+        let dir = temp_dir("folder-names");
+        fs::write(dir.join("b.WAV"), b"x").unwrap();
+        fs::write(dir.join("a.wav"), b"x").unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+        fs::create_dir_all(dir.join("sub.wav")).unwrap();
+        assert_eq!(audio_folder_names(&dir), ["a.wav", "b.WAV"]);
+        assert!(audio_folder_names(&dir.join("missing")).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

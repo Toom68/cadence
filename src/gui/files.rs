@@ -31,6 +31,17 @@ pub(super) struct Document {
     pub(super) saved_state: Option<u64>,
 }
 
+/// What Clean Up Unused Audio… must keep, from
+/// [`CadenceApp::referenced_audio`].
+#[derive(Debug, Default)]
+pub(super) struct AudioInUse {
+    /// Store names something known still uses.
+    pub(super) names: std::collections::BTreeSet<String>,
+    /// Recent songs that could not be read (path, reason): their audio is
+    /// unknown, so cleanup refuses while any are listed.
+    pub(super) unreadable: Vec<(PathBuf, String)>,
+}
+
 /// A file action that may need an unsaved-changes decision first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PendingAction {
@@ -438,9 +449,19 @@ impl CadenceApp {
             );
             return;
         }
-        let plan =
-            persistence::unused_audio_files_in(&persistence::audio_dir(), &self.referenced_audio());
-        self.offer_audio_cleanup(plan);
+        self.plan_audio_cleanup_in(&persistence::audio_dir());
+    }
+
+    /// Scans `store` and opens the confirm dialog — or, when a recent song
+    /// can't be read, the dialog that refuses and lists those songs (their
+    /// audio can't be proven unused, so nothing may be offered for deletion).
+    pub(super) fn plan_audio_cleanup_in(&mut self, store: &Path) {
+        let in_use = self.referenced_audio();
+        if !in_use.unreadable.is_empty() {
+            self.dialog = Dialog::CleanAudioBlocked(in_use.unreadable);
+            return;
+        }
+        self.offer_audio_cleanup(persistence::unused_audio_files_in(store, &in_use.names));
     }
 
     /// Shows the confirm dialog for `plan`, or says there is nothing to do.
@@ -457,41 +478,85 @@ impl CadenceApp {
     }
 
     /// Store names still in use: the open song and every state undo/redo can
-    /// restore, the crash-recovery autosave and each song in Open Recent.
-    /// (Songs elsewhere on disk can't be known — the dialog says so.)
-    pub(super) fn referenced_audio(&self) -> std::collections::BTreeSet<String> {
-        let mut refs: std::collections::BTreeSet<String> = std::iter::once(&self.project)
-            .chain(self.history.snapshots())
-            .flat_map(persistence::audio_refs)
-            .collect();
+    /// restore, the crash-recovery autosave and each song in Open Recent
+    /// (plus any file in a recent song's `<stem> Audio` folder). A recent
+    /// song that can't be read is listed in `unreadable` — cleanup must not
+    /// run while one is. (Songs elsewhere on disk can't be known — the
+    /// dialog says so.)
+    pub(super) fn referenced_audio(&self) -> AudioInUse {
+        let mut in_use = AudioInUse {
+            names: std::iter::once(&self.project)
+                .chain(self.history.snapshots())
+                .flat_map(persistence::audio_refs)
+                .collect(),
+            unreadable: Vec::new(),
+        };
         if let Some(work) = self
             .recovery_dir
             .as_deref()
             .and_then(persistence::peek_recovery_in)
         {
-            refs.extend(persistence::audio_refs(&work));
+            in_use.names.extend(persistence::audio_refs(&work));
         }
         if let Dialog::Recovery(work) = &self.dialog {
-            refs.extend(persistence::audio_refs(&work.project));
+            in_use.names.extend(persistence::audio_refs(&work.project));
         }
-        for path in &self.recent_files {
-            if let Ok(song) = persistence::load_project(path) {
-                refs.extend(persistence::audio_refs(&song));
+        // The open song's file counts too (its saved version may still use
+        // a clip the live state dropped). It never blocks: the live state
+        // above is what an unreadable or deleted file would hold.
+        let open = self
+            .doc
+            .path
+            .as_ref()
+            .filter(|p| !self.recent_files.contains(p));
+        for (path, blocks) in self
+            .recent_files
+            .iter()
+            .map(|p| (p, true))
+            .chain(open.map(|p| (p, false)))
+        {
+            match persistence::load_project(path) {
+                Ok(song) => in_use.names.extend(persistence::audio_refs(&song)),
+                Err(err) if blocks => in_use.unreadable.push((path.clone(), err)),
+                Err(_) => {}
             }
+            in_use.names.extend(persistence::audio_folder_names(
+                &persistence::song_audio_dir(path),
+            ));
         }
-        refs
+        in_use
+    }
+
+    /// Removes `paths` from File ▸ Open Recent (the cleanup dialog's
+    /// "Forget These Songs" for songs that are gone for good).
+    pub(super) fn forget_recent_files(&mut self, paths: &[PathBuf]) {
+        self.recent_files.retain(|p| !paths.contains(p));
+        self.store_recent_files();
     }
 
     /// The confirmed cleanup: deletes the planned files that are *still*
     /// unused (re-checked now, in case a recent song changed meanwhile).
+    /// Deletes nothing while a recent song can't be read.
     pub(super) fn run_audio_cleanup(&mut self, plan: &persistence::UnusedAudio) {
-        let refs = self.referenced_audio();
+        let in_use = self.referenced_audio();
+        if let Some((path, _)) = in_use.unreadable.first() {
+            self.set_status(
+                StatusKind::Error,
+                format!(
+                    "Nothing was deleted: the recent song {} can't be read, so its audio \
+                     can't be checked.",
+                    path.display()
+                ),
+            );
+            return;
+        }
+        let refs = persistence::audio_names_folded(&in_use.names);
         let files: Vec<PathBuf> = plan
             .files
             .iter()
             .filter(|p| {
                 p.file_name()
-                    .is_some_and(|n| !refs.contains(n.to_string_lossy().as_ref()))
+                    .is_some_and(|n| !refs.contains(&n.to_string_lossy().to_ascii_lowercase()))
             })
             .cloned()
             .collect();
@@ -913,23 +978,12 @@ impl CadenceApp {
         track_id: Option<u64>,
         start: Option<f64>,
     ) {
-        self.place_audio_clip(path, track_id, start, false);
+        self.place_audio_clip(path, track_id, start);
     }
 
-    /// A dropped WAV: always a fresh audio track, clip at the playhead.
-    pub(super) fn import_audio_clip_on_new_track(&mut self, path: PathBuf) {
-        self.place_audio_clip(path, None, None, true);
-    }
-
-    /// Shared body of the audio-clip imports; `new_track` skips the lane
-    /// pick and always adds an "Audio" track.
-    fn place_audio_clip(
-        &mut self,
-        path: PathBuf,
-        track_id: Option<u64>,
-        start: Option<f64>,
-        new_track: bool,
-    ) {
+    /// Body of the menu audio-clip imports (drops go through
+    /// [`CadenceApp::open_dropped_paths`]'s worker instead).
+    fn place_audio_clip(&mut self, path: PathBuf, track_id: Option<u64>, start: Option<f64>) {
         let staged = match persistence::stage_audio_file(&path) {
             Ok(staged) => staged,
             Err(err) => {
@@ -956,14 +1010,10 @@ impl CadenceApp {
         });
         // Lane pick: an explicit target wins when it is an audio lane; then
         // the selection, then any audio lane, then a fresh one.
-        let lane = if new_track {
-            None
-        } else {
-            track_id
-                .or(self.sel.track)
-                .filter(|id| ops::track(&self.project, *id).is_some_and(|t| t.audio))
-                .or_else(|| self.project.tracks.iter().find(|t| t.audio).map(|t| t.id))
-        };
+        let lane = track_id
+            .or(self.sel.track)
+            .filter(|id| ops::track(&self.project, *id).is_some_and(|t| t.audio))
+            .or_else(|| self.project.tracks.iter().find(|t| t.audio).map(|t| t.id));
         let mut placed = None;
         let mut made_track = false;
         let file = staged.file.clone();
@@ -1009,15 +1059,7 @@ impl CadenceApp {
         };
         let store = persistence::audio_store_bytes();
         if store > persistence::AUDIO_STORE_WARN_BYTES {
-            self.set_status(
-                StatusKind::Warning,
-                format!(
-                    "Imported “{name}”{grown}. The audio store now holds {:.1} GB — \
-                     old imports are never deleted automatically; use File ▸ Clean Up Unused Audio… \
-                     if disk runs low.",
-                    store as f64 / (1024.0 * 1024.0 * 1024.0)
-                ),
-            );
+            self.set_status(StatusKind::Warning, store_full_note(&name, grown, store));
         } else {
             self.set_status(
                 StatusKind::Success,
@@ -1071,6 +1113,10 @@ impl CadenceApp {
     /// Picks up files dropped on the window this frame (called from
     /// `frame()`): see [`CadenceApp::open_dropped_paths`].
     pub(super) fn handle_file_drops(&mut self, ctx: &egui::Context) {
+        if self.drop_import.is_some() {
+            self.poll_drop_import(false);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -1135,7 +1181,22 @@ impl CadenceApp {
     /// instrument pack and `.sf2` a SoundFont. Only one song can replace the
     /// current one, and audio dropped together with a song is skipped (it
     /// would land in the song being replaced) — the status line says so.
+    ///
+    /// The heavy part — decoding, hashing and copying WAVs, copying
+    /// SoundFonts — runs on a worker thread ([`DropImport`]) so a large drop
+    /// never freezes the window; the status bar counts the files and the
+    /// results are applied on the GUI thread when the worker is done (all
+    /// of a drop's clips as one undo step).
     pub(super) fn open_dropped_paths(&mut self, paths: Vec<PathBuf>) {
+        let targets = DropTargets {
+            audio: persistence::audio_dir(),
+            fonts: crate::font::user_fonts_dir(),
+        };
+        self.open_dropped_paths_into(paths, targets);
+    }
+
+    /// [`CadenceApp::open_dropped_paths`] staging into explicit folders.
+    pub(super) fn open_dropped_paths_into(&mut self, paths: Vec<PathBuf>, targets: DropTargets) {
         if self.dialog.is_open() {
             self.set_status(
                 StatusKind::Info,
@@ -1143,45 +1204,47 @@ impl CadenceApp {
             );
             return;
         }
+        if let Some(job) = &self.drop_import {
+            let text = format!(
+                "Still importing the files dropped before ({} of {} done) — drop these again \
+                 when it finishes.",
+                job.finished(),
+                job.total
+            );
+            self.set_status(StatusKind::Info, text);
+            return;
+        }
         let mut replace: Option<(DropKind, PathBuf)> = None;
         let mut audio = Vec::new();
-        let mut installs = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
-        let mut unsupported: Vec<String> = Vec::new();
+        let mut packs = Vec::new();
+        let mut fonts = Vec::new();
+        let mut report = DropReport::default();
         for path in paths {
             match drop_kind(&path) {
                 kind @ (DropKind::Song | DropKind::Midi) => {
                     if replace.is_none() {
                         replace = Some((kind, path));
                     } else {
-                        skipped.push(file_label(&path));
+                        report.skipped.push(file_label(&path));
                     }
                 }
                 DropKind::Audio => audio.push(path),
-                kind @ (DropKind::Pack | DropKind::SoundFont) => installs.push((kind, path)),
-                DropKind::Unsupported => unsupported.push(file_label(&path)),
+                DropKind::Pack => packs.push(path),
+                DropKind::SoundFont => fonts.push(path),
+                DropKind::Unsupported => report.unsupported.push(file_label(&path)),
             }
         }
         if replace.is_some() {
-            skipped.extend(audio.drain(..).map(|p| file_label(&p)));
+            report
+                .skipped
+                .extend(audio.drain(..).map(|p| file_label(&p)));
         }
         // The song first: when the document is clean it opens right away and
         // the imports below land in it; otherwise its guard dialog comes up
         // and the installs (which never touch the song) still go ahead.
-        let replacing = replace.is_some();
-        let mut problems: Vec<String> = Vec::new();
-        let mut run = |app: &mut Self, op: &mut dyn FnMut(&mut Self)| {
-            app.status = None;
-            op(app);
-            if let Some(s) = &app.status {
-                if matches!(s.kind, StatusKind::Error | StatusKind::Warning) {
-                    problems.push(s.text.clone());
-                }
-            }
-        };
+        report.replacing = replace.is_some();
         if let Some((kind, path)) = replace {
-            run(self, &mut |app| {
-                let path = path.clone();
+            self.collect_problems(&mut report.problems, |app| {
                 if kind == DropKind::Song {
                     app.request(PendingAction::OpenPath(path));
                 } else {
@@ -1189,26 +1252,206 @@ impl CadenceApp {
                 }
             });
         }
-        let mut done = 0usize;
-        for (kind, path) in installs {
-            done += 1;
-            run(self, &mut |app| {
-                if kind == DropKind::Pack {
-                    app.install_pack_file(path.clone());
-                } else {
-                    app.install_soundfont_file(path.clone());
+        // Packs are small JSON files: installed right here.
+        for path in packs {
+            report.done += 1;
+            self.collect_problems(&mut report.problems, |app| app.install_pack_file(path));
+        }
+        if audio.is_empty() && fonts.is_empty() {
+            self.finish_drop_report(report);
+            return;
+        }
+        let total = audio.len() + fonts.len();
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let report_progress = progress.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let audio_store = targets.audio.clone();
+        std::thread::spawn(move || {
+            let mut out = Vec::with_capacity(total);
+            for path in fonts {
+                let result = install_soundfont_into(&targets.fonts, &path);
+                out.push(Prepared::Font(result));
+                report_progress.fetch_add(1, Ordering::Relaxed);
+            }
+            for path in audio {
+                let result = persistence::stage_audio_file_into(&targets.audio, &path);
+                out.push(Prepared::Audio(path, result));
+                report_progress.fetch_add(1, Ordering::Relaxed);
+            }
+            let _ = tx.send(out);
+        });
+        let at = if self.transport.position.is_finite() {
+            self.transport.position.max(0.0)
+        } else {
+            0.0
+        };
+        self.drop_import = Some(DropImport {
+            rx,
+            progress,
+            total,
+            shown: 0,
+            at,
+            song_replaced: false,
+            store: audio_store,
+            report,
+        });
+        // Results are only picked up on a later frame, so this line always
+        // shows first.
+        self.set_status(StatusKind::Info, importing_note(total, 0));
+    }
+
+    /// Runs `op` and keeps its status line in `problems` when it is a
+    /// warning or error (a drop reports them together at the end).
+    fn collect_problems(
+        &mut self,
+        problems: &mut Vec<(StatusKind, String)>,
+        op: impl FnOnce(&mut Self),
+    ) {
+        self.status = None;
+        op(self);
+        if let Some(s) = &self.status {
+            if matches!(s.kind, StatusKind::Error | StatusKind::Warning) {
+                problems.push((s.kind, s.text.clone()));
+            }
+        }
+    }
+
+    /// The song was replaced (new/open/import/recover): audio a running drop
+    /// import stages is no longer meant for this song (see `replace_project`).
+    pub(super) fn drop_import_song_replaced(&mut self) {
+        if let Some(job) = &mut self.drop_import {
+            job.song_replaced = true;
+        }
+    }
+
+    /// Checks the drop-import worker (every frame while one runs): updates
+    /// the status-bar count and, once it is done, applies the results.
+    /// `block` waits for the worker (tests).
+    pub(super) fn poll_drop_import(&mut self, block: bool) {
+        let Some(job) = &mut self.drop_import else {
+            return;
+        };
+        let received = if block {
+            job.rx.recv().map_err(|_| ())
+        } else {
+            match job.rx.try_recv() {
+                Ok(out) => Ok(out),
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    let done = job.finished();
+                    if job.shown != done {
+                        job.shown = done;
+                        let text = importing_note(job.total, done);
+                        self.set_status(StatusKind::Info, text);
+                    }
+                    return;
                 }
-            });
+                Err(crossbeam_channel::TryRecvError::Disconnected) => Err(()),
+            }
+        };
+        let job = self.drop_import.take().expect("checked above");
+        let mut report = job.report;
+        let out = match received {
+            Ok(out) => out,
+            Err(()) => {
+                report.done += job.total;
+                report.problems.push((
+                    StatusKind::Error,
+                    "The import worker stopped unexpectedly.".to_owned(),
+                ));
+                Vec::new()
+            }
+        };
+        let mut clips = Vec::new();
+        let mut placed_audio = false;
+        for prepared in out {
+            report.done += 1;
+            match prepared {
+                Prepared::Font(result) => {
+                    self.collect_problems(&mut report.problems, |app| {
+                        app.apply_soundfont_install(result)
+                    });
+                }
+                Prepared::Audio(_, Err(err)) => {
+                    report
+                        .problems
+                        .push((StatusKind::Error, format!("Could not import audio: {err}")));
+                }
+                Prepared::Audio(path, Ok(staged)) => clips.push((path, staged)),
+            }
         }
-        for path in audio {
-            done += 1;
-            run(self, &mut |app| {
-                app.import_audio_clip_on_new_track(path.clone())
-            });
+        if !clips.is_empty() {
+            if job.song_replaced {
+                let n = clips.len();
+                let text = format!(
+                    "{n} dropped audio file{} {} not added: another song was opened while \
+                     {} imported",
+                    plural(n),
+                    if n == 1 { "was" } else { "were" },
+                    if n == 1 {
+                        "it was being"
+                    } else {
+                        "they were being"
+                    }
+                );
+                // One entry per file keeps "Added X of Y" right.
+                report
+                    .problems
+                    .extend(std::iter::repeat_n((StatusKind::Warning, text), n));
+            } else {
+                let mut refused = 0;
+                self.collect_problems(&mut report.problems, |app| {
+                    refused = app.place_dropped_audio(clips, job.at);
+                });
+                if let Some(last) = report.problems.last().cloned() {
+                    let extra = refused.saturating_sub(1);
+                    report.problems.extend(std::iter::repeat_n(last, extra));
+                }
+                placed_audio = true;
+            }
         }
+        self.finish_drop_report(report);
+        let store = persistence::audio_store_bytes_in(&job.store);
+        if placed_audio && store > persistence::AUDIO_STORE_WARN_BYTES {
+            let done = self
+                .status
+                .as_ref()
+                .map(|s| s.text.clone())
+                .unwrap_or_default();
+            self.set_status(
+                StatusKind::Warning,
+                format!("{done} {}", store_size_note(store))
+                    .trim()
+                    .to_owned(),
+            );
+        }
+    }
+
+    /// Blocks until a running drop import is done and applied (tests).
+    #[cfg(test)]
+    pub(super) fn wait_for_drop_import(&mut self) {
+        while self.drop_import.is_some() {
+            self.poll_drop_import(true);
+        }
+    }
+
+    /// The status line summing up a drop of several files (a single file
+    /// keeps the line its own import set).
+    fn finish_drop_report(&mut self, report: DropReport) {
+        let DropReport {
+            done,
+            problems,
+            skipped,
+            unsupported,
+            replacing,
+        } = report;
         let several =
             done + usize::from(replacing) > 1 || !skipped.is_empty() || !unsupported.is_empty();
         if !several {
+            if let Some((kind, first)) = problems.first() {
+                if self.status.as_ref().is_none_or(|s| s.text != *first) {
+                    self.set_status(*kind, first.clone());
+                }
+            }
             return;
         }
         let mut parts = Vec::new();
@@ -1216,7 +1459,7 @@ impl CadenceApp {
             let ok = done.saturating_sub(problems.len());
             parts.push(format!("Added {ok} of {done} dropped file{}", plural(done)));
         }
-        if let Some(first) = problems.first() {
+        if let Some((_, first)) = problems.first() {
             parts.push(first.trim_end_matches('.').to_owned());
         }
         if !skipped.is_empty() {
@@ -1242,12 +1485,68 @@ impl CadenceApp {
         }
     }
 
-    /// Installs a dropped `.sf2` into the user SoundFont folder and reloads
-    /// the font catalog. A file that turns out not to parse is removed again
-    /// so it never lingers as a load error.
-    pub(super) fn install_soundfont_file(&mut self, path: PathBuf) {
-        let dir = crate::font::user_fonts_dir();
-        match install_soundfont_into(&dir, &path) {
+    /// Puts each staged drop on a fresh audio track at `at` — all of them
+    /// one undoable edit — and selects the last clip. Returns how many did
+    /// not fit (track limit).
+    fn place_dropped_audio(
+        &mut self,
+        clips: Vec<(PathBuf, persistence::StagedAudio)>,
+        at: f64,
+    ) -> usize {
+        let per_step = self.project.seconds_per_step();
+        let n = clips.len();
+        let mut placed: Vec<(u64, String, f64)> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        let label = if n == 1 {
+            "Import audio file".to_owned()
+        } else {
+            format!("Import {n} audio files")
+        };
+        self.edit(&label, None, |p| {
+            for (path, staged) in &clips {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| staged.file.clone());
+                let length = (staged.seconds / per_step).max(crate::model::MIN_AUDIO_CLIP_STEPS);
+                let clip = ops::add_audio_track(p)
+                    .and_then(|id| ops::add_audio_clip(p, id, &staged.file, &name, at, length));
+                match clip {
+                    Some(id) => placed.push((id, name, staged.seconds)),
+                    None => refused.push(name),
+                }
+            }
+        });
+        if let Some((clip_id, _, _)) = placed.last() {
+            let clip_id = *clip_id;
+            let tid = self.clip_track_id(clip_id);
+            self.set_single_clip_selection(clip_id);
+            if let Some(id) = tid {
+                self.arranger.reveal_track = Some(id);
+            }
+        }
+        if let Some(name) = refused.first() {
+            self.set_status(
+                StatusKind::Warning,
+                format!("Could not import “{name}”: the song is at the track limit."),
+            );
+        } else if let [(_, name, seconds)] = placed.as_slice() {
+            self.set_status(
+                StatusKind::Success,
+                format!(
+                    "Imported “{name}” on a new audio track ({seconds:.1}s). The file lives in \
+                     the app's audio store."
+                ),
+            );
+        }
+        refused.len()
+    }
+
+    /// Reloads the font catalog after a SoundFont install (from a drop's
+    /// worker) and reports it. A file that turns out not to parse is
+    /// removed again so it never lingers as a load error.
+    fn apply_soundfont_install(&mut self, result: Result<FontInstall, String>) {
+        match result {
             Ok(FontInstall::Already(name)) => self.set_status(
                 StatusKind::Info,
                 format!("The SoundFont “{name}” is already installed."),
@@ -1295,6 +1594,83 @@ impl CadenceApp {
             "File dialogs are only available in the desktop app.",
         );
         false
+    }
+}
+
+/// "Imported “x”. The audio store now holds 2.1 GB — …" once the store
+/// passes [`persistence::AUDIO_STORE_WARN_BYTES`].
+fn store_full_note(name: &str, grown: &str, store: u64) -> String {
+    format!("Imported “{name}”{grown}. {}", store_size_note(store))
+}
+
+/// "The audio store now holds 2.1 GB — …".
+fn store_size_note(store: u64) -> String {
+    format!(
+        "The audio store now holds {:.1} GB — old imports are never deleted automatically; \
+         use File ▸ Clean Up Unused Audio… if disk runs low.",
+        store as f64 / (1024.0 * 1024.0 * 1024.0)
+    )
+}
+
+/// "Importing 12 dropped files… 3 of 12 done" for the status bar.
+fn importing_note(total: usize, done: usize) -> String {
+    match (total, done) {
+        (1, _) => "Importing 1 dropped file…".to_owned(),
+        (_, 0) => format!("Importing {total} dropped files…"),
+        _ => format!("Importing {total} dropped files… {done} of {total} done"),
+    }
+}
+
+/// Where a drop stages its files: the audio store and the SoundFont folder
+/// (tests point these at temp folders).
+#[derive(Clone, Debug)]
+pub(super) struct DropTargets {
+    pub(super) audio: PathBuf,
+    pub(super) fonts: PathBuf,
+}
+
+/// One file the drop-import worker prepared.
+enum Prepared {
+    Font(Result<FontInstall, String>),
+    Audio(PathBuf, Result<persistence::StagedAudio, String>),
+}
+
+/// What a multi-file drop reports when it is done.
+#[derive(Default)]
+struct DropReport {
+    /// Files imported or installed (or attempted).
+    done: usize,
+    /// Status lines (and kinds) of the ones that failed.
+    problems: Vec<(StatusKind, String)>,
+    /// Names not imported (a second song, audio dropped with a song).
+    skipped: Vec<String>,
+    /// Names of unsupported files.
+    unsupported: Vec<String>,
+    /// A song or MIDI file in the drop replaces the current song.
+    replacing: bool,
+}
+
+/// A drop's WAVs and SoundFonts being staged on a worker thread; polled by
+/// [`CadenceApp::poll_drop_import`] each frame.
+pub(super) struct DropImport {
+    rx: crossbeam_channel::Receiver<Vec<Prepared>>,
+    /// Files the worker has finished.
+    progress: Arc<std::sync::atomic::AtomicUsize>,
+    total: usize,
+    /// The finished count the status bar shows.
+    shown: usize,
+    /// Playhead at the drop: where the clips start.
+    at: f64,
+    /// Set when the song was replaced meanwhile: the clips are not added.
+    song_replaced: bool,
+    /// The audio store the WAVs are staged into.
+    store: PathBuf,
+    report: DropReport,
+}
+
+impl DropImport {
+    fn finished(&self) -> usize {
+        self.progress.load(Ordering::Relaxed).min(self.total)
     }
 }
 
@@ -1782,7 +2158,7 @@ mod tests {
         persistence::save_recovery_in(&rec, &saved, None).unwrap();
         app.recovery_dir = Some(rec);
 
-        let refs = app.referenced_audio();
+        let refs = app.referenced_audio().names;
         let plan = persistence::unused_audio_files_in(store.path(), &refs);
         assert_eq!(plan.files, vec![store.path().join(&stale)]);
         app.offer_audio_cleanup(plan.clone());
@@ -1803,6 +2179,172 @@ mod tests {
         app.open_audio_cleanup();
         assert!(!app.dialog.is_open());
         assert_eq!(app.status.clone().unwrap().kind, StatusKind::Warning);
+    }
+
+    /// A recent song that can't be read (an unplugged drive) might use any
+    /// store file, so cleanup refuses until it is back or forgotten; files
+    /// in a recent song's `<stem> Audio` folder always count as used.
+    #[test]
+    fn audio_cleanup_refuses_while_a_recent_song_is_unreadable() {
+        let store = tempfile::tempdir().unwrap();
+        let songs = tempfile::tempdir().unwrap();
+        let wav = |name: &str| {
+            std::fs::write(store.path().join(name), vec![1u8; 1024]).unwrap();
+            name.to_owned()
+        };
+        let (stale, bundled) = (wav("5555555555555555.wav"), wav("6666666666666666.wav"));
+        let song_path = songs.path().join("Song.cadence");
+        persistence::save_project(&Project::empty(), &song_path).unwrap();
+        let folder = persistence::song_audio_dir(&song_path);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(&bundled), b"copy").unwrap();
+        let gone = songs.path().join("Unplugged").join("Away.cadence");
+
+        let mut app = CadenceApp::headless(Project::empty());
+        app.recent_files = vec![gone.clone(), song_path];
+        app.plan_audio_cleanup_in(store.path());
+        match &app.dialog {
+            Dialog::CleanAudioBlocked(songs) => {
+                assert_eq!(songs.iter().map(|s| &s.0).collect::<Vec<_>>(), [&gone]);
+            }
+            other => panic!("expected the blocked dialog, got {other:?}"),
+        }
+        // A confirm that races the drive going away deletes nothing either.
+        let plan = persistence::UnusedAudio {
+            files: vec![store.path().join(&stale)],
+            bytes: 1024,
+        };
+        app.dialog = Dialog::None;
+        app.run_audio_cleanup(&plan);
+        assert!(store.path().join(&stale).is_file());
+        assert_eq!(app.status.clone().unwrap().kind, StatusKind::Error);
+
+        // Forgetting the unreadable song lets the scan go ahead; the bundled
+        // copy's name is still kept.
+        app.forget_recent_files(std::slice::from_ref(&gone));
+        assert_eq!(app.recent_files.len(), 1);
+        app.plan_audio_cleanup_in(store.path());
+        match &app.dialog {
+            Dialog::CleanAudio(plan) => {
+                assert_eq!(plan.files, vec![store.path().join(&stale)]);
+            }
+            other => panic!("expected the confirm dialog, got {other:?}"),
+        }
+    }
+
+    /// The confirm-time re-check ignores ASCII case like the scan does: a
+    /// clip referencing `take.wav` keeps a stored `TAKE.WAV`.
+    #[test]
+    fn audio_cleanup_recheck_ignores_name_case() {
+        let store = tempfile::tempdir().unwrap();
+        let file = store.path().join("TAKE.WAV");
+        std::fs::write(&file, b"x").unwrap();
+        let mut app = CadenceApp::headless(Project::empty());
+        app.edit("Add", None, |p| {
+            let mut track = crate::model::create_audio_track("Audio");
+            track
+                .audio_clips
+                .push(crate::model::AudioClip::new("take.wav", "Take", 0.0, 16.0));
+            p.tracks.push(track);
+        });
+        let plan = persistence::UnusedAudio {
+            files: vec![file.clone()],
+            bytes: 1,
+        };
+        app.run_audio_cleanup(&plan);
+        assert!(file.is_file());
+    }
+
+    fn tone_wav(dir: &Path, name: &str, hz: f32) -> PathBuf {
+        let path = dir.join(name);
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..4_000u32 {
+            let t = i as f32 / 8_000.0;
+            w.write_sample(((t * hz * std::f32::consts::TAU).sin() * 9_000.0) as i16)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+        path
+    }
+
+    /// Dropped WAVs and SoundFonts are staged on a worker: the drop returns
+    /// at once with an "Importing…" status, a second drop meanwhile is
+    /// refused, and the clips land in one undo step when it finishes.
+    #[test]
+    fn dropped_files_import_on_a_worker_as_one_undo_step() {
+        let src = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let targets = DropTargets {
+            audio: data.path().join("audio"),
+            fonts: data.path().join("fonts"),
+        };
+        let a = tone_wav(src.path(), "a.wav", 220.0);
+        let b = tone_wav(src.path(), "b.wav", 330.0);
+        let bogus = src.path().join("bogus.wav");
+        std::fs::write(&bogus, b"not a wav").unwrap();
+        let font = fake_font(src.path(), "Keys.sf2", b"body");
+
+        let mut app = CadenceApp::headless(Project::empty());
+        let tracks = app.project.tracks.len();
+        app.open_dropped_paths_into(vec![a.clone(), b, bogus, font], targets.clone());
+        assert!(app.drop_import.is_some());
+        let status = app.status.clone().unwrap();
+        assert!(
+            status.text.contains("Importing 4 dropped files"),
+            "{}",
+            status.text
+        );
+        // Busy: a further drop is refused, not queued.
+        app.open_dropped_paths_into(vec![a], targets.clone());
+        assert!(app.status.clone().unwrap().text.contains("Still importing"));
+
+        app.wait_for_drop_import();
+        assert!(app.drop_import.is_none());
+        assert_eq!(app.project.tracks.len(), tracks + 2);
+        assert_eq!(std::fs::read_dir(&targets.audio).unwrap().count(), 2);
+        assert!(targets.fonts.join("Keys.sf2").is_file());
+        let status = app.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Warning);
+        assert!(
+            status.text.contains("Added 3 of 4 dropped files"),
+            "{}",
+            status.text
+        );
+        // Both clips came in as one step.
+        app.undo();
+        assert_eq!(app.project.tracks.len(), tracks);
+    }
+
+    /// Audio staged for a song that was replaced meanwhile is not dropped
+    /// into the new song.
+    #[test]
+    fn dropped_audio_skips_a_song_replaced_while_importing() {
+        let src = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let targets = DropTargets {
+            audio: data.path().join("audio"),
+            fonts: data.path().join("fonts"),
+        };
+        let a = tone_wav(src.path(), "a.wav", 220.0);
+        let mut app = CadenceApp::headless(Project::empty());
+        app.open_dropped_paths_into(vec![a], targets);
+        app.run_pending_action(PendingAction::Demo);
+        let demo = app.project.clone();
+        app.wait_for_drop_import();
+        assert_eq!(app.project, demo);
+        let status = app.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Warning);
+        assert!(
+            status.text.contains("another song was opened"),
+            "{}",
+            status.text
+        );
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

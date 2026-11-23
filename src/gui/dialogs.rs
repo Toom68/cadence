@@ -51,6 +51,8 @@ pub(super) enum Dialog {
     Preferences,
     /// Confirm deleting audio-store files nothing known uses.
     CleanAudio(persistence::UnusedAudio),
+    /// Cleanup refused: these recent songs (path, reason) can't be read.
+    CleanAudioBlocked(Vec<(std::path::PathBuf, String)>),
 }
 
 /// Editable state of the New Song dialog.
@@ -260,6 +262,7 @@ impl CadenceApp {
             Dialog::Update => self.update_dialog(ctx),
             Dialog::Preferences => self.preferences_dialog(ctx),
             Dialog::CleanAudio(plan) => self.clean_audio_dialog(ctx, plan),
+            Dialog::CleanAudioBlocked(songs) => self.clean_audio_blocked_dialog(ctx, songs),
         };
         if keep {
             self.dialog = dialog;
@@ -1122,42 +1125,53 @@ impl CadenceApp {
     // ----- audio store cleanup ---------------------------------------------------
 
     /// Confirms File ▸ Clean Up Unused Audio…. Destructive, so Enter does
-    /// not confirm; Escape, a backdrop click or Cancel keep every file.
+    /// not confirm and the button names exactly what goes; Escape, a
+    /// backdrop click or Cancel keep every file.
     fn clean_audio_dialog(&mut self, ctx: &Context, plan: &persistence::UnusedAudio) -> bool {
         let pal = self.palette();
         let mut remove = false;
         let mut cancel = false;
         let n = plan.files.len();
-        let size = super::files::format_bytes(plan.bytes);
         let resp = show_dialog(ctx, "cadence-clean-audio", pal, W_COMPACT, |ui| {
             header(
                 ui,
                 pal,
                 "AUDIO STORE",
                 &format!(
-                    "Remove {n} unused audio file{}?",
+                    "Delete {n} imported audio file{}?",
                     if n == 1 { "" } else { "s" }
                 ),
             );
             ui.add_space(theme::GAP_S);
-            ui.label(RichText::new(format!("This frees {size} of disk space.")).color(pal.text));
+            ui.label(
+                RichText::new(format!(
+                    "Checked and not using them: the open song (and its undo history), the \
+                     crash-recovery autosave, and the songs in File ▸ Open Recent — only the \
+                     last {} songs you opened or saved.",
+                    persistence::MAX_RECENT_FILES
+                ))
+                .color(pal.text_dim),
+            );
             ui.add_space(theme::GAP_S);
             ui.label(
                 RichText::new(
-                    "These imported WAVs are not used by the open song (or its undo history), \
-                     the crash-recovery autosave, or any song in File ▸ Open Recent.",
+                    "Songs that are not in Open Recent are NOT checked. If one of them uses \
+                     these files, its imported audio is deleted and those clips play silent — \
+                     unless the song was saved with File ▸ Save Copy with Audio…, which keeps \
+                     its own copies. Deleted files can't be brought back.",
                 )
-                .color(pal.text_dim),
+                .color(pal.danger),
             );
             ui.add_space(theme::GAP_S);
             theme::hint(
                 ui,
                 pal,
-                "Other songs that still use them will play those clips silent. Open such songs \
-                 first, or keep a copy made with File ▸ Save Copy with Audio.",
+                "Not sure? Cancel, then open those songs once (so they join Open Recent) or \
+                 save them with Save Copy with Audio… first.",
             );
             button_row(ui, |ui| {
-                if theme::primary_button(ui, pal, "Remove Files").clicked() {
+                let label = clean_audio_confirm_label(n, plan.bytes);
+                if theme::primary_button(ui, pal, &label).clicked() {
                     remove = true;
                 }
                 if theme::secondary_button(ui, "Cancel").clicked() {
@@ -1171,6 +1185,86 @@ impl CadenceApp {
             return false;
         }
         !cancel && !resp.should_close()
+    }
+
+    /// File ▸ Clean Up Unused Audio… refused because some recent songs
+    /// can't be read (a disconnected drive, a moved or damaged file): their
+    /// audio might be in the store, so nothing is offered for deletion.
+    /// "Forget These Songs" drops them from Open Recent and scans again.
+    fn clean_audio_blocked_dialog(
+        &mut self,
+        ctx: &Context,
+        songs: &[(std::path::PathBuf, String)],
+    ) -> bool {
+        let pal = self.palette();
+        let mut closed = false;
+        let mut forget = false;
+        let n = songs.len();
+        let resp = show_dialog(ctx, "cadence-clean-audio-blocked", pal, W_LIST, |ui| {
+            header(
+                ui,
+                pal,
+                "AUDIO STORE",
+                &format!(
+                    "Can't check {n} recent song{}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            ui.add_space(theme::GAP_S);
+            ui.label(
+                RichText::new(
+                    "Nothing was deleted. These songs in File ▸ Open Recent could not be read, \
+                     so Cadence can't tell which imported audio they use:",
+                )
+                .color(pal.text),
+            );
+            ui.add_space(theme::GAP_S);
+            const CHROME: f32 = 240.0;
+            ScrollArea::vertical()
+                .max_height((dialog_max_height(ctx) - CHROME).clamp(80.0, 260.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (path, err) in songs {
+                        ui.horizontal_top(|ui| {
+                            ui.label(RichText::new("•").color(pal.danger));
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(path.display().to_string())
+                                        .small()
+                                        .color(pal.text),
+                                );
+                                ui.label(RichText::new(err).small().color(pal.text_faint));
+                            });
+                        });
+                        ui.add_space(theme::GAP_XS);
+                    }
+                });
+            ui.add_space(theme::GAP_S);
+            theme::hint(
+                ui,
+                pal,
+                "Reconnect the drive (or put the song back) and try again. If a song is gone \
+                 for good, Forget These Songs removes it from Open Recent and checks again — \
+                 audio only it used may then be offered for deletion.",
+            );
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Close").clicked() {
+                    closed = true;
+                }
+                if theme::secondary_button(ui, "Forget These Songs").clicked() {
+                    forget = true;
+                }
+            });
+        });
+        if forget {
+            let paths: Vec<_> = songs.iter().map(|(p, _)| p.clone()).collect();
+            self.forget_recent_files(&paths);
+            // Opens the confirm dialog (or a status note) for the new scan.
+            self.open_audio_cleanup();
+            return false;
+        }
+        closed |= enter_pressed(ctx);
+        !closed && !resp.should_close()
     }
 
     // ----- pack errors ---------------------------------------------------------
@@ -1242,6 +1336,16 @@ impl CadenceApp {
         }
         !closed && !resp.should_close()
     }
+}
+
+/// "Delete 3 files (5.0 MB)": the cleanup confirm button says exactly
+/// what it removes.
+fn clean_audio_confirm_label(n: usize, bytes: u64) -> String {
+    format!(
+        "Delete {n} file{} ({})",
+        if n == 1 { "" } else { "s" },
+        super::files::format_bytes(bytes)
+    )
 }
 
 // ----- scaffold ---------------------------------------------------------------
@@ -2172,6 +2276,12 @@ mod tests {
         check("cadence-new-song", || {
             Dialog::NewSong(NewSongDraft::default())
         });
+        check("cadence-clean-audio-blocked", || {
+            Dialog::CleanAudioBlocked(vec![(
+                "/Volumes/Away/Song.cadence".into(),
+                "Could not open the song".into(),
+            )])
+        });
         check("cadence-clean-audio", || {
             Dialog::CleanAudio(persistence::UnusedAudio {
                 files: vec!["/store/0000000000000000.wav".into()],
@@ -2295,9 +2405,24 @@ mod tests {
         fn pack_errors() -> Dialog {
             Dialog::PackErrors((0..200).map(|i| format!("pack {i}: bad field")).collect())
         }
+        fn cleanup_blocked() -> Dialog {
+            Dialog::CleanAudioBlocked(
+                (0..200)
+                    .map(|i| (format!("/Volumes/Away/{i}.cadence").into(), "gone".into()))
+                    .collect(),
+            )
+        }
         /// Area id, dialog, and whether its body is long enough to scroll.
         type Case = (&'static str, fn() -> Dialog, bool);
-        let dialogs: [Case; 6] = [
+        fn cleanup() -> Dialog {
+            Dialog::CleanAudio(persistence::UnusedAudio {
+                files: vec!["/store/0000000000000000.wav".into(); 40],
+                bytes: 40 << 20,
+            })
+        }
+        let dialogs: [Case; 8] = [
+            ("cadence-clean-audio", cleanup, false),
+            ("cadence-clean-audio-blocked", cleanup_blocked, true),
             ("cadence-notices", || Dialog::Notices, true),
             (
                 "cadence-new-song",
@@ -2358,6 +2483,34 @@ mod tests {
             .events
             .push(egui::ViewportEvent::Close);
         input
+    }
+
+    /// The cleanup confirm names exactly what goes, and neither Enter nor
+    /// Escape deletes anything.
+    #[test]
+    fn audio_cleanup_confirm_is_explicit_and_ignores_enter() {
+        assert_eq!(clean_audio_confirm_label(1, 512), "Delete 1 file (1 KB)");
+        assert_eq!(
+            clean_audio_confirm_label(3, 5 << 20),
+            "Delete 3 files (5.0 MB)"
+        );
+        let store = tempfile::tempdir().unwrap();
+        let file = store.path().join("0000000000000000.wav");
+        std::fs::write(&file, b"x").unwrap();
+        let plan = || persistence::UnusedAudio {
+            files: vec![store.path().join("0000000000000000.wav")],
+            bytes: 1,
+        };
+        let mut app = headless();
+        let ctx = Context::default();
+        app.dialog = Dialog::CleanAudio(plan());
+        run_frame(&mut app, &ctx, RawInput::default());
+        run_frame(&mut app, &ctx, enter_input());
+        assert!(matches!(app.dialog, Dialog::CleanAudio(_)));
+        assert!(file.is_file());
+        run_frame(&mut app, &ctx, escape_input());
+        assert!(!app.dialog.is_open());
+        assert!(file.is_file());
     }
 
     fn enter_input() -> RawInput {
