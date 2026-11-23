@@ -273,6 +273,36 @@ fn late_messages_from_a_closed_connection_are_ignored() {
 }
 
 #[test]
+fn an_audio_track_warns_once_per_arm_not_per_note() {
+    let (_ctx, mut app, _) = app_with_track();
+    app.add_audio_track();
+    let audio = app.project.tracks.last().unwrap().id;
+    app.select_track(audio);
+    app.toggle_record();
+    on(&mut app, 60, 100);
+    off(&mut app, 60);
+    let status = app.status.clone().unwrap();
+    assert_eq!(status.kind, StatusKind::Warning);
+    assert!(status.text.contains("instrument track"), "{}", status.text);
+    // Mark the posted line: a re-post would reset its kind.
+    app.status.as_mut().unwrap().kind = StatusKind::Info;
+    for pitch in 61..70 {
+        on(&mut app, pitch, 100);
+        off(&mut app, pitch);
+    }
+    assert_eq!(
+        app.status.as_ref().unwrap().kind,
+        StatusKind::Info,
+        "not re-posted"
+    );
+    // Re-arming posts "Recording…", so the next note warns again.
+    app.toggle_record();
+    app.toggle_record();
+    on(&mut app, 60, 100);
+    assert_eq!(app.status.as_ref().unwrap().kind, StatusKind::Warning);
+}
+
+#[test]
 fn connection_reports_become_status_messages() {
     let (_ctx, mut app, _) = app_with_track();
     app.status = None;
