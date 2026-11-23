@@ -39,7 +39,9 @@ every download with minisign (secret `MINISIGN_SECRET_KEY`), verify it against
 `packaging/update-key.pub`, write `latest.json`, and publish the GitHub release. The app's
 updater (`src/update.rs`) only installs files whose signature trusted comment is exactly
 `cadence-update <version> <file>` — keep CI and `update::trusted_comment` in step. Never commit
-a secret key. Tests must not touch the network: headless `CadenceApp` refuses update checks,
+a secret key. `latest.json` fields beyond `version`/`assets` (`sizes`, `notes`) must stay optional; the
+updater ignores unknown fields. Before starting an installer the app writes `<data dir>/update-pending.json`
+so the next launch can report an update that didn't finish. Tests must not touch the network: headless `CadenceApp` refuses update checks,
 and `update.rs` tests use inline fixtures signed by a throwaway key.
 
 ## Layout

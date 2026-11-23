@@ -195,7 +195,7 @@ jobs:
       - name: Install minisign
         run: sudo apt-get update -q && sudo apt-get install -y -q minisign
 
-      - name: Sign downloads and write latest.json
+      - name: Sign downloads
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
@@ -218,22 +218,60 @@ jobs:
             minisign -V -p ../packaging/update-key.pub -m "$f"
           done
           rm -f "$key"
-          cat > latest.json <<EOF
-          {
-            "version": "$VERSION",
-            "assets": {
-              "windows-x64": "Cadence-$VERSION-windows-x64-setup.exe",
-              "macos-universal": "Cadence-$VERSION-macos-universal.zip"
-            }
-          }
-          EOF
-          cat latest.json
           ls -l
+
+      # The annotated tag's message (scripts/release.sh writes it) is the
+      # in-app "What's new" text. A lightweight tag just has no notes.
+      - name: Read the release notes from the tag
+        run: |
+          git fetch --no-tags --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME" || true
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME" 2>/dev/null)" = tag ]; then
+            git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$GITHUB_REF_NAME" > "$RUNNER_TEMP/whats-new.txt"
+          else
+            : > "$RUNNER_TEMP/whats-new.txt"
+          fi
+          cat "$RUNNER_TEMP/whats-new.txt"
+
+      # latest.json: what the in-app updater reads. `sizes` (download
+      # progress) and `notes` (<= 4 KB plain text) are optional extras that
+      # older Cadence versions ignore; `version` and `assets` must keep
+      # their shape. Built with Python so the notes are JSON-escaped.
+      - name: Write latest.json
+        run: |
+          python3 - "$VERSION" "$RUNNER_TEMP/whats-new.txt" release <<'PY'
+          import json, os, sys
+
+          version, notes_path, out_dir = sys.argv[1:4]
+          assets = {
+              "windows-x64": f"Cadence-{version}-windows-x64-setup.exe",
+              "macos-universal": f"Cadence-{version}-macos-universal.zip",
+          }
+          sizes = {name: os.path.getsize(os.path.join(out_dir, name)) for name in assets.values()}
+          with open(notes_path, encoding="utf-8", errors="replace") as f:
+              notes = f.read().replace("\r\n", "\n").strip()
+          limit = 4000  # the app caps at 4096 bytes
+          if len(notes.encode("utf-8")) > limit:
+              notes = notes.encode("utf-8")[:limit].decode("utf-8", "ignore").rstrip() + "…"
+          manifest = {"version": version, "assets": assets, "sizes": sizes}
+          if notes:
+              manifest["notes"] = notes
+          with open(os.path.join(out_dir, "latest.json"), "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          PY
+          cat release/latest.json
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sed "s/@VERSION@/$VERSION/g" packaging/release-notes.md > "$RUNNER_TEMP/notes.md"
+          {
+            if [ -s "$RUNNER_TEMP/whats-new.txt" ]; then
+              printf "## What's new in %s\n\n" "$VERSION"
+              cat "$RUNNER_TEMP/whats-new.txt"
+              printf '\n\n'
+            fi
+            sed "s/@VERSION@/$VERSION/g" packaging/release-notes.md
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" release/* \
             --title "Cadence $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
