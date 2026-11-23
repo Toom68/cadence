@@ -1461,6 +1461,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Return to start", Shortcut(&super::SC_HOME)),
             ("Loop on / off", Shortcut(&super::SC_LOOP)),
             ("Record what you play", Shortcut(&super::SC_RECORD)),
+            ("Play a MIDI keyboard", Menu("Preferences ▸ MIDI input")),
             ("Metronome", Menu("Transport menu")),
             ("Tap the tempo", Mouse("Click TAP in rhythm")),
             ("Move the playhead", Mouse("Click the ruler")),
@@ -1715,6 +1716,11 @@ const KEYBOARD_SECTIONS: &[Section] = &[Section {
             Mouse("The key shown on each pad"),
         ),
         ("Record into the pattern", Shortcut(&super::SC_RECORD)),
+        ("Use a MIDI keyboard", Menu("Preferences ▸ MIDI input")),
+        (
+            "Hold notes while recording",
+            Mouse("Hold the sustain pedal"),
+        ),
     ],
 }];
 
