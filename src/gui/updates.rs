@@ -195,7 +195,7 @@ impl CadenceApp {
     }
 
     /// Saves the update settings — never from headless tests.
-    fn store_update_prefs(&self) {
+    pub(super) fn store_update_prefs(&self) {
         if self.io_enabled {
             update::save_prefs(&self.update.prefs);
         }

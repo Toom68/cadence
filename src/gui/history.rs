@@ -138,6 +138,12 @@ impl History {
         self.redo.last().map(|s| s.label.as_str())
     }
 
+    /// Every project state undo/redo can bring back (not the live one) —
+    /// e.g. so cleaning the audio store keeps files an undo would restore.
+    pub fn snapshots(&self) -> impl Iterator<Item = &Project> {
+        self.undo.iter().chain(&self.redo).map(|s| &s.project)
+    }
+
     /// Restores the previous state into `current`. Returns the undone label.
     pub fn undo(&mut self, current: &mut Project) -> Option<String> {
         let snap = self.undo.pop()?;

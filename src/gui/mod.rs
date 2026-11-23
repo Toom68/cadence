@@ -50,6 +50,7 @@ pub(crate) const SC_SAVE: KeyboardShortcut = sc(Modifiers::COMMAND, Key::S);
 pub(crate) const SC_SAVE_AS: KeyboardShortcut = sc(CMD_SHIFT, Key::S);
 pub(crate) const SC_EXPORT_WAV: KeyboardShortcut = sc(Modifiers::COMMAND, Key::E);
 pub(crate) const SC_QUIT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Q);
+pub(crate) const SC_PREFERENCES: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Comma);
 pub(crate) const SC_UNDO: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Z);
 pub(crate) const SC_REDO: KeyboardShortcut = sc(CMD_SHIFT, Key::Z);
 pub(crate) const SC_REDO_ALT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Y);
@@ -221,6 +222,8 @@ pub struct CadenceApp {
     shell: shell::ShellState,
     /// In-app update check / download / install-on-quit state.
     update: updates::UpdateState,
+    /// File ▸ Open Recent, newest first; persisted only when `io_enabled`.
+    recent_files: Vec<std::path::PathBuf>,
 }
 
 impl CadenceApp {
@@ -341,6 +344,11 @@ impl CadenceApp {
             theme: ThemeChoice::default(),
             shell: shell::ShellState::default(),
             update: updates::UpdateState::default(),
+            recent_files: if io_enabled {
+                crate::persistence::load_recent_files()
+            } else {
+                Vec::new()
+            },
         };
         app.fix_selection();
         app
@@ -1313,6 +1321,7 @@ impl CadenceApp {
         self.auto_check_updates(ctx);
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
+        self.handle_file_drops(ctx);
 
         self.fit_window(ctx);
         self.menu_bar(ctx);
@@ -1322,6 +1331,7 @@ impl CadenceApp {
         self.central(ctx);
         self.dialogs(ctx);
         self.toast_ui(ctx);
+        self.drop_overlay(ctx);
         theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
@@ -1477,6 +1487,9 @@ impl CadenceApp {
         }
         if pressed(&SC_HELP) {
             self.dialog = Dialog::Help;
+        }
+        if pressed(&SC_PREFERENCES) {
+            self.dialog = Dialog::Preferences;
         }
         if pressed(&SC_EDITOR) {
             self.tab = Tab::Editor;

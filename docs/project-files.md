@@ -70,7 +70,13 @@ A track may carry `"preset"` — a full copy of a JSON instrument-pack preset (`
 ### SoundFonts and audio clips
 
 - `"font"` (`{"name": "<sf2 file stem>", "program": 0–127}`) makes the track play a sampled GM program from an installed `.sf2` SoundFont. If the named font isn't installed, the track falls back to its preset or built-in sound — so a font song stays portable in a degraded form.
-- An **audio lane** (`"audio": true`) holds `"audio_clips"` — imported WAV clips whose `file` is a staged name in the app's **audio store** (`<app data dir>/audio/<content-hash>.wav`, staged by **File → Import Audio File…**, ≤ 48 MB each). The `.cadence` file references the staged name only — the audio bytes are *not* embedded, so a song's audio lanes play silently on machines where the file was never imported. Imported audio is resampled and can be moved, looped and faded like pattern clips; a missing file is a silent clip, not a load error — but Cadence warns rather than staying quiet: the status bar reports it on open, the clip carries a "missing file" tag in the arranger, `--check` prints a `WARNING` line (exit code stays 0), and `--render`/`--render-stems` warn on stderr. The store is never reaped (another song may reference the same file), so the import path warns once it grows past 2 GB.
+- An **audio lane** (`"audio": true`) holds `"audio_clips"` — imported WAV clips whose `file` is a staged name in the app's **audio store** (`<app data dir>/audio/<content-hash>.wav`, staged by **File → Import Audio File…**, ≤ 48 MB each). The `.cadence` file references the staged name only — the audio bytes are *not* embedded, so a song's audio lanes play silently on machines where the file was never imported — unless the song travels with its audio folder (see [Moving a song with its audio](#moving-a-song-with-its-audio)). Imported audio is resampled and can be moved, looped and faded like pattern clips; a missing file is a silent clip, not a load error — but Cadence warns rather than staying quiet: the status bar reports it on open, the clip carries a "missing file" tag in the arranger, `--check` prints a `WARNING` line (exit code stays 0), and `--render`/`--render-stems` warn on stderr. The store is never reaped automatically (another song may reference the same file), so the import path warns once it grows past 2 GB. **File → Clean Up Unused Audio…** is the explicit way to shrink it: it lists the staged WAVs not used by the open song (including its undo history), the crash-recovery autosave or any song in Open Recent, shows the space that frees, and deletes them only after you confirm. Songs elsewhere on disk that still use those files would then play those clips silent, so keep copies made with *Save Copy with Audio…* for anything you want to move or archive.
+
+### Moving a song with its audio
+
+**File → Save Copy with Audio…** writes the song to a new `.cadence` file *and* a sibling folder named `<file name> Audio/` (for `Demo.cadence`: `Demo Audio/`) holding every WAV the song's clips use, under the same staged names. The open song (its file and unsaved state) is not changed. Move or share the `.cadence` file together with its folder.
+
+When a song is opened, every referenced audio file missing from this computer's store is looked up first in that sibling `<file name> Audio/` folder, then in the song's own folder. A file found there is checked (it must decode as a WAV, and a `<content-hash>.wav` name only accepts content with that hash) and **copied into the audio store**, so the song keeps playing even after the folder is moved away. Anything still missing stays a silent clip with the usual warning. (The CLI `--render`/`--check` paths read only the store.)
 
 ## Validation limits
 
@@ -121,6 +127,12 @@ Cadence keeps a **local recovery copy** of the working project (`save_recovery`/
 
 New, Open, MIDI import and Quit all pass through an **unsaved-changes** dialog when the song is dirty: **Save**, **Don't Save**, or **Cancel** (Escape/backdrop counts as Cancel). Choosing Save on an untitled song opens the save dialog; if the picker is cancelled or the write fails, the dialog stays open so nothing is silently lost. Don't Save discards the changes and proceeds.
 
+## Open Recent and drag and drop
+
+**File → Open Recent** lists the last 10 songs you opened or saved (newest first, no duplicates; songs that no longer exist are hidden). Picking one goes through the unsaved-changes dialog like Open. **Clear Recent** empties the list. It is stored as plain text in `<data dir>/recent-files.txt`.
+
+Dropping files onto the window works by type: a `.cadence` song opens and a `.mid`/`.midi` file imports as a new song (both through the unsaved-changes dialog), each `.wav` becomes an audio clip on a new audio track at the playhead, a `.json` file installs as an instrument pack and an `.sf2` file is copied into the SoundFont folder (an installed font with the same name is never overwritten). Other files are refused with a status-bar message. Only one song can be dropped at a time, and audio dropped together with a song is skipped.
+
 ## MIDI files
 
 `.mid`/`.midi` files are handled separately from `.cadence` projects: **File → Import MIDI…** converts them into a new project via `import_midi` (`src/midi.rs`). See [export.md](export.md) for details and caveats.
@@ -129,5 +141,6 @@ New, Open, MIDI import and Quit all pass through an **unsaved-changes** dialog w
 
 - **Packs** — user instrument packs live in `<data dir>/packs` (or `$CADENCE_PACKS_DIR`); see [instrument-packs.md](instrument-packs.md).
 - **SoundFonts** — `.sf2` files in the user font folder (`--list-instruments` prints it; `$CADENCE_FONTS_DIR` overrides).
-- **Audio store** — staged WAVs in `<data dir>/audio` as described above; not portable between installs.
+- **Audio store** — staged WAVs in `<data dir>/audio` as described above; carry them with **Save Copy with Audio…**.
+- **Recent songs** — `<data dir>/recent-files.txt`, one path per line.
 - `CADENCE_DATA_DIR` overrides the base app-data directory for recovery, packs and the audio store.

@@ -225,6 +225,183 @@ pub fn missing_audio_refs(project: &crate::model::Project) -> Vec<String> {
     missing_audio_refs_in(project, &audio_dir())
 }
 
+// ----- portable songs: the "<song> Audio" folder --------------------------
+
+/// The folder that carries a song's audio when it travels: a sibling of the
+/// `.cadence` file named `<file stem> Audio` (`Demo.cadence` →
+/// `Demo Audio/`). **Save Copy with Audio…** fills it; opening a song looks
+/// there (then beside the song) for audio this computer's store lacks.
+pub fn song_audio_dir(song: &Path) -> PathBuf {
+    let stem = song
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Song".to_owned());
+    let parent = match song.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    parent.join(format!("{stem} Audio"))
+}
+
+/// Every audio-store name `project` references, sorted and deduplicated.
+pub fn audio_refs(project: &crate::model::Project) -> Vec<String> {
+    let mut refs: Vec<String> = project
+        .tracks
+        .iter()
+        .flat_map(|track| track.audio_clips.iter().map(|clip| clip.file.clone()))
+        .collect();
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+/// What [`save_project_with_audio`] wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioBundle {
+    /// The sibling `<stem> Audio` folder (only created when the song has
+    /// audio clips).
+    pub folder: PathBuf,
+    /// Audio files now in the folder (copied or already there).
+    pub files: usize,
+    /// Referenced names this computer's store doesn't have — those clips
+    /// stay silent in the copy too.
+    pub missing: Vec<String>,
+}
+
+/// Saves `project` to `path` plus every audio file it references into the
+/// sibling [`song_audio_dir`], so the song plays on another computer. The
+/// audio goes first (each file written atomically, identical files left
+/// alone) and the `.cadence` last, so a song never points at a half-written
+/// folder. Missing store files are reported, not fatal.
+pub fn save_project_with_audio(project: &Project, path: &Path) -> Result<AudioBundle, String> {
+    save_project_with_audio_from(&audio_dir(), project, path)
+}
+
+/// [`save_project_with_audio`] reading from an explicit audio store.
+pub fn save_project_with_audio_from(
+    store: &Path,
+    project: &Project,
+    path: &Path,
+) -> Result<AudioBundle, String> {
+    // Validate before creating anything on disk.
+    let text = project_to_json(project)?;
+    let folder = song_audio_dir(path);
+    let refs = audio_refs(project);
+    let mut files = 0;
+    let mut missing = Vec::new();
+    if !refs.is_empty() {
+        if folder.exists() && !folder.is_dir() {
+            return Err(format!("{} exists and is not a folder.", folder.display()));
+        }
+        fs::create_dir_all(&folder)
+            .map_err(|err| format!("Could not create {}: {err}", folder.display()))?;
+    }
+    for name in refs {
+        if !crate::model::audio_ref_name_ok(&name) {
+            missing.push(name);
+            continue;
+        }
+        let Some(bytes) = read_capped(&store.join(&name), MAX_AUDIO_FILE_BYTES) else {
+            missing.push(name);
+            continue;
+        };
+        let dest = folder.join(&name);
+        let same = fs::metadata(&dest).is_ok_and(|m| m.len() == bytes.len() as u64)
+            && fs::read(&dest).is_ok_and(|d| d == bytes);
+        if !same {
+            write_file_atomic(&dest, &bytes)?;
+        }
+        files += 1;
+    }
+    write_file_atomic(path, text.as_bytes())?;
+    Ok(AudioBundle {
+        folder,
+        files,
+        missing,
+    })
+}
+
+/// What [`import_song_audio`] found for a song that was just opened.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SongAudioImport {
+    /// Names copied into the store from the song's `<stem> Audio` folder
+    /// (or the song's own folder).
+    pub staged: Vec<String>,
+    /// Names still missing everywhere — those clips play silent.
+    pub missing: Vec<String>,
+}
+
+/// For every audio file `project` references that this computer's store
+/// lacks, looks in the song's sibling [`song_audio_dir`] and then the song's
+/// own folder, and stages a valid WAV found there into the store under the
+/// referenced name — so a song moved here with its audio keeps working (also
+/// after the folder is gone). A hash-named reference only accepts a file
+/// whose content matches its hash, so a store name always means one file.
+pub fn import_song_audio(project: &Project, song: &Path) -> SongAudioImport {
+    import_song_audio_into(&audio_dir(), project, song)
+}
+
+/// [`import_song_audio`] into an explicit audio store.
+pub fn import_song_audio_into(store: &Path, project: &Project, song: &Path) -> SongAudioImport {
+    let mut result = SongAudioImport::default();
+    let beside = song_audio_dir(song);
+    let own = beside.parent().map(Path::to_path_buf).unwrap_or_default();
+    for name in missing_audio_refs_in(project, store) {
+        if !crate::model::audio_ref_name_ok(&name) {
+            result.missing.push(name);
+            continue;
+        }
+        let staged = [beside.join(&name), own.join(&name)]
+            .iter()
+            .any(|candidate| stage_named_audio(store, candidate, &name).is_ok());
+        if staged {
+            result.staged.push(name);
+        } else {
+            result.missing.push(name);
+        }
+    }
+    result
+}
+
+/// Copies the WAV at `source` into `store` as `name` after checking it
+/// decodes (and, for `<hash>.wav` names, that the content hash matches).
+fn stage_named_audio(store: &Path, source: &Path, name: &str) -> Result<(), String> {
+    let bytes = read_capped(source, MAX_AUDIO_FILE_BYTES)
+        .ok_or_else(|| format!("Could not read {}", source.display()))?;
+    decode_wav_f32(&bytes)?;
+    let hashed = name.len() == 20
+        && name.ends_with(".wav")
+        && name[..16].bytes().all(|b| b.is_ascii_hexdigit());
+    if hashed && format!("{:016x}.wav", audio_content_hash(&bytes)) != name.to_ascii_lowercase() {
+        return Err(format!(
+            "{} is not the file this song uses.",
+            source.display()
+        ));
+    }
+    fs::create_dir_all(store).map_err(|err| {
+        format!(
+            "Could not create the audio store {}: {err}",
+            store.display()
+        )
+    })?;
+    write_file_atomic(&store.join(name), &bytes)
+}
+
+/// Reads a regular file of at most `max` bytes; `None` for anything else.
+fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > max {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    File::open(path)
+        .ok()?
+        .take(max + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
+}
+
 /// Total bytes in the audio store — files are never reaped (deleting a
 /// clip or song keeps its WAV, since another song may reference it), so
 /// the import path warns once this passes a generous bound.
@@ -239,6 +416,64 @@ pub fn audio_store_bytes() -> u64 {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+/// Staged audio files nobody known references — what File ▸ Clean Up
+/// Unused Audio… offers to delete.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnusedAudio {
+    /// Full paths inside the store, sorted.
+    pub files: Vec<PathBuf>,
+    /// Their total size.
+    pub bytes: u64,
+}
+
+/// Lists the `.wav` files directly in `store` whose names are not in
+/// `referenced`. Only plain staged-style names count (subfolders, temp files
+/// and anything else in the folder are never offered). Read-only: deleting
+/// is a separate explicit step, [`remove_audio_files`].
+pub fn unused_audio_files_in(
+    store: &Path,
+    referenced: &std::collections::BTreeSet<String>,
+) -> UnusedAudio {
+    let mut unused = UnusedAudio::default();
+    let Ok(entries) = fs::read_dir(store) else {
+        return unused;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let wav = name.to_ascii_lowercase().ends_with(".wav");
+        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_file() {
+            unused.bytes += meta.len();
+            unused.files.push(entry.path());
+        }
+    }
+    unused.files.sort();
+    unused
+}
+
+/// Deletes `files` (an [`UnusedAudio`] list the user confirmed). Returns how
+/// many were removed, the bytes freed and a message per failure.
+pub fn remove_audio_files(files: &[PathBuf]) -> (usize, u64, Vec<String>) {
+    let mut removed = 0;
+    let mut freed = 0;
+    let mut errors = Vec::new();
+    for path in files {
+        let len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        match fs::remove_file(path) {
+            Ok(()) => {
+                removed += 1;
+                freed += len;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => errors.push(format!("{}: {err}", path.display())),
+        }
+    }
+    (removed, freed, errors)
 }
 
 /// Store size at which importing more audio starts warning — staged WAVs
@@ -274,6 +509,72 @@ pub fn save_audio_device_pref(name: Option<&str>) {
             let _ = fs::remove_file(audio_device_path());
         }
     }
+}
+
+// ----- recent files ----------------------------------------------------------
+
+/// Most songs File ▸ Open Recent remembers.
+pub const MAX_RECENT_FILES: usize = 10;
+
+/// Plain-text list of recently opened/saved songs, newest first, one path
+/// per line, beside the other app data.
+const RECENT_FILES_FILE: &str = "recent-files.txt";
+
+/// The remembered recent songs (newest first, deduplicated, at most
+/// [`MAX_RECENT_FILES`]). Missing files are kept here — a disconnected
+/// drive may come back — and filtered out when the menu is shown.
+pub fn load_recent_files() -> Vec<PathBuf> {
+    load_recent_files_in(&data_dir())
+}
+
+/// [`load_recent_files`] for an explicit data folder.
+pub fn load_recent_files_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(file) = File::open(dir.join(RECENT_FILES_FILE)) else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if file.take(64 * 1024).read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let mut list = Vec::new();
+    for line in String::from_utf8_lossy(&bytes).lines().rev() {
+        let line = line.trim();
+        if !line.is_empty() {
+            push_recent_file(&mut list, Path::new(line));
+        }
+    }
+    list
+}
+
+/// Saves the recent-songs list atomically (best effort for callers: a
+/// failure only means the list doesn't survive a restart).
+pub fn save_recent_files(list: &[PathBuf]) -> Result<(), String> {
+    save_recent_files_in(&data_dir(), list)
+}
+
+/// [`save_recent_files`] for an explicit data folder.
+pub fn save_recent_files_in(dir: &Path, list: &[PathBuf]) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|err| format!("Could not create {}: {err}", dir.display()))?;
+    let mut text = String::new();
+    for path in list.iter().take(MAX_RECENT_FILES) {
+        // A path that can't round-trip through one line of UTF-8 text is
+        // simply not remembered.
+        if let Some(line) = path.to_str().filter(|l| !l.contains(['\n', '\r'])) {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    write_file_atomic(&dir.join(RECENT_FILES_FILE), text.as_bytes())
+}
+
+/// Moves `path` to the front of `list` (made absolute where possible, so the
+/// same song opened two ways is one entry), dropping duplicates and keeping
+/// at most [`MAX_RECENT_FILES`].
+pub fn push_recent_file(list: &mut Vec<PathBuf>, path: &Path) {
+    let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    list.retain(|p| *p != path);
+    list.insert(0, path);
+    list.truncate(MAX_RECENT_FILES);
 }
 
 /// Reads a staged file by its store-relative `name` for decoding. Returns
@@ -504,6 +805,12 @@ pub fn load_recovery_in(dir: &Path) -> Result<Option<RecoveredWork>, String> {
     }
 }
 
+/// The autosaved project in `dir`, if it loads — with none of
+/// [`load_recovery_in`]'s side effects (a damaged file is left in place).
+pub fn peek_recovery_in(dir: &Path) -> Option<Project> {
+    load_project(&dir.join(RECOVERY_FILE)).ok()
+}
+
 /// Deletes the autosave (after a clean save or an explicit discard).
 pub fn clear_recovery() -> Result<(), String> {
     clear_recovery_in(&recovery_dir())
@@ -621,6 +928,50 @@ mod tests {
     }
 
     #[test]
+    fn recent_files_dedupe_cap_and_round_trip() {
+        let dir = temp_dir("recent");
+        assert!(load_recent_files_in(&dir).is_empty());
+        let songs: Vec<PathBuf> = (0..12)
+            .map(|i| {
+                let p = dir.join(format!("song{i}.cadence"));
+                fs::write(&p, "{}").unwrap();
+                fs::canonicalize(p).unwrap()
+            })
+            .collect();
+        let mut list = Vec::new();
+        for song in &songs {
+            push_recent_file(&mut list, song);
+        }
+        assert_eq!(list.len(), MAX_RECENT_FILES);
+        assert_eq!(list[0], songs[11]);
+        // Re-opening an older song moves it to the front, no duplicate.
+        push_recent_file(&mut list, &songs[5]);
+        assert_eq!(list[0], songs[5]);
+        assert_eq!(list.iter().filter(|p| **p == songs[5]).count(), 1);
+        assert_eq!(list.len(), MAX_RECENT_FILES);
+
+        save_recent_files_in(&dir, &list).unwrap();
+        assert_eq!(load_recent_files_in(&dir), list);
+        // A hand-edited file with blanks and repeats still loads cleanly.
+        fs::write(
+            dir.join(RECENT_FILES_FILE),
+            format!(
+                "\n{0}\n\n{0}\n{1}\n",
+                songs[0].display(),
+                songs[1].display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_recent_files_in(&dir),
+            vec![songs[0].clone(), songs[1].clone()]
+        );
+        save_recent_files_in(&dir, &[]).unwrap();
+        assert!(load_recent_files_in(&dir).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn oversize_text_is_rejected_before_parsing() {
         let text = " ".repeat(MAX_PROJECT_BYTES as usize + 1);
         assert!(project_from_json(&text).unwrap_err().contains("too large"));
@@ -733,6 +1084,135 @@ mod tests {
 
         let _ = fs::remove_dir_all(&store);
         let _ = fs::remove_dir_all(&src);
+    }
+
+    /// A project with one audio track whose clips reference `names`.
+    fn project_with_audio(names: &[&str]) -> crate::model::Project {
+        let mut project = crate::model::Project::demo();
+        let mut track = crate::model::create_audio_track("Audio");
+        for (i, name) in names.iter().enumerate() {
+            track.audio_clips.push(crate::model::AudioClip::new(
+                *name,
+                "Take",
+                i as f64 * 16.0,
+                16.0,
+            ));
+        }
+        project.tracks.push(track);
+        project
+    }
+
+    #[test]
+    fn songs_travel_with_their_audio_folder() {
+        let src = temp_dir("bundle-src");
+        let store = temp_dir("bundle-store");
+        let out = temp_dir("bundle-out");
+        let (wav, bytes) = write_test_wav(&src, "Take.wav");
+        let staged = stage_audio_file_into(&store, &wav).unwrap();
+        let project = project_with_audio(&[&staged.file, &staged.file, "gone.wav"]);
+
+        let song = out.join("My Song.cadence");
+        let bundle = save_project_with_audio_from(&store, &project, &song).unwrap();
+        assert_eq!(bundle.folder, out.join("My Song Audio"));
+        assert_eq!(bundle.files, 1);
+        assert_eq!(bundle.missing, vec!["gone.wav".to_owned()]);
+        assert_eq!(fs::read(bundle.folder.join(&staged.file)).unwrap(), bytes);
+        assert_eq!(load_project(&song).unwrap(), project);
+        // Saving again over the same folder is a no-op for the audio.
+        save_project_with_audio_from(&store, &project, &song).unwrap();
+        assert_eq!(fs::read_dir(&bundle.folder).unwrap().count(), 1);
+
+        // "Another computer": an empty store finds the audio beside the song
+        // and keeps it after the folder is gone.
+        let other = temp_dir("bundle-other");
+        let found = import_song_audio_into(&other, &project, &song);
+        assert_eq!(found.staged, vec![staged.file.clone()]);
+        assert_eq!(found.missing, vec!["gone.wav".to_owned()]);
+        assert_eq!(fs::read(other.join(&staged.file)).unwrap(), bytes);
+        fs::remove_dir_all(&bundle.folder).unwrap();
+        assert_eq!(
+            missing_audio_refs_in(&project, &other),
+            vec!["gone.wav".to_owned()]
+        );
+        // Nothing left to find: a second open stages nothing.
+        let again = import_song_audio_into(&other, &project, &song);
+        assert!(again.staged.is_empty());
+
+        // The song's own folder works too.
+        let third = temp_dir("bundle-third");
+        fs::write(out.join(&staged.file), &bytes).unwrap();
+        let found = import_song_audio_into(&third, &project, &song);
+        assert_eq!(found.staged, vec![staged.file.clone()]);
+
+        // A hash name never accepts different content, nor a non-WAV.
+        let fourth = temp_dir("bundle-fourth");
+        let folder = song_audio_dir(&song);
+        fs::create_dir_all(&folder).unwrap();
+        let (_, other_bytes) = write_test_wav(&src, "Other.wav");
+        let mut other_bytes = other_bytes;
+        let last = other_bytes.len() - 1;
+        other_bytes[last] ^= 0x55;
+        fs::write(out.join(&staged.file), &other_bytes).unwrap();
+        fs::write(folder.join(&staged.file), b"not a wav").unwrap();
+        let found = import_song_audio_into(&fourth, &project, &song);
+        assert!(found.staged.is_empty());
+        assert!(!fourth.join(&staged.file).exists());
+
+        // A song without audio never makes a folder.
+        let plain = out.join("Plain.cadence");
+        let bundle =
+            save_project_with_audio_from(&store, &crate::model::Project::demo(), &plain).unwrap();
+        assert_eq!(bundle.files, 0);
+        assert!(!bundle.folder.exists());
+
+        for dir in [src, store, out, other, third, fourth] {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn unused_audio_lists_only_unreferenced_staged_wavs() {
+        let store = temp_dir("unused");
+        let src = temp_dir("unused-src");
+        let (wav, _) = write_test_wav(&src, "A.wav");
+        let kept = stage_audio_file_into(&store, &wav).unwrap();
+        fs::write(store.join("0123456789abcdef.wav"), vec![0u8; 100]).unwrap();
+        fs::write(store.join("notes.txt"), b"keep").unwrap();
+        fs::write(store.join(".x.wav.tmp"), b"keep").unwrap();
+        fs::create_dir_all(store.join("sub.wav")).unwrap();
+
+        let referenced: std::collections::BTreeSet<String> = [kept.file.clone()].into();
+        let unused = unused_audio_files_in(&store, &referenced);
+        assert_eq!(unused.files, vec![store.join("0123456789abcdef.wav")]);
+        assert_eq!(unused.bytes, 100);
+        // Listing never deletes.
+        assert!(store.join("0123456789abcdef.wav").is_file());
+
+        let (removed, freed, errors) = remove_audio_files(&unused.files);
+        assert_eq!((removed, freed), (1, 100));
+        assert!(errors.is_empty());
+        assert!(store.join(&kept.file).is_file());
+        assert!(store.join("notes.txt").is_file());
+        assert!(unused_audio_files_in(&store, &referenced).files.is_empty());
+        // A missing store is simply empty.
+        assert_eq!(
+            unused_audio_files_in(&store.join("nope"), &referenced),
+            UnusedAudio::default()
+        );
+        let _ = fs::remove_dir_all(&store);
+        let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn song_audio_dir_sits_beside_the_song() {
+        assert_eq!(
+            song_audio_dir(Path::new("/a/b/Demo.cadence")),
+            PathBuf::from("/a/b/Demo Audio")
+        );
+        assert_eq!(
+            song_audio_dir(Path::new("Demo.cadence")),
+            PathBuf::from("./Demo Audio")
+        );
     }
 
     #[test]

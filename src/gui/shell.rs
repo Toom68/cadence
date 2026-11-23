@@ -22,8 +22,8 @@ use super::theme::{self, Icon, Palette, Segment, ThemeChoice};
 use super::{
     arranger, editor, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT,
     SC_DUPLICATE, SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER,
-    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO,
-    SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
+    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_PREFERENCES, SC_QUIT,
+    SC_RECORD, SC_REDO, SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
 };
 use crate::audio::AudioEngine;
 use crate::model::Instrument;
@@ -453,12 +453,55 @@ impl CadenceApp {
         if menu_item(ui, pal, "Open…", &keys(ui, &SC_OPEN), true, None).clicked() {
             self.request(PendingAction::Open);
         }
+        let recent = self.existing_recent_files();
+        let mut pick = None;
+        let mut clear = false;
+        submenu(ui, pal, "Open Recent", !recent.is_empty(), |ui| {
+            for path in &recent {
+                let name = super::files::file_label(path);
+                let folder = path
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let folder = if folder.chars().count() > 18 {
+                    format!("{}…", folder.chars().take(17).collect::<String>())
+                } else {
+                    folder
+                };
+                if menu_item(ui, pal, &name, &folder, true, None)
+                    .on_hover_text(path.display().to_string())
+                    .clicked()
+                {
+                    pick = Some(path.clone());
+                }
+            }
+            menu_sep(ui, pal);
+            if menu_item(ui, pal, "Clear Recent", "", true, None).clicked() {
+                clear = true;
+            }
+        });
+        if let Some(path) = pick {
+            self.request(PendingAction::OpenPath(path));
+        }
+        if clear {
+            self.clear_recent_files();
+        }
         menu_sep(ui, pal);
         if menu_item(ui, pal, "Save", &keys(ui, &SC_SAVE), true, None).clicked() {
             self.save();
         }
         if menu_item(ui, pal, "Save As…", &keys(ui, &SC_SAVE_AS), true, None).clicked() {
             self.save_as();
+        }
+        if menu_item(ui, pal, "Save Copy with Audio…", "", true, None)
+            .on_hover_text(
+                "Save a copy of the song plus a \"<name> Audio\" folder with every WAV it \
+                 uses, so it plays on another computer",
+            )
+            .clicked()
+        {
+            self.save_copy_with_audio_dialog();
         }
         menu_sep(ui, pal);
         if menu_item(ui, pal, "Import MIDI…", "", true, None).clicked() {
@@ -473,6 +516,14 @@ impl CadenceApp {
         if menu_item(ui, pal, "Import Instrument Pack…", "", true, None).clicked() {
             self.import_pack_dialog();
         }
+        if menu_item(ui, pal, "Clean Up Unused Audio…", "", true, None)
+            .on_hover_text(
+                "Delete imported WAVs that no open, autosaved or recent song uses (asks first)",
+            )
+            .clicked()
+        {
+            self.open_audio_cleanup();
+        }
         menu_sep(ui, pal);
         let idle = self.export.is_none();
         let busy = "Exporting…";
@@ -486,6 +537,19 @@ impl CadenceApp {
         }
         if menu_item(ui, pal, "Export MIDI…", "", true, None).clicked() {
             self.export_midi_dialog();
+        }
+        menu_sep(ui, pal);
+        if menu_item(
+            ui,
+            pal,
+            "Preferences…",
+            &keys(ui, &SC_PREFERENCES),
+            true,
+            None,
+        )
+        .clicked()
+        {
+            self.dialog = Dialog::Preferences;
         }
         menu_sep(ui, pal);
         let quit = if cfg!(target_os = "macos") {
