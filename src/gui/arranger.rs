@@ -2927,6 +2927,21 @@ impl CadenceApp {
                 }
             }
         });
+        // Turn the whole lane into a part on the selected track.
+        ui.separator();
+        let tid = self.sel.track;
+        let name = self
+            .selected_track()
+            .map_or("no track selected".to_string(), |t| t.name.clone());
+        ui.label(
+            RichText::new(format!("Selected track: {name}"))
+                .small()
+                .color(pal.text_faint),
+        );
+        let blocker = self.lane_part_blocker(tid);
+        if let (Some(pick), Some(tid)) = (super::editor::lane_part_menu(ui, blocker), tid) {
+            self.apply_lane_part(tid, pick);
+        }
     }
 
     /// The chord a plain click on the strip's empty area writes on the bar

@@ -406,6 +406,15 @@ enum HitZone {
     Resize,
 }
 
+/// A chord-lane part chosen from a menu (see `CadenceApp::lane_part_menu`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LanePartPick {
+    /// Play the chord lane as block chords.
+    Chords,
+    /// A bassline from the chord lane in this style.
+    Bass(ops::BassStyle),
+}
+
 /// What the pattern header asked for this frame (applied after painting).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum HeaderAction {
@@ -419,6 +428,7 @@ enum HeaderAction {
     ClearNotes,
     DeletePattern,
     AddToArrangement,
+    LanePart(LanePartPick),
 }
 
 /// Inline pattern rename in progress: the header shows a text field in
@@ -1138,6 +1148,7 @@ impl CadenceApp {
             let has_notes = !pat.notes.is_empty();
             let add_tip =
                 "Add this pattern to the arrangement at the playhead (snapped to the bar)";
+            let lane_blocker = self.lane_part_blocker(Some(tid));
             let rename = &mut self.editor.rename;
             let out = toolbar_row(ui, pal, ("editor-header", tid), |tb| {
                 let in_menu = tb.in_menu();
@@ -1271,6 +1282,10 @@ impl CadenceApp {
                             action = Some(HeaderAction::ClearNotes);
                         }
                         ui.separator();
+                        if let Some(pick) = lane_part_menu(ui, lane_blocker) {
+                            action = Some(HeaderAction::LanePart(pick));
+                        }
+                        ui.separator();
                         let ink = if many { pal.danger } else { pal.text_disabled };
                         if ui
                             .add_enabled(
@@ -1399,6 +1414,7 @@ impl CadenceApp {
                 let start = snap_floor(self.transport.position, 16.0);
                 self.place_clip(tid, Some(pid), start);
             }
+            HeaderAction::LanePart(pick) => self.apply_lane_part(tid, pick),
         }
     }
 
@@ -3426,6 +3442,115 @@ impl CadenceApp {
         }
     }
 
+    /// Why the chord-lane parts ("Play song chords", "Bassline from
+    /// chords") can't write into `tid` right now, or `None` when they can.
+    pub(super) fn lane_part_blocker(&self, tid: Option<u64>) -> Option<&'static str> {
+        let Some(track) = tid.and_then(|id| ops::track(&self.project, id)) else {
+            return Some(ops::LanePartError::NoTrack.message());
+        };
+        if track.audio {
+            Some(ops::LanePartError::AudioTrack.message())
+        } else if track.shows_drum_grid() {
+            Some(ops::LanePartError::DrumTrack.message())
+        } else if self.project.chord_events.is_empty() {
+            Some(ops::LanePartError::NoChords.message())
+        } else {
+            None
+        }
+    }
+
+    /// Reports a chord-lane part: selects its new pattern and says what
+    /// went in, or explains the refusal.
+    fn finish_lane_part(
+        &mut self,
+        tid: u64,
+        what: &str,
+        result: Result<ops::LanePart, ops::LanePartError>,
+    ) {
+        match result {
+            Ok(part) => {
+                self.select_pattern(tid, part.pattern_id);
+                let name = self
+                    .track_ref(tid)
+                    .map_or_else(String::new, |t| t.name.clone());
+                self.set_status(
+                    StatusKind::Success,
+                    format!(
+                        "{what} on {name}: {} chord{}, {} note{}.",
+                        part.chords,
+                        sidebar::plural(part.chords),
+                        part.notes,
+                        sidebar::plural(part.notes)
+                    ),
+                );
+            }
+            Err(e) => self.set_status(StatusKind::Warning, e.message()),
+        }
+    }
+
+    /// "Play song chords": writes the chord lane into track `tid` as block
+    /// chords — each for its whole span, re-struck every bar — voiced with
+    /// the chord strip's inversion and slash-bass options and rolled when
+    /// its strum spacing is set. The part gets its own pattern and a clip
+    /// from the first chord's bar to the song end, replacing an earlier
+    /// run. One undo step; drum/audio tracks and an empty lane are refused.
+    pub(super) fn play_song_chords(&mut self, tid: u64) {
+        let voiced: Vec<(ops::ChordSpec, Vec<u8>)> = match ops::track(&self.project, tid) {
+            Some(track) if !track.shows_drum_grid() && !track.audio => {
+                ops::chord_lane_spans(&self.project)
+                    .iter()
+                    .map(|s| {
+                        let pitches = self.spec_pitches(track, &s.spec).map(|(p, _)| p);
+                        (s.spec, pitches.unwrap_or_default())
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let spacing = self.editor.chord_spacing;
+        let strum = (spacing > 0.0).then_some((spacing, self.editor.chord_direction));
+        let velocity = self.editor.velocity;
+        let mut result = Err(ops::LanePartError::NoTrack);
+        self.edit("Play song chords", None, |p| {
+            result = ops::play_chords_on_track(
+                p,
+                tid,
+                |spec| {
+                    voiced
+                        .iter()
+                        .find(|(s, _)| s == spec)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default()
+                },
+                strum,
+                velocity,
+            );
+        });
+        self.finish_lane_part(tid, "Played the song chords", result);
+    }
+
+    /// "Bassline from chords": writes a `style` bassline following the
+    /// chord lane into track `tid` (roots in C2–B2; the chord strip's
+    /// slash-bass degree, when set, becomes a pedal). Placement, undo and
+    /// refusals as [`Self::play_song_chords`].
+    pub(super) fn bassline_from_chords(&mut self, tid: u64, style: ops::BassStyle) {
+        let bass = self.editor.chord_bass;
+        let velocity = self.editor.velocity;
+        let mut result = Err(ops::LanePartError::NoTrack);
+        self.edit(&format!("Bassline ({})", style.label()), None, |p| {
+            result = ops::bassline_from_chords(p, tid, style, bass, velocity);
+        });
+        self.finish_lane_part(tid, &format!("Wrote a {} bassline", style.label()), result);
+    }
+
+    /// Runs a [`LanePartPick`] on track `tid`.
+    pub(super) fn apply_lane_part(&mut self, tid: u64, pick: LanePartPick) {
+        match pick {
+            LanePartPick::Chords => self.play_song_chords(tid),
+            LanePartPick::Bass(style) => self.bassline_from_chords(tid, style),
+        }
+    }
+
     /// Flips the scale-highlight row tint (chord-strip toggle).
     pub(super) fn toggle_scale_highlight(&mut self) {
         self.editor.scale_highlight = !self.editor.scale_highlight;
@@ -4405,6 +4530,43 @@ impl CadenceApp {
             paint_playhead_marker(&p, pal, g.x(local), g.ruler, self.transport.playing);
         }
     }
+}
+
+/// The chord-lane part actions as menu rows — shared by the pattern ⋯
+/// menu and the arranger's chord-lane menu. `blocker` (from
+/// `CadenceApp::lane_part_blocker`) disables them with the reason on hover.
+/// Returns what was picked.
+pub(super) fn lane_part_menu(ui: &mut Ui, blocker: Option<&'static str>) -> Option<LanePartPick> {
+    let ok = blocker.is_none();
+    let why = blocker.unwrap_or_default();
+    let mut pick = None;
+    if ui
+        .add_enabled(ok, egui::Button::new("Play song chords on this track"))
+        .on_hover_text(
+            "Write the chord lane into this track as block chords across the song \
+             (uses the chord strip's inversion, slash bass and strum)",
+        )
+        .on_disabled_hover_text(why)
+        .clicked()
+    {
+        pick = Some(LanePartPick::Chords);
+    }
+    ui.add_enabled_ui(ok, |ui| {
+        ui.menu_button("Bassline from chords", |ui| {
+            for style in ops::BassStyle::ALL {
+                if ui
+                    .button(style.label())
+                    .on_hover_text(style.hint())
+                    .clicked()
+                {
+                    pick = Some(LanePartPick::Bass(style));
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text(why);
+    });
+    pick
 }
 
 fn note_len_label(steps: f64) -> String {

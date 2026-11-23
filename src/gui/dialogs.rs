@@ -1529,6 +1529,10 @@ const ARRANGER_SECTIONS: &[Section] = &[
             ("Change the chord root", Mouse("{shift}+click a chord")),
             ("Move a chord", Mouse("Drag it")),
             ("Delete a chord", Mouse("Right-click it")),
+            (
+                "Play the chords or a bassline on the selected track",
+                Mouse("Right-click the empty lane"),
+            ),
         ],
     },
     Section {
@@ -1596,6 +1600,10 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Switch pattern", Mouse("Click the pattern name")),
             ("Rename the pattern", Mouse("Double-click the pattern name")),
             ("Rename, clear notes, delete pattern", Mouse("Click ⋯")),
+            (
+                "Play the song's chords or a bassline here",
+                Mouse("Click ⋯"),
+            ),
             (
                 "Place it at the playhead",
                 Mouse("Click Add to arrangement"),

@@ -3939,3 +3939,125 @@ fn roll_notes_light_up_only_while_the_playhead_is_inside_them() {
     assert!(note_is_live(&n, Some(6.49)));
     assert!(!note_is_live(&n, Some(6.5)), "off again at its end");
 }
+
+// ----- songwriting: chord lane → parts, grooves, templates -------------------
+
+/// An empty song with a C–Am–F–G chord lane and a selected `inst` track.
+fn chord_lane_ui(inst: Instrument) -> (Ui, u64) {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    for (bar, root, q) in [
+        (0.0, 0, ChordQuality::Major),
+        (1.0, 9, ChordQuality::Minor),
+        (2.0, 5, ChordQuality::Major),
+        (3.0, 7, ChordQuality::Major),
+    ] {
+        ops::add_chord_event(&mut ui.app.project, bar * 16.0, root, q).unwrap();
+    }
+    ui.app.add_track(inst);
+    let tid = ui.app.project.tracks.last().unwrap().id;
+    ui.app.select_track(tid);
+    ui.step();
+    (ui, tid)
+}
+
+#[test]
+fn play_song_chords_writes_the_lane_across_the_song_as_one_undo_step() {
+    let (mut ui, tid) = chord_lane_ui(Instrument::Piano);
+    ui.app.editor.chord_inversion = 1;
+    let before = ui.app.project.clone();
+    ui.app.play_song_chords(tid);
+    ui.step();
+    let t = ops::track(&ui.app.project, tid).unwrap();
+    let pid = ui.app.current_pattern_id(t).unwrap();
+    let pat = t.pattern(pid).unwrap();
+    assert_eq!(
+        pat.name,
+        ops::SONG_CHORDS_PATTERN,
+        "the new part is selected"
+    );
+    assert_eq!(pat.length, ui.app.project.bars * 16);
+    // First chord: C major in first inversion (E is the lowest tone).
+    let mut first: Vec<u8> = pat
+        .notes
+        .iter()
+        .filter(|n| n.start == 0.0)
+        .map(|n| n.pitch)
+        .collect();
+    first.sort_unstable();
+    assert_eq!(first.len(), 3);
+    assert_eq!(
+        first[0] % 12,
+        4,
+        "inversion from the chord strip: {first:?}"
+    );
+    // Am on bar 2, G held from bar 4 to the end.
+    assert!(pat
+        .notes
+        .iter()
+        .any(|n| n.start == 16.0 && n.pitch % 12 == 9));
+    assert!(pat
+        .notes
+        .iter()
+        .any(|n| n.start == 112.0 && n.pitch % 12 == 7));
+    assert!(t
+        .clips
+        .iter()
+        .any(|c| c.pattern_id == pid && c.start == 0.0));
+    assert!(ui
+        .app
+        .status
+        .as_ref()
+        .is_some_and(|s| s.text.contains("4 chords")));
+    ui.app.project.validate().unwrap();
+    ui.app.undo();
+    assert_eq!(ui.app.project, before, "one undo step");
+}
+
+#[test]
+fn chord_lane_parts_refuse_drums_and_an_empty_lane_politely() {
+    let (mut ui, _) = chord_lane_ui(Instrument::Piano);
+    let drums = ui.app.project.tracks[0].id;
+    let state = ui.app.history.state();
+    ui.app.play_song_chords(drums);
+    assert_eq!(ui.app.history.state(), state, "nothing written");
+    let status = ui.app.status.clone().unwrap();
+    assert_eq!(status.kind, StatusKind::Warning);
+    assert!(status.text.contains("melodic"), "{}", status.text);
+    assert!(ui.app.lane_part_blocker(Some(drums)).is_some());
+
+    let (mut ui, tid) = chord_lane_ui(Instrument::Bass);
+    ui.app.project.chord_events.clear();
+    assert!(ui.app.lane_part_blocker(Some(tid)).is_some());
+    let state = ui.app.history.state();
+    ui.app.bassline_from_chords(tid, ops::BassStyle::Roots);
+    assert_eq!(ui.app.history.state(), state, "nothing written");
+    assert!(ui
+        .app
+        .status
+        .as_ref()
+        .is_some_and(|s| s.text.contains("chord lane is empty")));
+}
+
+#[test]
+fn bassline_from_chords_follows_the_lane_and_undoes_in_one_step() {
+    let (mut ui, tid) = chord_lane_ui(Instrument::Bass);
+    assert_eq!(ui.app.lane_part_blocker(Some(tid)), None);
+    let before = ui.app.project.clone();
+    ui.app.bassline_from_chords(tid, ops::BassStyle::RootFifth);
+    ui.step();
+    let t = ops::track(&ui.app.project, tid).unwrap();
+    let pat = t
+        .patterns
+        .iter()
+        .find(|p| p.name == ops::BASSLINE_PATTERN)
+        .unwrap();
+    let at = |s: f64| pat.notes.iter().find(|n| n.start == s).map(|n| n.pitch);
+    assert_eq!(at(0.0), Some(36), "C2");
+    assert_eq!(at(8.0), Some(43), "G2, the fifth");
+    assert_eq!(at(16.0), Some(45), "A2");
+    assert_eq!(at(32.0), Some(41), "F2");
+    assert_eq!(at(48.0), Some(43), "G2");
+    ui.app.undo();
+    assert_eq!(ui.app.project, before);
+}
