@@ -1933,6 +1933,7 @@ fn new_song_create_applies_name_and_key() {
     ui.app.dialog = Dialog::NewSong(NewSongDraft {
         name: "  Moonlit  ".into(),
         key: SongKey::new(9, KeyMode::Minor),
+        ..Default::default()
     });
     ui.step();
     ui.key(Key::Enter);
@@ -1951,7 +1952,8 @@ fn new_song_create_applies_name_and_key() {
     assert!(status.text.contains("A minor"), "{}", status.text);
 
     // A blank name falls back to the default.
-    ui.app.create_new_song("   ", SongKey::default());
+    ui.app
+        .create_new_song("   ", SongKey::default(), ops::SongTemplate::Empty);
     assert_eq!(ui.app.project.name, Project::empty().name);
     assert_eq!(ui.app.project.key, SongKey::default());
 }
@@ -4079,4 +4081,31 @@ fn grooves_map_onto_a_kit_preset_and_name_what_it_lacks() {
     assert_eq!(on(42), 8, "soft 16th hats");
     let status = ui.app.status.as_ref().unwrap();
     assert!(status.text.contains("no open hat"), "{}", status.text);
+}
+
+#[test]
+fn new_song_from_a_template_builds_a_playable_song_in_the_chosen_key() {
+    let mut ui = Ui::demo();
+    ui.step();
+    ui.app.request(PendingAction::New);
+    ui.app.dialog = Dialog::NewSong(NewSongDraft {
+        name: "Summer".into(),
+        key: SongKey::new(2, KeyMode::Major),
+        template: ops::SongTemplate::Pop,
+    });
+    ui.step();
+    ui.key(Key::Enter);
+    assert!(matches!(ui.app.dialog, Dialog::None));
+    let p = &ui.app.project;
+    assert_eq!(p.name, "Summer");
+    assert_eq!(p.key, SongKey::new(2, KeyMode::Major));
+    assert_eq!(p.tracks.len(), 4, "drums, bass, keys, pad");
+    assert_eq!(p.markers.len(), 2);
+    assert_eq!(p.chord_events[0].root, 2, "I of D major");
+    p.validate().unwrap();
+    assert!(!ui.app.dirty(), "a fresh song starts clean");
+    assert!(!ui.app.history.can_undo());
+    let status = ui.app.status.as_ref().unwrap();
+    assert!(status.text.contains("Pop song"), "{}", status.text);
+    ui.steps(2);
 }
