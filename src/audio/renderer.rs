@@ -368,6 +368,9 @@ pub struct Renderer {
     count_in: f64,
     /// Remaining count-in (in steps) at which the next count-in click fires.
     count_in_click: f64,
+    /// Count-in length (in steps) the current count-in started with; its
+    /// accents fall on bar lines measured from here.
+    count_in_len: f64,
     /// A seek-chase of held notes waits for the count-in to finish.
     chase_pending: bool,
     voices: Vec<Voice>,
@@ -432,6 +435,7 @@ impl Renderer {
             metronome: false,
             count_in: 0.0,
             count_in_click: 0.0,
+            count_in_len: 0.0,
             chase_pending: false,
             voices: (0..MAX_VOICES).map(|_| Voice::new(sr)).collect(),
             age: 0,
@@ -758,6 +762,7 @@ impl Renderer {
         if count_in.is_finite() && count_in > EPS {
             self.count_in = count_in.min(STEPS_PER_BAR as f64 * 4.0);
             self.count_in_click = self.count_in;
+            self.count_in_len = self.count_in;
             self.chase_pending = true;
         } else {
             self.chase_held_notes();
@@ -1060,11 +1065,13 @@ impl Renderer {
     }
 
     /// Runs the count-in while the clock waits: clicks on each of its beats
-    /// (the first accented) and counts down. Returns the frames to render.
+    /// (the first, and every bar line after it, accented) and counts down.
+    /// Returns the frames to render.
     fn count_in_step(&mut self, max: usize) -> usize {
         let sps = self.samples_per_step();
         if self.count_in_click > 0.0 && self.count_in <= self.count_in_click + EPS {
-            let accent = (self.count_in_click / STEPS_PER_BAR as f64).fract().abs() < 1e-6;
+            let bars = (self.count_in_len - self.count_in_click) / STEPS_PER_BAR as f64;
+            let accent = (bars - bars.round()).abs() < 1e-6;
             self.click.trigger(accent, self.sr);
             self.count_in_click -= STEPS_PER_BEAT as f64;
         }
@@ -2149,6 +2156,38 @@ mod tests {
             peak(100_000, 138_000) > 0.01,
             "the held chord sounds after the count-in"
         );
+    }
+
+    #[test]
+    fn count_in_accents_its_first_click_and_bar_lines() {
+        // A bar and a half of count-in (6 beats): beats 0 and 4 are accented,
+        // measured from the count-in start, not from the song's bar grid.
+        let p = one_note_project(Instrument::Drums, 36, 0.0, 1.0);
+        let mut r = Renderer::new(SR);
+        let _ = r.apply(Command::Play {
+            song: Box::new(SongData::from_project(&p)),
+            start_step: 0.0,
+            looping: false,
+            loop_region: None,
+            count_in: STEPS_PER_BEAT as f64 * 6.0,
+        });
+        let (l, _) = run(&mut r, 6 * 24_000);
+        let lat = r.latency();
+        let peak = |beat: usize| {
+            let at = lat + beat * 24_000;
+            l[at..at + 2_000].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        for beat in [1, 2, 3, 5] {
+            assert!(peak(beat) > 0.05, "click on beat {beat}");
+            for accent in [0, 4] {
+                assert!(
+                    peak(accent) > peak(beat) * 1.2,
+                    "beat {accent} accented over beat {beat} ({} vs {})",
+                    peak(accent),
+                    peak(beat)
+                );
+            }
+        }
     }
 
     #[test]
