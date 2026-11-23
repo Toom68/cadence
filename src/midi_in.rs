@@ -6,7 +6,8 @@
 //! [`plan_connections`], the preference format), so it is tested without
 //! hardware. Device I/O lives behind [`MidiInputHandle`]: one background
 //! thread owns every `midir` connection, rescans the ports every few
-//! seconds (faster while Preferences is open) to follow hot-plugging, and
+//! seconds (faster while Preferences is open, and at once when the port
+//! count changes) to follow hot-plugging, and
 //! pushes parsed messages into a bounded channel the GUI drains each frame.
 //! Headless sessions and tests never create a handle, so they never open
 //! a MIDI client.
@@ -32,6 +33,16 @@ const SCAN_FAST: Duration = Duration::from_millis(1000);
 /// Port rescan interval otherwise — enough to notice an unplugged or
 /// re-plugged controller within a few seconds.
 const SCAN_SLOW: Duration = Duration::from_millis(3000);
+
+/// Between full rescans the thread checks just the port *count* this often
+/// and rescans at once when it changed. A controller unplugged and plugged
+/// back into the same socket keeps its port id on some systems (CoreMIDI's
+/// unique id, WinMM's interface path), so a full rescan that missed the gap
+/// would see an unchanged port and keep a connection the backend has
+/// already dropped; noticing the dip in the count makes the rescan close it
+/// and reopen the port when it returns. An absence shorter than this
+/// interval (faster than USB re-enumeration) can still go unseen.
+const PRESENCE_POLL: Duration = Duration::from_millis(250);
 
 /// Client name Cadence registers with the system MIDI service.
 const CLIENT_NAME: &str = "Cadence";
@@ -525,9 +536,15 @@ fn run(
     let mut fast = false;
     let mut initial = true;
     let mut next_scan = Instant::now();
+    let mut scanned_count: Option<usize> = None;
     loop {
         pump_system_events();
-        if Instant::now() >= next_scan {
+        let count = scanner.port_count();
+        if Instant::now() >= next_scan || rescan_for_count(scanned_count, count) {
+            // The count as checked, not the listed ports: backends may skip
+            // a port they fail to describe, which must not look like a
+            // change on every check.
+            scanned_count = Some(count);
             scan(
                 &scanner,
                 &pref,
@@ -542,7 +559,9 @@ fn run(
             initial = false;
             next_scan = Instant::now() + if fast { SCAN_FAST } else { SCAN_SLOW };
         }
-        let wait = next_scan.saturating_duration_since(Instant::now());
+        let wait = next_scan
+            .saturating_duration_since(Instant::now())
+            .min(PRESENCE_POLL);
         match commands.recv_timeout(wait) {
             Ok(Command::SetPref(p)) => {
                 pref = p;
@@ -559,6 +578,12 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// Whether the port count seen by the quick presence check differs from the
+/// one checked right before the last full scan (see [`PRESENCE_POLL`]).
+pub fn rescan_for_count(scanned: Option<usize>, count: usize) -> bool {
+    scanned.is_some_and(|n| n != count)
 }
 
 /// Lists the ports, applies [`plan_connections`] and publishes the result.
@@ -948,6 +973,14 @@ mod tests {
 
         let steady = plan_connections(&MidiInputPref::All, &avail, &avail);
         assert_eq!(steady, ConnectionPlan::default(), "nothing to do");
+    }
+
+    #[test]
+    fn a_dip_in_the_port_count_triggers_a_rescan() {
+        assert!(!rescan_for_count(None, 2), "the first scan is on schedule");
+        assert!(!rescan_for_count(Some(2), 2));
+        assert!(rescan_for_count(Some(2), 1), "unplugged");
+        assert!(rescan_for_count(Some(1), 2), "plugged back in");
     }
 
     #[test]
