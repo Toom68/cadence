@@ -87,6 +87,57 @@ pub fn max_clip_loops(track: &Track, clip: &Clip) -> u32 {
     MAX_CLIP_LOOPS.min((MAX_SONG_EVENTS / notes) as u32).max(1)
 }
 
+/// Note events one pattern clip contributes to the song: its pattern's notes
+/// times its loops, the quantity `Project::validate` sums against
+/// [`MAX_SONG_EVENTS`].
+pub fn clip_events(track: &Track, clip: &Clip) -> usize {
+    pattern(track, clip.pattern_id)
+        .map_or(0, |p| p.notes.len())
+        .saturating_mul(clip.loop_count() as usize)
+}
+
+/// Note events of every pattern clip on a track.
+fn track_events(track: &Track) -> usize {
+    track
+        .clips
+        .iter()
+        .map(|c| clip_events(track, c))
+        .fold(0, usize::saturating_add)
+}
+
+/// Note events the whole song holds, as `Project::validate` counts them.
+pub fn song_events(project: &Project) -> usize {
+    project
+        .tracks
+        .iter()
+        .map(track_events)
+        .fold(0, usize::saturating_add)
+}
+
+/// Note events the song can still take before it stops validating. Every
+/// edit that creates or loops clips checks this so Save never meets a
+/// project over [`MAX_SONG_EVENTS`].
+pub fn event_budget(project: &Project) -> usize {
+    MAX_SONG_EVENTS.saturating_sub(song_events(project))
+}
+
+/// Largest loop count `clip_id` can take with the rest of the song as it
+/// is: [`max_clip_loops`] further capped by the song-wide event budget.
+pub fn song_max_clip_loops(project: &Project, track_id: u64, clip_id: u64) -> Option<u32> {
+    let t = track(project, track_id)?;
+    let clip = t.clips.iter().find(|c| c.id == clip_id)?;
+    let notes = pattern(t, clip.pattern_id)
+        .map_or(0, |p| p.notes.len())
+        .max(1);
+    let others = song_events(project).saturating_sub(clip_events(t, clip));
+    let fit = MAX_SONG_EVENTS.saturating_sub(others) / notes;
+    Some(
+        max_clip_loops(t, clip)
+            .min(u32::try_from(fit).unwrap_or(u32::MAX))
+            .max(1),
+    )
+}
+
 /// End of the last clip in the song, in steps — imported-WAV clips count
 /// just like pattern clips so the arranger scrolls and `bars` fits them.
 pub fn content_end(project: &Project) -> f64 {
@@ -180,6 +231,9 @@ pub fn duplicate_track(project: &mut Project, track_id: u64) -> Option<u64> {
         return None;
     }
     let idx = track_index(project, track_id)?;
+    if track_events(&project.tracks[idx]) > event_budget(project) {
+        return None;
+    }
     let mut t = project.tracks[idx].clone();
     t.id = next_id();
     t.name = unique_name(
@@ -243,6 +297,9 @@ pub fn paste_track(project: &mut Project, source: &Track) -> Option<u64> {
         if let Some((_, new)) = map.iter().find(|(old, _)| *old == c.pattern_id) {
             c.pattern_id = *new;
         }
+    }
+    if track_events(&t) > event_budget(project) {
+        return None;
     }
     // Audio clips reference the shared store by name, not this track's
     // patterns — they copy verbatim apart from a fresh id.
@@ -379,16 +436,19 @@ pub fn bus_members(project: &Project, bus: u8) -> usize {
 }
 
 /// Places a clip, clamped inside the maximum song length. `None` if the
-/// pattern is missing or the track is at its clip limit.
+/// pattern is missing, the track is at its clip limit or the pattern's notes
+/// would push the song past [`MAX_SONG_EVENTS`].
 pub fn add_clip(project: &mut Project, track_id: u64, pattern_id: u64, start: f64) -> Option<u64> {
+    let budget = event_budget(project);
     let t = track_mut(project, track_id)?;
     // Audio lanes schedule `audio_clips`, never patterns — a pattern clip
     // placed here would play silence.
     if t.audio {
         return None;
     }
-    let len = pattern(t, pattern_id)?.length.max(1) as f64;
-    if t.clips.len() >= MAX_CLIPS_PER_TRACK {
+    let pat = pattern(t, pattern_id)?;
+    let len = pat.length.max(1) as f64;
+    if t.clips.len() >= MAX_CLIPS_PER_TRACK || pat.notes.len() > budget {
         return None;
     }
     let id = next_id();
@@ -433,21 +493,15 @@ pub fn delete_clip(project: &mut Project, track_id: u64, clip_id: u64) -> bool {
     t.clips.len() != before
 }
 
-/// Sets a clip's loop count, clamped to `1..=max_clip_loops`, then grows the
-/// song if the longer span now reaches past the end. Fades are re-clamped to
-/// the new span so a shorter clip never keeps fades wider than itself.
-/// `false` if the track or clip is missing.
+/// Sets a clip's loop count, clamped to `1..=song_max_clip_loops`, then
+/// grows the song if the longer span now reaches past the end. Fades are
+/// re-clamped to the new span so a shorter clip never keeps fades wider than
+/// itself. `false` if the track or clip is missing.
 pub fn set_clip_loops(project: &mut Project, track_id: u64, clip_id: u64, loops: u32) -> bool {
-    let Some(t) = track_mut(project, track_id) else {
+    let Some(cap) = song_max_clip_loops(project, track_id, clip_id) else {
         return false;
     };
-    // The cap must be computed before the clip is borrowed mutably.
-    let Some(cap) = t
-        .clips
-        .iter()
-        .find(|c| c.id == clip_id)
-        .map(|c| max_clip_loops(t, c))
-    else {
+    let Some(t) = track_mut(project, track_id) else {
         return false;
     };
     if let Some(clip) = t.clips.iter_mut().find(|c| c.id == clip_id) {
@@ -636,12 +690,13 @@ pub fn any_clip_rep_len(track: &Track, clip_id: u64) -> Option<f64> {
 }
 
 /// Largest loop count the gesture layer may offer for `clip_id`: the
-/// event-budget cap for pattern clips, [`MAX_CLIP_LOOPS`] for audio.
-pub fn max_any_clip_loops(track: &Track, clip_id: u64) -> Option<u32> {
-    if let Some(c) = track.clips.iter().find(|c| c.id == clip_id) {
-        return Some(max_clip_loops(track, c));
+/// song-wide event-budget cap for pattern clips, [`MAX_CLIP_LOOPS`] for audio.
+pub fn max_any_clip_loops(project: &Project, track_id: u64, clip_id: u64) -> Option<u32> {
+    let t = track(project, track_id)?;
+    if t.clips.iter().any(|c| c.id == clip_id) {
+        return song_max_clip_loops(project, track_id, clip_id);
     }
-    audio_clip(track, clip_id).map(|_| MAX_CLIP_LOOPS)
+    audio_clip(t, clip_id).map(|_| MAX_CLIP_LOOPS)
 }
 
 /// Current `(start, span, loops, fade_in, fade_out)` of `clip_id` whichever
@@ -1088,19 +1143,7 @@ pub fn split_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f
     // `Project::validate` counts every clip's notes times loops against
     // `MAX_SONG_EVENTS`; a note crossing the cut is counted in both halves,
     // so the check below needs the project's current theoretical total.
-    let events_now: usize = project
-        .tracks
-        .iter()
-        .flat_map(|t| {
-            t.clips.iter().map(move |c| {
-                t.patterns
-                    .iter()
-                    .find(|p| p.id == c.pattern_id)
-                    .map_or(0, |p| p.notes.len())
-                    * c.loop_count() as usize
-            })
-        })
-        .sum();
+    let budget = event_budget(project);
     let Some(t) = track_mut(project, track_id) else {
         return false;
     };
@@ -1198,10 +1241,8 @@ pub fn split_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f
     if left_notes.len() > MAX_NOTES_PER_PATTERN
         || right_notes.len() > MAX_NOTES_PER_PATTERN
         || t.patterns.len() + 2 > MAX_PATTERNS_PER_TRACK
-        || events_now.saturating_sub(pat_notes * loops as usize)
-            + left_notes.len()
-            + right_notes.len()
-            > MAX_SONG_EVENTS
+        || (left_notes.len() + right_notes.len()).saturating_sub(pat_notes * loops as usize)
+            > budget
     {
         return false;
     }
@@ -1292,22 +1333,29 @@ pub fn split_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f
 }
 
 /// Places up to `times` copies of a clip back-to-back after it, stopping at
-/// the maximum song length or clip limit. Returns the last new id, if any fit.
+/// the maximum song length, clip limit or song-wide event budget. Returns
+/// the last new id, if any fit.
 pub fn repeat_clip(
     project: &mut Project,
     track_id: u64,
     clip_id: u64,
     times: usize,
 ) -> Option<u64> {
+    let mut budget = event_budget(project);
     let t = track_mut(project, track_id)?;
     let clip = t.clips.iter().find(|c| c.id == clip_id)?.clone();
     let len = clip_len(t, &clip);
+    let cost = clip_events(t, &clip);
     let mut last = None;
     for i in 1..=times {
         let start = clip.start + len * i as f64;
-        if start + len > MAX_SONG_STEPS + 1e-9 || t.clips.len() >= MAX_CLIPS_PER_TRACK {
+        if start + len > MAX_SONG_STEPS + 1e-9
+            || t.clips.len() >= MAX_CLIPS_PER_TRACK
+            || cost > budget
+        {
             break;
         }
+        budget -= cost;
         let id = next_id();
         t.clips.push(Clip {
             id,
@@ -1437,6 +1485,18 @@ pub fn move_clip_group(project: &mut Project, originals: &[(u64, Clip)], dstep: 
     changed
 }
 
+/// Note events copies of `originals` would add, each counted against its
+/// own track's patterns.
+fn group_events(project: &Project, originals: &[(u64, Clip)]) -> usize {
+    originals
+        .iter()
+        .filter_map(|(track_id, clip)| track(project, *track_id).map(|t| clip_events(t, clip)))
+        .fold(0, usize::saturating_add)
+}
+
+/// Copies a group of pattern clips by `dstep` (clamped into the song). All
+/// or nothing: `None`, leaving the project untouched, when a target track is
+/// missing or full or the copies would exceed [`MAX_SONG_EVENTS`].
 pub fn copy_clip_group(
     project: &mut Project,
     originals: &[(u64, Clip)],
@@ -1459,6 +1519,9 @@ pub fn copy_clip_group(
         if t.clips.len() + *n > MAX_CLIPS_PER_TRACK {
             return None;
         }
+    }
+    if group_events(project, originals) > event_budget(project) {
+        return None;
     }
     let mut ids = Vec::with_capacity(originals.len());
     for (track_id, original) in originals {
@@ -1614,6 +1677,9 @@ pub fn copy_mixed_clip_group(
         {
             return None;
         }
+    }
+    if group_events(project, originals) > event_budget(project) {
+        return None;
     }
     let mut ids = Vec::with_capacity(originals.len() + audio.len());
     for (track_id, original) in originals {
@@ -3653,6 +3719,99 @@ mod tests {
             assert_eq!(t.clips.iter().find(|x| x.id == c).unwrap().loops, cap);
         }
         assert!(p.validate().is_ok(), "7000 notes x 28 loops fit the budget");
+    }
+
+    /// One 16-step pattern of 8000 notes on a fresh Lead track, clipped
+    /// once at step 0 with `loops` loops (8000 events per loop).
+    fn dense_song(loops: u32) -> (Project, u64, u64, u64) {
+        let (mut p, id) = project_with(Instrument::Lead);
+        p.tracks[0].clips.clear();
+        let pid = p.tracks[0].patterns[0].id;
+        pattern_mut(&mut p, id, pid).unwrap().notes = (0..8000)
+            .map(|i| Note {
+                id: next_id(),
+                pitch: 60,
+                start: (i % 16) as f64,
+                duration: 1.0,
+                velocity: 0.8,
+            })
+            .collect();
+        let c = add_clip(&mut p, id, pid, 0.0).unwrap();
+        assert!(set_clip_loops(&mut p, id, c, loops));
+        assert_eq!(song_events(&p), 8000 * loops as usize);
+        (p, id, pid, c)
+    }
+
+    #[test]
+    fn clip_edits_never_push_the_song_past_the_event_budget() {
+        // 24 loops x 8000 notes = 192_000 events: one more 8000-note
+        // repetition still fits (200_000), a second does not.
+        let (mut p, id, pid, c) = dense_song(24);
+        assert_eq!(event_budget(&p), 8000);
+        let second = add_clip(&mut p, id, pid, 512.0).unwrap();
+        assert_eq!(event_budget(&p), 0);
+        assert!(p.validate().is_ok());
+
+        assert_eq!(add_clip(&mut p, id, pid, 1024.0), None);
+        assert_eq!(repeat_clip(&mut p, id, second, 3), None);
+        assert!(set_clip_loops(&mut p, id, second, 4));
+        assert_eq!(
+            track(&p, id)
+                .unwrap()
+                .clips
+                .iter()
+                .find(|x| x.id == second)
+                .unwrap()
+                .loops,
+            1,
+            "a full song leaves no room for more loops"
+        );
+        assert_eq!(song_max_clip_loops(&p, id, c), Some(24));
+        assert_eq!(max_any_clip_loops(&p, id, c), Some(24));
+        let originals = collect_clips(&p, &BTreeSet::from([second]));
+        assert_eq!(copy_clip_group(&mut p, &originals, 64.0), None);
+        assert_eq!(duplicate_clip_group_after(&mut p, &originals), None);
+        assert_eq!(copy_mixed_clip_group(&mut p, &originals, &[], 64.0), None);
+        assert_eq!(duplicate_clip_groups_after(&mut p, &originals, &[]), None);
+        assert_eq!(duplicate_track(&mut p, id), None);
+        let source = p.tracks[0].clone();
+        assert_eq!(paste_track(&mut p, &source), None);
+        assert_eq!(song_events(&p), MAX_SONG_EVENTS);
+        assert!(p.validate().is_ok(), "{:?}", p.validate());
+
+        // Shrinking frees room that loops can then use again.
+        assert!(set_clip_loops(&mut p, id, c, 20));
+        assert_eq!(song_max_clip_loops(&p, id, second), Some(5));
+        assert!(set_clip_loops(&mut p, id, second, MAX_CLIP_LOOPS));
+        assert_eq!(song_events(&p), MAX_SONG_EVENTS);
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn repeat_clip_stops_when_the_event_budget_runs_out() {
+        // 22 loops = 176_000 events; three more 8000-event copies fit.
+        let (mut p, id, pid, _) = dense_song(22);
+        let single = add_clip(&mut p, id, pid, 1024.0).unwrap();
+        let before = p.tracks[0].clips.len();
+        assert!(repeat_clip(&mut p, id, single, 5).is_some());
+        assert_eq!(p.tracks[0].clips.len(), before + 2);
+        assert_eq!(event_budget(&p), 0);
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn group_copies_and_track_copies_fit_when_there_is_room() {
+        let (mut p, id, _, c) = dense_song(12);
+        let originals = collect_clips(&p, &BTreeSet::from([c]));
+        assert!(duplicate_clip_group_after(&mut p, &originals).is_some());
+        assert_eq!(song_events(&p), 192_000);
+        assert_eq!(duplicate_clip_group_after(&mut p, &originals), None);
+        assert!(set_clip_loops(&mut p, id, c, 6));
+        assert!(
+            duplicate_track(&mut p, id).is_none(),
+            "the track holds 144_000"
+        );
+        assert!(p.validate().is_ok());
     }
 
     #[test]

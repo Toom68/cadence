@@ -3003,18 +3003,13 @@ impl CadenceApp {
             return Some(hit);
         }
         let pid = self.current_pattern_id(ops::track(&self.project, track_id)?)?;
-        let (clip_id, clip_start, loops, plen, cap) = {
+        let (clip_id, clip_start, loops, plen) = {
             let track = ops::track(&self.project, track_id)?;
             let clip = track.clips.iter().find(|c| c.pattern_id == pid)?;
             let plen = ops::pattern(track, pid)?.length.max(1) as f64;
-            (
-                clip.id,
-                clip.start,
-                clip.loop_count(),
-                plen,
-                ops::max_clip_loops(track, clip),
-            )
+            (clip.id, clip.start, clip.loop_count(), plen)
         };
+        let cap = ops::song_max_clip_loops(&self.project, track_id, clip_id)?;
         if pos < clip_start - 1e-9 {
             return None;
         }

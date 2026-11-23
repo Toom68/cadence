@@ -2097,8 +2097,9 @@ impl CadenceApp {
             self.edit("Duplicate track", None, |p| {
                 new = ops::duplicate_track(p, id)
             });
-            if let Some(new) = new {
-                self.select_track(new);
+            match new {
+                Some(new) => self.select_track(new),
+                None => self.track_limit_status(),
             }
         }
         if up {

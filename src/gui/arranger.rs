@@ -1902,13 +1902,7 @@ impl CadenceApp {
                 }
                 None => {
                     cd.copy_failed = true;
-                    self.set_status(
-                        StatusKind::Warning,
-                        format!(
-                            "Could not copy selection (tracks hold up to {} clips).",
-                            ops::MAX_CLIPS_PER_TRACK
-                        ),
-                    );
+                    self.clip_limit_status("copy selection");
                     return;
                 }
             }
@@ -1999,13 +1993,7 @@ impl CadenceApp {
                     );
                 }
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!(
-                    "Could not place a clip here (tracks hold up to {} clips).",
-                    ops::MAX_CLIPS_PER_TRACK
-                ),
-            ),
+            None => self.clip_limit_status("place a clip here"),
         }
     }
 
@@ -2055,7 +2043,8 @@ impl CadenceApp {
         tl: Timeline,
     ) {
         let Some((rep_len, max_loops)) = ops::track(&self.project, track)
-            .and_then(|t| ops::any_clip_rep_len(t, clip).zip(ops::max_any_clip_loops(t, clip)))
+            .and_then(|t| ops::any_clip_rep_len(t, clip))
+            .zip(ops::max_any_clip_loops(&self.project, track, clip))
         else {
             return;
         };
@@ -2234,19 +2223,37 @@ impl CadenceApp {
                 ui.separator();
                 let repeat = |app: &mut Self, times: usize, label: &str| {
                     let mut last = None;
+                    let mut made = 0;
                     app.edit(label, None, |p| {
+                        let count = |p: &Project| {
+                            ops::track(p, track).map_or(0, |t| t.clips.len() + t.audio_clips.len())
+                        };
+                        let before = count(p);
                         last = if audio {
                             ops::repeat_audio_clip(p, track, clip, times)
                         } else {
                             ops::repeat_clip(p, track, clip, times)
                         };
+                        made = count(p) - before;
                     });
-                    match last {
-                        Some(id) => app.set_single_clip_selection(id),
-                        None => app.set_status(
+                    if let Some(id) = last {
+                        app.set_single_clip_selection(id);
+                    }
+                    if made < times {
+                        app.set_status(
                             StatusKind::Warning,
-                            format!("No room: songs are limited to {} bars.", ops::MAX_BARS),
-                        ),
+                            format!(
+                                "{}: songs are limited to {} bars and {} note events, tracks to {} clips.",
+                                if made == 0 {
+                                    "No room".to_owned()
+                                } else {
+                                    format!("Only {made} of {times} copies fit")
+                                },
+                                ops::MAX_BARS,
+                                ops::MAX_SONG_EVENTS,
+                                ops::MAX_CLIPS_PER_TRACK
+                            ),
+                        );
                     }
                 };
                 if ui
@@ -2287,11 +2294,13 @@ impl CadenceApp {
                 }
                 // Clip properties: loop count and corner fades. Values are
                 // fetched up front so `self.edit` calls can't hold borrows.
-                let props = ops::track(&self.project, track).and_then(|t| {
-                    ops::any_clip_props(t, clip)
-                        .map(|(_, span, loops, fade_in, fade_out)| (loops, fade_in, fade_out, span))
-                        .zip(ops::max_any_clip_loops(t, clip))
-                });
+                let props = ops::track(&self.project, track)
+                    .and_then(|t| {
+                        ops::any_clip_props(t, clip).map(|(_, span, loops, fade_in, fade_out)| {
+                            (loops, fade_in, fade_out, span)
+                        })
+                    })
+                    .zip(ops::max_any_clip_loops(&self.project, track, clip));
                 if let Some(((loops, fade_in, fade_out, span), max_loops)) = props {
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -2513,13 +2522,7 @@ impl CadenceApp {
                 self.set_clip_selection(ids.into_iter().collect(), primary);
                 self.focus = Focus::Arranger;
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!(
-                    "Could not paste clips (tracks hold up to {} clips).",
-                    ops::MAX_CLIPS_PER_TRACK
-                ),
-            ),
+            None => self.clip_limit_status("paste clips"),
         }
     }
 
@@ -4073,10 +4076,7 @@ impl CadenceApp {
                     });
                     match new {
                         Some(n) => self.select_track(n),
-                        None => self.set_status(
-                            StatusKind::Warning,
-                            format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
-                        ),
+                        None => self.track_limit_status(),
                     }
                 }
                 "up" | "down" => {

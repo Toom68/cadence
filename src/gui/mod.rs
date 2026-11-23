@@ -709,13 +709,7 @@ impl CadenceApp {
                         });
                         self.set_clip_selection(set, primary);
                     }
-                    None => self.set_status(
-                        StatusKind::Warning,
-                        format!(
-                            "Could not duplicate selection (tracks hold up to {} clips).",
-                            ops::MAX_CLIPS_PER_TRACK
-                        ),
-                    ),
+                    None => self.clip_limit_status("duplicate selection"),
                 }
             }
         }
@@ -1006,13 +1000,7 @@ impl CadenceApp {
                 let set: BTreeSet<u64> = ids.into_iter().collect();
                 self.set_clip_selection(set, primary);
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!(
-                    "Could not paste clips (tracks hold up to {} clips, or a copied track is gone).",
-                    ops::MAX_CLIPS_PER_TRACK
-                ),
-            ),
+            None => self.clip_limit_status("paste clips"),
         }
     }
 
@@ -1030,10 +1018,7 @@ impl CadenceApp {
                 self.arranger.reveal_track = Some(id);
                 self.set_status(StatusKind::Success, format!("Pasted track “{name}”."));
             }
-            None => self.set_status(
-                StatusKind::Warning,
-                format!("Track limit reached ({} tracks).", ops::MAX_TRACKS),
-            ),
+            None => self.track_limit_status(),
         }
     }
 
@@ -1139,6 +1124,32 @@ impl CadenceApp {
         if let (Some(engine), Some(track)) = (&self.engine, ops::track(&self.project, track_id)) {
             engine.preview(track, pitch, 0.45, velocity);
         }
+    }
+
+    /// Warns that a clip copy/placement was refused by the per-track clip
+    /// cap or the song-wide note-event budget.
+    fn clip_limit_status(&mut self, what: &str) {
+        self.set_status(
+            StatusKind::Warning,
+            format!(
+                "Could not {what} (tracks hold up to {} clips, songs up to {} note events).",
+                ops::MAX_CLIPS_PER_TRACK,
+                ops::MAX_SONG_EVENTS
+            ),
+        );
+    }
+
+    /// Warns that a track copy was refused, naming the limit that ran out.
+    fn track_limit_status(&mut self) {
+        let text = if self.project.tracks.len() >= ops::MAX_TRACKS {
+            format!("Track limit reached ({} tracks).", ops::MAX_TRACKS)
+        } else {
+            format!(
+                "No room for the copy: songs hold up to {} note events.",
+                ops::MAX_SONG_EVENTS
+            )
+        };
+        self.set_status(StatusKind::Warning, text);
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
