@@ -57,6 +57,8 @@ pub const MAX_MARKERS: usize = 64;
 pub const MAX_CHORD_EVENTS: usize = 64;
 pub const MIN_CUTOFF_HZ: f32 = 100.0;
 pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
+/// Largest boost/cut of one channel-EQ band, in dB.
+pub const MAX_EQ_DB: f32 = 12.0;
 /// Longest per-track glide (portamento) slide time, in seconds.
 pub const MAX_GLIDE_SECONDS: f32 = 2.0;
 /// Most points a single track automation lane (volume or pan) can carry.
@@ -439,6 +441,35 @@ pub struct Effects {
     pub delay: f32,
     /// Saturation amount, 0..=1.
     pub drive: f32,
+}
+
+/// Low shelf / mid bell / high shelf gains in dB, each `-MAX_EQ_DB..=MAX_EQ_DB`.
+/// All zero (the default) is a bit-exact bypass.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct TrackEq {
+    #[serde(default)]
+    pub low_db: f32,
+    #[serde(default)]
+    pub mid_db: f32,
+    #[serde(default)]
+    pub high_db: f32,
+}
+
+impl TrackEq {
+    pub const FLAT: TrackEq = TrackEq {
+        low_db: 0.0,
+        mid_db: 0.0,
+        high_db: 0.0,
+    };
+
+    pub fn is_flat(&self) -> bool {
+        *self == TrackEq::FLAT
+    }
+
+    /// `[low, mid, high]` in dB.
+    pub fn bands(&self) -> [f32; 3] {
+        [self.low_db, self.mid_db, self.high_db]
+    }
 }
 
 /// Neutral starting point for new tracks and the mixer's double-click reset:
@@ -913,6 +944,11 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub effects: Effects,
+    /// Three-band channel EQ, applied after drive and before the filter.
+    /// Songs saved before the EQ existed have no `eq` key and load flat (a
+    /// bit-exact bypass); a flat EQ serializes without the key.
+    #[serde(default, skip_serializing_if = "TrackEq::is_flat")]
+    pub eq: TrackEq,
     pub patterns: Vec<Pattern>,
     pub clips: Vec<Clip>,
     /// Data-driven pack sound. When `Some`, it replaces the built-in algorithm of
@@ -983,6 +1019,7 @@ snapshot_clone!(Track {
     mute,
     solo,
     effects,
+    eq,
     patterns,
     clips,
     preset,
@@ -1640,6 +1677,7 @@ pub fn create_track(instrument: Instrument) -> Track {
             delay: 0.0,
             drive: 0.0,
         },
+        eq: TrackEq::FLAT,
         clips: vec![Clip {
             id: next_id(),
             pattern_id: pattern.id,
@@ -1684,6 +1722,7 @@ pub fn create_audio_track(name: &str) -> Track {
         mute: false,
         solo: false,
         effects: Effects::default(),
+        eq: TrackEq::FLAT,
         patterns: Vec::new(),
         clips: Vec::new(),
         preset: None,
@@ -1919,6 +1958,7 @@ impl Project {
             )?;
             check_range(&format!("{tl} bus"), track.bus, 0, NUM_BUSES as u8, true)?;
             let fx = &track.effects;
+            let eq = &track.eq;
             check_range(
                 &format!("{tl} filter cutoff"),
                 fx.cutoff_hz,
@@ -1932,6 +1972,19 @@ impl Project {
                 ("drive", fx.drive),
             ] {
                 check_range(&format!("{tl} {label}"), v, 0.0, 1.0, v.is_finite())?;
+            }
+            for (label, v) in [
+                ("EQ low", eq.low_db),
+                ("EQ mid", eq.mid_db),
+                ("EQ high", eq.high_db),
+            ] {
+                check_range(
+                    &format!("{tl} {label}"),
+                    v,
+                    -MAX_EQ_DB,
+                    MAX_EQ_DB,
+                    v.is_finite(),
+                )?;
             }
             if let Some(preset) = &track.preset {
                 validate_preset(preset).map_err(|e| format!("{tl} instrument preset: {e}"))?;
@@ -2226,6 +2279,10 @@ impl Project {
             fx.reverb = finite_or_f32(fx.reverb, 0.0).clamp(0.0, 1.0);
             fx.delay = finite_or_f32(fx.delay, 0.0).clamp(0.0, 1.0);
             fx.drive = finite_or_f32(fx.drive, 0.0).clamp(0.0, 1.0);
+            let eq = &mut track.eq;
+            for v in [&mut eq.low_db, &mut eq.mid_db, &mut eq.high_db] {
+                *v = finite_or_f32(*v, 0.0).clamp(-MAX_EQ_DB, MAX_EQ_DB);
+            }
             if let Some(auto) = &mut track.automation {
                 for kind in AutomationLane::ALL {
                     let (lo, hi) = Automation::value_range(kind);
@@ -2818,6 +2875,37 @@ fn demo_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn track_eq_defaults_flat_validates_and_normalizes() {
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[{"id":2,"name":"Keys","color":[255,132,104],"instrument":"piano","volume":0.8,"pan":0,"mute":false,"solo":false,"effects":{"cutoff_hz":20000,"reverb":0,"delay":0,"drive":0},"patterns":[],"clips":[]}]}"#;
+        let mut p: Project = serde_json::from_str(legacy).unwrap();
+        assert!(p.tracks[0].eq.is_flat());
+        p.validate().unwrap();
+        assert!(!serde_json::to_string(&p).unwrap().contains("\"eq\""));
+        p.tracks[0].eq.mid_db = -4.5;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"mid_db\":-4.5"));
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tracks[0].eq, p.tracks[0].eq);
+        // A partial block fills the missing bands with 0 dB.
+        let partial = legacy.replace(r#""patterns":[]"#, r#""eq":{"low_db":3},"patterns":[]"#);
+        let partial: Project = serde_json::from_str(&partial).unwrap();
+        assert_eq!(
+            partial.tracks[0].eq,
+            TrackEq {
+                low_db: 3.0,
+                ..TrackEq::FLAT
+            }
+        );
+        for bad in [12.5, -13.0, f32::NAN] {
+            p.tracks[0].eq.high_db = bad;
+            assert!(p.validate().is_err(), "{bad} dB rejected");
+            p.normalize();
+            p.validate().unwrap();
+            assert!(p.tracks[0].eq.high_db.abs() <= MAX_EQ_DB);
+        }
+    }
 
     /// New tracks start with gentle sends; saved songs keep exactly the
     /// reverb they were written with (the field is required, so the

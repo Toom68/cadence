@@ -6,6 +6,7 @@
 
 use super::dsp::{
     soft_clip, time_coef, DcBlock, Limiter, PingPongDelay, Reverb, Smoother, Svf, SvfCoefs,
+    ThreeBandEq,
 };
 use super::font::{FontBank, FontSynth};
 use super::meter::BlockPeaks;
@@ -71,6 +72,8 @@ struct Strip {
     reverb: Smoother,
     delay: Smoother,
     drive: Smoother,
+    /// Channel EQ between drive and filter; flat = skipped entirely.
+    eq: ThreeBandEq,
     cutoff: f32,
     cutoff_target: f32,
     coefs: SvfCoefs,
@@ -97,6 +100,7 @@ impl Strip {
             reverb: Smoother::new(0.0, 0.02, sr),
             delay: Smoother::new(0.0, 0.02, sr),
             drive: Smoother::new(0.0, 0.03, sr),
+            eq: ThreeBandEq::new(sr),
             cutoff: MAX_CUTOFF_HZ,
             cutoff_target: MAX_CUTOFF_HZ,
             coefs: SvfCoefs::new(MAX_CUTOFF_HZ, 0.707, sr),
@@ -133,6 +137,7 @@ impl Strip {
                 s.target = t;
             }
         }
+        self.eq.set(p.eq, snap);
         self.cutoff_target = p.cutoff;
         if snap {
             self.cutoff = p.cutoff;
@@ -168,6 +173,7 @@ impl Strip {
                 s.target = t;
             }
         }
+        self.eq.set([0.0; 3], snap);
         self.cutoff_target = MAX_CUTOFF_HZ;
         if snap {
             self.cutoff = MAX_CUTOFF_HZ;
@@ -212,6 +218,7 @@ impl Strip {
     fn reset(&mut self) {
         self.filt_l.reset();
         self.filt_r.reset();
+        self.eq.snap();
         self.live = false;
         for s in [
             &mut self.gain_l,
@@ -223,6 +230,11 @@ impl Strip {
             s.snap(s.target);
         }
         self.cutoff = self.cutoff_target;
+    }
+
+    /// A parameter is still gliding (the strip must settle even while idle).
+    fn unsettled(&self) -> bool {
+        !self.gain_l.settled() || self.cutoff != self.cutoff_target || !self.eq.settled()
     }
 
     /// Settles parameters while the strip is idle so it resumes at its targets.
@@ -256,6 +268,8 @@ impl Strip {
                 (self.cutoff.ln() + (self.cutoff_target.ln() - self.cutoff.ln()) * k).exp();
             self.coefs = SvfCoefs::new(self.cutoff, 0.707, sr);
         }
+        self.eq.advance(n);
+        let eq = !self.eq.is_bypassed();
         let (out_l, out_r) = out;
         let (rev_l, rev_r) = rev;
         let (dly_l, dly_r) = dly;
@@ -266,6 +280,9 @@ impl Strip {
             if pre > 1.0 {
                 x = soft_clip(x * pre) * makeup;
                 y = soft_clip(y * pre) * makeup;
+            }
+            if eq {
+                (x, y) = self.eq.process(x, y);
             }
             x = self.filt_l.low(&self.coefs, x);
             y = self.filt_r.low(&self.coefs, y);
@@ -284,7 +301,10 @@ impl Strip {
                 output_peak = output_peak.max(ol.abs()).max(or.abs());
             }
         }
-        self.live = peak > 1e-7 || !self.filt_l.is_quiet() || !self.filt_r.is_quiet();
+        self.live = peak > 1e-7
+            || !self.filt_l.is_quiet()
+            || !self.filt_r.is_quiet()
+            || (eq && !self.eq.is_quiet());
         output_peak
     }
 }
@@ -1148,9 +1168,7 @@ impl Renderer {
             }
             let used = std::mem::take(&mut self.strip_used[s]);
             if !used && !self.strips[s].live {
-                if !self.strips[s].gain_l.settled()
-                    || self.strips[s].cutoff != self.strips[s].cutoff_target
-                {
+                if self.strips[s].unsettled() {
                     self.strips[s].idle(sr);
                 }
                 continue;
@@ -1189,9 +1207,7 @@ impl Renderer {
         for b in 0..NUM_BUSES {
             let used = std::mem::take(&mut self.bus_used[b]);
             if !used && !self.bus_strips[b].live {
-                if !self.bus_strips[b].gain_l.settled()
-                    || self.bus_strips[b].cutoff != self.bus_strips[b].cutoff_target
-                {
+                if self.bus_strips[b].unsettled() {
                     self.bus_strips[b].idle(sr);
                 }
                 continue;
@@ -1356,6 +1372,54 @@ mod tests {
         x.iter()
             .position(|s| s.abs() > threshold)
             .unwrap_or(usize::MAX)
+    }
+
+    /// Energy below ~150 Hz (mono sum), via a steep-enough SVF low-pass.
+    fn low_band_energy(l: &[f32], r: &[f32]) -> f32 {
+        let c = SvfCoefs::new(150.0, 0.707, SR);
+        let mut f = Svf::default();
+        l.iter()
+            .zip(r)
+            .map(|(a, b)| {
+                let y = f.low(&c, (a + b) * 0.5);
+                y * y
+            })
+            .sum()
+    }
+
+    fn render_song(p: &Project, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(p)));
+        r.play(0.0, false);
+        run(&mut r, frames)
+    }
+
+    #[test]
+    fn channel_eq_is_neutral_flat_and_boosts_lows() {
+        let flat = one_note_project(Instrument::Bass, 36, 0.0, 8.0);
+        assert!(flat.tracks[0].eq.is_flat());
+        let (fl, fr) = render_song(&flat, 48_000);
+        // A song saved before the EQ existed renders bit-identically.
+        let mut json = serde_json::to_value(&flat).unwrap();
+        assert!(
+            json["tracks"][0].get("eq").is_none(),
+            "flat EQ is not saved"
+        );
+        json["tracks"][0].as_object_mut().unwrap().remove("eq");
+        let legacy: Project = serde_json::from_value(json).unwrap();
+        assert_eq!(render_song(&legacy, 48_000), (fl.clone(), fr.clone()));
+
+        let mut boosted = flat.clone();
+        boosted.tracks[0].eq.low_db = 9.0;
+        boosted.validate().unwrap();
+        let (bl, br) = render_song(&boosted, 48_000);
+        let (e_flat, e_boost) = (low_band_energy(&fl, &fr), low_band_energy(&bl, &br));
+        assert!(e_flat > 0.0);
+        assert!(
+            e_boost > e_flat * 2.0,
+            "low shelf raises bass energy ({e_flat} -> {e_boost})"
+        );
+        assert!(bl.iter().chain(&br).all(|x| x.is_finite()));
     }
 
     #[test]
