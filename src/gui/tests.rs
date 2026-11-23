@@ -525,7 +525,7 @@ fn marquee_selects_notes_and_delete_removes_them() {
 }
 
 #[test]
-fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
+fn piano_alt_blank_marquee_no_note_no_dirty_and_click_draws() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();
     ui.app.add_track(Instrument::Piano);
@@ -544,12 +544,12 @@ fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
     let before_state = ui.app.history.state();
     let a = ui.app.roll_cell_center(64, 0.0).unwrap();
     let b = ui.app.roll_cell_center(59, 7.0).unwrap();
-    ui.drag(a, b);
+    ui.drag_mod(a, b, Modifiers::ALT);
     assert_eq!(ui.pattern(idx, 0).notes.len(), before_notes);
     assert_eq!(
         ui.app.sel.notes.len(),
         2,
-        "plain blank drag box-selects notes"
+        "alt+drag on blank grid box-selects notes"
     );
     assert_eq!(
         ui.app.history.state(),
@@ -562,6 +562,74 @@ fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
     ui.step();
     assert_eq!(ui.pattern(idx, 0).notes.len(), before_notes + 1);
     assert!(ui.app.dirty(), "ordinary click still draws a note");
+}
+
+#[test]
+fn piano_drag_on_empty_grid_draws_the_note_length() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    let before = ui.app.history.state();
+
+    // Press on step 2 and drag to the middle of step 7: the note reaches
+    // past the pointer in whole snap cells (1/16) — six steps long.
+    let from = ui.app.roll_cell_center(60, 2.0).unwrap();
+    let to = ui.app.roll_cell_center(60, 7.0).unwrap();
+    ui.down(from);
+    ui.at(pos2(from.x + 12.0, from.y));
+    ui.step();
+    ui.at(to);
+    ui.step();
+    ui.up(to);
+    ui.step();
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 1, "one note drawn");
+    let n = &pat.notes[0];
+    assert_eq!((n.pitch, n.start, n.duration), (60, 2.0, 6.0));
+    assert!(ui.app.sel.notes.contains(&n.id), "drawn note is selected");
+    assert_eq!(ui.app.history.undo_label(), Some("Draw note"));
+    ui.app.undo();
+    assert!(
+        ui.pattern(idx, 0).notes.is_empty(),
+        "the whole drag is one undo step"
+    );
+    assert_eq!(ui.app.history.state(), before);
+
+    // Snap 1/8: lengths come in whole 1/8 cells; dragging left of the start
+    // keeps one cell.
+    ui.app.editor.snap = 2.0;
+    let from = ui.app.roll_cell_center(62, 4.0).unwrap();
+    let to = ui.app.roll_cell_center(62, 8.0).unwrap();
+    ui.drag(from, to);
+    let n = ui.pattern(idx, 0).notes[0].clone();
+    assert_eq!((n.start, n.duration), (4.0, 6.0), "ceil to 1/8 cells");
+    let from = ui.app.roll_cell_center(64, 10.0).unwrap();
+    let to = ui.app.roll_cell_center(64, 3.0).unwrap();
+    ui.drag(from, to);
+    let n = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.pitch == 64)
+        .unwrap()
+        .clone();
+    assert_eq!((n.start, n.duration), (10.0, 2.0), "at least one cell");
+
+    // A plain click still draws the toolbar's note length.
+    ui.app.editor.note_len = 4.0;
+    ui.click(ui.app.roll_cell_center(66, 0.0).unwrap());
+    let n = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.pitch == 66)
+        .unwrap()
+        .clone();
+    assert_eq!(n.duration, 4.0);
 }
 
 #[test]

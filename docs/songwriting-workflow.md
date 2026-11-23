@@ -61,7 +61,7 @@ Selecting a track opens its **pattern editor**. A track can hold many patterns; 
 
 ### Melodic tracks — piano roll
 
-- Click empty grid space to draw a note; drag empty grid space to box-select notes; drag any selected note to move the group with relative timing and pitch preserved. Pull a note's right edge to resize; **Shift+click/drag** adds or toggles selection; **right-click** erases.
+- Click empty grid space to draw a note of the toolbar's **Note** length, or drag from empty grid space to draw a note whose length follows the pointer (whole **Snap** cells); **Alt+drag** empty space box-selects notes (**Shift+drag** adds to the selection); drag any selected note to move the group with relative timing and pitch preserved. Pull a note's right edge to resize; **Shift+click/drag** adds or toggles selection; **right-click** erases.
 - The piano-key column on the left auditions pitches; the velocity lane under the roll shapes note loudness for the selection.
 - The roll toolbar holds **Note** length (1/16–1 bar) and **Snap** grid (1/32–1/4) combos, **Scale snap** (drawn notes and vertical drags land on the key's scale tones) and **Scale** (tints the key's rows), **Quantize** and **Humanize** (also in the Edit menu), and **Velocity −10% / +10%** for the selection or the whole pattern.
 - The collapsible **Chords** strip (melodic tracks only) has three tabs — **Diatonic** (the key's seven chords), **Borrowed** (parallel-key colors and secondary dominants) and **Progressions** (one-click loops stamped a chord per bar) — plus Type, Inversion, Bass and Strum controls. Hover a chip to audition; click to stamp at the pointer or playhead.

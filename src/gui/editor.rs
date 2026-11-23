@@ -196,6 +196,18 @@ pub(super) fn note_is_live(n: &Note, playing_at: Option<f64>) -> bool {
     playing_at.is_some_and(|t| t >= n.start && t < n.start + n.duration)
 }
 
+/// Length of a note drawn by dragging from `start` to the pointer at
+/// `pointer_step`: whole snap cells reaching past the pointer, at least one.
+fn draw_duration(start: f64, pointer_step: f64, snap: f64) -> f64 {
+    let cell = snap.max(ops::MIN_NOTE_DURATION);
+    let dur = ((pointer_step - start) / cell).ceil() * cell;
+    if dur.is_finite() {
+        dur.max(cell)
+    } else {
+        cell
+    }
+}
+
 /// Recorded note start: the song step floored onto the snap grid.
 pub(super) fn record_start(pos: f64, snap: f64) -> f64 {
     snap_floor(pos.max(0.0), snap)
@@ -345,7 +357,6 @@ struct NoteMarquee {
 
 #[derive(Debug, Clone, Copy)]
 struct PendingNote {
-    pos: Pos2,
     pitch: u8,
     start: f64,
     draw_on_click: bool,
@@ -495,7 +506,8 @@ pub(super) struct EditorView {
     layout: EditorLayout,
     last_track: Option<u64>,
     drag: Option<NoteDrag>,
-    draw: Option<u64>,
+    /// Note being drawn by dragging from empty grid: `(id, start step)`.
+    draw: Option<(u64, f64)>,
     pending_note: Option<PendingNote>,
     marquee: Option<NoteMarquee>,
     right_erase: bool,
@@ -1751,9 +1763,23 @@ impl CadenceApp {
     }
 
     fn finish_pending_note(&mut self, tid: u64, pid: u64, pat: &Pattern, pending: PendingNote) {
-        if !pending.draw_on_click {
-            return;
+        if pending.draw_on_click {
+            let len = self.editor.note_len;
+            self.place_pending_note(tid, pid, pat, pending, len);
         }
+    }
+
+    /// Draws the pending note with `len` steps and selects it — or, when a
+    /// note already covers that cell, selects that one instead. Returns the
+    /// id of a newly drawn note.
+    fn place_pending_note(
+        &mut self,
+        tid: u64,
+        pid: u64,
+        pat: &Pattern,
+        pending: PendingNote,
+        len: f64,
+    ) -> Option<u64> {
         // Snap-to-scale resolves against the pitch the note will land on, so
         // clicking a chromatic row under an existing scale-tone note selects
         // it instead of overdubbing a duplicate.
@@ -1766,10 +1792,10 @@ impl CadenceApp {
             Some(n) => {
                 self.sel.notes.clear();
                 self.sel.notes.insert(n.id);
+                None
             }
             None => {
                 let vel = self.editor.velocity;
-                let len = self.editor.note_len;
                 let mut new = None;
                 self.edit("Draw note", Some("draw-note"), |p| {
                     if let Some(pat) = ops::pattern_mut(p, tid, pid) {
@@ -1781,6 +1807,7 @@ impl CadenceApp {
                     self.sel.notes.insert(new);
                     self.preview(tid, pitch, vel);
                 }
+                new
             }
         }
     }
@@ -1890,7 +1917,6 @@ impl CadenceApp {
                                 .min(pat.length as f64 - 0.5)
                                 .max(0.0);
                             self.editor.pending_note = Some(PendingNote {
-                                pos,
                                 pitch,
                                 start,
                                 draw_on_click: true,
@@ -1905,15 +1931,13 @@ impl CadenceApp {
                 .interact_pointer_pos()
                 .or_else(|| ui.input(|i| i.pointer.interact_pos()));
             if let Some(pos) = pos {
+                // Dragging from empty grid draws a note whose length
+                // follows the pointer (marquee needs Shift or Alt).
                 if let Some(pending) = self.editor.pending_note.take() {
-                    self.editor.marquee = Some(NoteMarquee {
-                        start: pending.pos,
-                        current: pos,
-                        base: BTreeSet::new(),
-                        additive: false,
-                    });
-                    self.sel.notes.clear();
-                    self.update_note_marquee_selection(pat, roll);
+                    let cell = self.editor.snap.max(ops::MIN_NOTE_DURATION);
+                    self.editor.draw = self
+                        .place_pending_note(tid, pid, pat, pending, cell)
+                        .map(|id| (id, pending.start));
                 }
                 if let Some(d) = self.editor.drag.clone() {
                     let snap = self.editor.snap;
@@ -1968,22 +1992,14 @@ impl CadenceApp {
                         self.editor.drag = Some(drag);
                     }
                 }
-                if let Some(id) = self.editor.draw {
-                    let snap = self.editor.snap.max(0.5);
-                    let start = pat
-                        .notes
-                        .iter()
-                        .find(|n| n.id == id)
-                        .map(|n| n.start)
-                        .unwrap_or(0.0);
-                    let dur = ((roll.step(pos.x) - start) / snap).ceil() * snap;
+                if let Some((id, start)) = self.editor.draw {
+                    let dur = draw_duration(start, roll.step(pos.x), self.editor.snap);
                     self.edit("Draw note", Some("draw-note"), |p| {
                         if let Some(pat) = ops::pattern_mut(p, tid, pid) {
                             if let Some(n) = pat.notes.iter_mut().find(|n| n.id == id) {
-                                n.duration = dur.clamp(
-                                    ops::MIN_NOTE_DURATION,
-                                    (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION),
-                                );
+                                let room =
+                                    (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION);
+                                n.duration = dur.min(room);
                             }
                         }
                     });
@@ -4956,7 +4972,6 @@ mod tests {
     /// Pending-note fixture: a click-draw of `pitch` at step `start`.
     fn pending(pitch: u8, start: f64) -> PendingNote {
         PendingNote {
-            pos: pos2(0.0, 0.0),
             pitch,
             start,
             draw_on_click: true,

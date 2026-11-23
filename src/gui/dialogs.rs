@@ -1548,7 +1548,11 @@ const EDITOR_SECTIONS: &[Section] = &[
         title: "PIANO ROLL",
         rows: &[
             ("Draw a note (Note length, Snap)", Mouse("Click empty grid")),
-            ("Box-select notes", Mouse("Drag empty grid")),
+            ("Draw a note as long as you drag", Mouse("Drag empty grid")),
+            (
+                "Box-select notes / add to the selection",
+                Mouse("{alt}+drag / {shift}+drag empty grid"),
+            ),
             (
                 "Select a note / add to the selection",
                 Mouse("Click / {shift}+click a note"),
