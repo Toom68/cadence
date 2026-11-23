@@ -117,6 +117,29 @@ impl History {
         true
     }
 
+    /// Key of the coalescing group the next same-keyed edit would join.
+    pub fn open_group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
+    /// Cancels the open coalescing gesture `group`: `current` goes back to
+    /// the state from before the group's first edit and the step is dropped
+    /// (nothing to redo — it never happened). `false`, nothing touched, when
+    /// `group` isn't the open group (the gesture made no edit).
+    pub fn rollback_group(&mut self, group: &str, current: &mut Project) -> bool {
+        if !self.coalesces(Some(group)) {
+            return false;
+        }
+        let Some(snap) = self.undo.pop() else {
+            return false;
+        };
+        *current = snap.project;
+        self.state = snap.state;
+        self.group = None;
+        self.edit_scratch = None;
+        true
+    }
+
     /// Ends the current coalescing gesture so the next edit is a new step.
     pub fn seal(&mut self) {
         self.group = None;
@@ -191,6 +214,29 @@ mod tests {
         let mut p = Project::empty();
         p.name = name.to_owned();
         p
+    }
+
+    #[test]
+    fn rollback_group_restores_the_gesture_start_and_leaves_no_step() {
+        let mut h = History::new();
+        let mut p = named("a");
+        h.edit(&mut p, "Rename", None, |p| p.name = "b".into());
+        let state = h.state();
+        h.edit(&mut p, "Drag", Some("drag"), |p| p.name = "c".into());
+        h.edit(&mut p, "Drag", Some("drag"), |p| p.name = "d".into());
+        assert!(!h.rollback_group("other", &mut p), "not the open group");
+        assert_eq!(p.name, "d");
+        assert!(h.rollback_group("drag", &mut p));
+        assert_eq!(p.name, "b");
+        assert_eq!(h.state(), state);
+        assert_eq!(h.undo_label(), Some("Rename"));
+        assert!(!h.can_redo());
+        assert!(!h.rollback_group("drag", &mut p), "only once");
+        // A sealed gesture is a finished step: nothing to roll back.
+        h.edit(&mut p, "Drag", Some("drag"), |p| p.name = "e".into());
+        h.seal();
+        assert!(!h.rollback_group("drag", &mut p));
+        assert_eq!(p.name, "e");
     }
 
     #[test]

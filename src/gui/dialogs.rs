@@ -1669,7 +1669,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Duplicate", Shortcut(&super::SC_DUPLICATE)),
             ("Select all", Shortcut(&super::SC_SELECT_ALL)),
             ("Delete", Text("Del / Backspace")),
-            ("Deselect, close a dialog", Text("Esc")),
+            ("Deselect, cancel a drag, close a dialog", Text("Esc")),
             ("Nudge the selection", Text("← / → / ↑ / ↓")),
             ("Nudge by an octave", Text("Shift+↑ / Shift+↓")),
             (
@@ -1693,6 +1693,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
                 Mouse("Double-click the divider"),
             ),
             ("Theme, fit song", Menu("View menu")),
+            ("Preferences", Shortcut(&super::SC_PREFERENCES)),
             ("These tips", Shortcut(&super::SC_HELP)),
         ],
     },
@@ -1853,7 +1854,7 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Hear a piece", Mouse("Click its name")),
             (
                 "Stamp a groove (rock, house, trap…) or a fill",
-                Mouse("Click Fill"),
+                Mouse("Click Grooves"),
             ),
         ],
     },
@@ -2787,6 +2788,7 @@ mod tests {
             g::SC_LENGTHEN,
             g::SC_FIT,
             g::SC_FIT_SELECTION,
+            g::SC_PREFERENCES,
         ] {
             assert!(listed.contains(&sc), "{sc:?} is missing from Help");
         }

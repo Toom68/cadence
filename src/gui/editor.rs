@@ -803,6 +803,44 @@ impl EditorView {
         self.vel_drag = None;
     }
 
+    /// Whether a pointer gesture Escape can cancel is in flight (note
+    /// drag, drawn note, marquee, erase/paint strokes, velocity drag).
+    pub fn gesture_active(&self) -> bool {
+        self.drag.is_some()
+            || self.draw.is_some()
+            || self.pending_note.is_some()
+            || self.marquee.is_some()
+            || self.right_erase
+            || self.drum_paint.is_some()
+            || self.vel_drag.is_some()
+    }
+
+    /// Whether the in-flight gesture is a marquee (selection only, no edit).
+    pub fn marquee_active(&self) -> bool {
+        self.marquee.is_some()
+    }
+
+    /// Undo coalescing keys the in-flight gesture's edits use.
+    pub fn gesture_groups(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.drag.is_some() {
+            out.push("note-drag");
+        }
+        if self.draw.is_some() || self.pending_note.is_some() {
+            out.push("draw-note");
+        }
+        if self.right_erase {
+            out.extend(["erase-notes", "drum-erase"]);
+        }
+        if self.drum_paint.is_some() {
+            out.push("drum-paint");
+        }
+        if self.vel_drag.is_some() {
+            out.push("vel-drag");
+        }
+        out
+    }
+
     /// Zooms the piano roll horizontally about the visible centre.
     pub fn zoom(&mut self, factor: f32) {
         self.roll_pps = (self.roll_pps * factor).clamp(ROLL_MIN_PPS, MAX_PPS);
@@ -1045,10 +1083,11 @@ impl CadenceApp {
     }
 
     /// Piano-roll digit keys, called once text fields had their chance:
-    /// 1–6 pick the draw length (1/32 … 1 bar) and Shift+1–6 give the
-    /// selected notes that length. Digits are read from the physical key
-    /// so Shift+1 works on layouts where it types "!"; Cmd/Ctrl/Alt chords
-    /// (⌘1–3 switch tabs) are left alone.
+    /// 1–6 pick the draw length (1/32 … 1 bar), Shift+1–6 give the
+    /// selected notes that length and 0 zooms to fit; 7–9 pass through.
+    /// Digits are read from the physical key so Shift+1 works on layouts
+    /// where it types "!"; Cmd/Ctrl/Alt chords (⌘1–3 switch tabs) are left
+    /// alone.
     pub(super) fn roll_digit_keys(&mut self, ctx: &Context) {
         let Some((tid, pid)) = self.roll_key_target() else {
             return;
@@ -1067,7 +1106,13 @@ impl CadenceApp {
                     || modifiers.alt
                     || modifiers.mac_cmd) =>
                 {
-                    match digit_key(physical_key.unwrap_or(*key)).or_else(|| digit_key(*key)) {
+                    // Only 0 (fit) and 1–6 (lengths) mean anything here;
+                    // other digits stay in the input for whoever wants them.
+                    let used = |d: &usize| *d <= NOTE_LENGTHS.len();
+                    match digit_key(physical_key.unwrap_or(*key))
+                        .or_else(|| digit_key(*key))
+                        .filter(used)
+                    {
                         Some(d) => {
                             digits.push((d, modifiers.shift));
                             false
@@ -2289,7 +2334,24 @@ impl CadenceApp {
                             0,
                         ),
                     };
-                    if ds != d.dstep || dp != d.dpitch {
+                    let moved = ds != d.dstep || dp != d.dpitch;
+                    let full = d.copy
+                        && pat.notes.len() + d.originals.len()
+                            > crate::model::MAX_NOTES_PER_PATTERN;
+                    if moved && full {
+                        // All or nothing: a partial copy would silently drop
+                        // notes. The originals stay put and stay selected.
+                        self.editor.drag = None;
+                        let n = d.originals.len();
+                        self.set_status(
+                            StatusKind::Warning,
+                            format!(
+                                "Can't copy {n} note{} — the pattern is at its {}-note limit.",
+                                if n == 1 { "" } else { "s" },
+                                crate::model::MAX_NOTES_PER_PATTERN
+                            ),
+                        );
+                    } else if moved {
                         let dp_changed = dp != d.dpitch;
                         let mut drag = d;
                         drag.dstep = ds;
@@ -2377,7 +2439,9 @@ impl CadenceApp {
             }
         }
         // Velocity lane input
-        if vel_resp.is_pointer_button_down_on() || vel_resp.dragged_by(PointerButton::Primary) {
+        if !self.gesture_cancelled
+            && (vel_resp.is_pointer_button_down_on() || vel_resp.dragged_by(PointerButton::Primary))
+        {
             if let Some(pos) = vel_resp.interact_pointer_pos() {
                 let v =
                     (1.0 - (pos.y - roll.vel.top()) / roll.vel.height().max(1.0)).clamp(0.05, 1.0);
@@ -4497,11 +4561,11 @@ impl CadenceApp {
         let out = toolbar_row(ui, pal, ("drum-tools", tid), |tb| {
             velocity_item(tb, pal, &mut ed.velocity);
             tb.separator();
-            // Fill opens the groove menu: a popup under the row button, or
+            // Grooves opens the groove menu: a popup under the row button, or
             // a submenu when the button sits in the toolbar's ⋯ overflow.
             if tb.in_menu() {
                 tb.item(0.0, |ui| {
-                    ui.menu_button("Fill", |ui| {
+                    ui.menu_button("Grooves", |ui| {
                         if let Some(g) = groove_menu(ui) {
                             act = Some(ToolAction::Groove(g));
                         }
@@ -4510,7 +4574,7 @@ impl CadenceApp {
             } else {
                 let resp = tb.button(
                     Some(theme::Icon::Wand),
-                    "Fill",
+                    "Grooves",
                     "Stamp a groove into this pattern — four on the floor, rock, boom bap, \
                      trap, house, dembow, a fill…",
                 );
@@ -6209,17 +6273,75 @@ mod tests {
     }
 
     #[test]
-    fn fill_button_opens_the_groove_menu() {
+    fn roll_digit_keys_leave_unused_digits_alone() {
+        let (mut app, _, _) = app_with(Instrument::Piano, &[]);
+        app.focus = super::super::Focus::Editor;
+        app.tab = super::super::Tab::Editor;
+        let ctx = Context::default();
+        let key = |key: Key| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            events: [Key::Num3, Key::Num7, Key::Num8, Key::Num9]
+                .map(key)
+                .to_vec(),
+            ..Default::default()
+        };
+        let mut left = Vec::new();
+        let _ = ctx.run(input, |ctx| {
+            app.roll_digit_keys(ctx);
+            left = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        Event::Key { key, .. } => Some(*key),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            });
+        });
+        assert_eq!(app.editor.note_len, 2.0, "3 picked 1/8");
+        assert_eq!(
+            left,
+            vec![Key::Num7, Key::Num8, Key::Num9],
+            "7-9 pass through"
+        );
+    }
+
+    #[test]
+    fn grooves_button_opens_the_groove_menu() {
         let mut f = Frames::demo(1360.0, 860.0);
         f.step();
         f.select(0);
         f.steps(2);
         assert!(!egui::Popup::is_any_open(&f.ctx));
-        // Velocity, then Fill.
-        let fill = f.app.editor.layout.tools.1[1];
-        f.click(fill.center());
+        // Velocity, then Grooves.
+        let grooves = f.app.editor.layout.tools.1[1];
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, f.size)),
+            time: Some(f.time),
+            ..Default::default()
+        };
+        let app = &mut f.app;
+        let out = f.ctx.run(input, |ctx| app.frame(ctx));
+        let label: String = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if grooves.contains(t.visual_bounding_rect().center()) => {
+                    Some(t.galley.text().to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(label.contains("Grooves"), "button label: {label:?}");
+        f.click(grooves.center());
         f.steps(2);
-        assert!(egui::Popup::is_any_open(&f.ctx), "Fill opens its menu");
+        assert!(egui::Popup::is_any_open(&f.ctx), "Grooves opens its menu");
     }
 
     #[test]

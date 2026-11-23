@@ -649,6 +649,31 @@ impl ArrangerView {
         self.header_drag = None;
     }
 
+    /// Whether a pointer gesture Escape can cancel is in flight: a clip /
+    /// handle / marker / chord / automation drag, a marquee or a header
+    /// reorder.
+    pub(super) fn gesture_active(&self) -> bool {
+        self.drag.is_some() || self.marquee.is_some() || self.header_drag.is_some()
+    }
+
+    /// Whether the in-flight gesture is a marquee (selection only, no edit).
+    pub(super) fn marquee_active(&self) -> bool {
+        self.marquee.is_some()
+    }
+
+    /// Undo coalescing key of the in-flight drag's edits (see the
+    /// `self.edit(.., Some(group), ..)` calls of each drag kind).
+    pub(super) fn gesture_group(&self) -> Option<String> {
+        Some(match self.drag.as_ref()? {
+            ArrangerDrag::Clip(d) => d.group.clone(),
+            ArrangerDrag::Fade { clip, .. } => format!("clip-fade-{clip}"),
+            ArrangerDrag::Loop { clip, .. } => format!("clip-loops-{clip}"),
+            ArrangerDrag::Marker { group, .. }
+            | ArrangerDrag::Chord { group, .. }
+            | ArrangerDrag::Automation { group, .. } => group.clone(),
+        })
+    }
+
     /// Drops gesture and context state without touching zoom/scroll — used
     /// when the whole project is replaced mid-gesture.
     pub fn reset_gesture(&mut self) {
@@ -3053,8 +3078,10 @@ impl CadenceApp {
                         });
                     }
                 }
-                if released || !primary_down {
-                    self.arranger.drag = None;
+                // Held: put it back so the drag stays owned (and Esc can
+                // cancel it) instead of re-arming from the press origin.
+                if !released && primary_down {
+                    self.arranger.drag = Some(ArrangerDrag::Marker { id, group });
                 }
                 return;
             }
@@ -3109,7 +3136,9 @@ impl CadenceApp {
             // grid handler: put it back untouched.
             other => self.arranger.drag = other,
         }
-        if resp.is_pointer_button_down_on() {
+        // After Esc cancelled a gesture the held button does nothing until
+        // release — otherwise the next frame would re-arm the drag.
+        if resp.is_pointer_button_down_on() && !self.gesture_cancelled {
             // Where the press *landed* picks the gesture for its whole
             // duration: the top lane draws a loop region, a chord chip
             // starts its drag (an empty-lane press does nothing until
@@ -6270,6 +6299,158 @@ mod tests {
         let now = app.project.clone();
         assert!(!app.insert_time_at(16.0, ops::MAX_SONG_STEPS, false));
         assert_eq!(app.project, now);
+    }
+
+    /// Presses at `path[0]`, moves through the rest with the button held
+    /// and leaves it held (no release).
+    fn pointer_hold(ctx: &egui::Context, app: &mut CadenceApp, size: egui::Vec2, path: &[Pos2]) {
+        let first = path[0];
+        let press = egui::Event::PointerButton {
+            pos: first,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        };
+        let events = vec![egui::Event::PointerMoved(first), press];
+        run_frames(ctx, app, size, 1, events, Modifiers::NONE);
+        for &p in &path[1..] {
+            let events = vec![egui::Event::PointerMoved(p)];
+            run_frames(ctx, app, size, 1, events, Modifiers::NONE);
+        }
+    }
+
+    /// Escape mid-gesture, then keeps dragging to `more` and releases there.
+    fn escape_then_release(
+        ctx: &egui::Context,
+        app: &mut CadenceApp,
+        size: egui::Vec2,
+        more: Pos2,
+    ) {
+        run_frames(
+            ctx,
+            app,
+            size,
+            1,
+            key_event(egui::Key::Escape),
+            Modifiers::NONE,
+        );
+        run_frames(
+            ctx,
+            app,
+            size,
+            2,
+            vec![egui::Event::PointerMoved(more)],
+            Modifiers::NONE,
+        );
+        let release = egui::Event::PointerButton {
+            pos: more,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        };
+        run_frames(ctx, app, size, 1, vec![release], Modifiers::NONE);
+        run_frames(ctx, app, size, 1, Vec::new(), Modifiers::NONE);
+    }
+
+    #[test]
+    fn escape_cancels_a_clip_drag_and_keeps_the_selection() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        for alt in [false, true] {
+            let mut app = lanes_app(&ctx, size);
+            let clip = app.project.tracks[0].clips[0].id;
+            let before = app.project.clone();
+            let state = app.history.state();
+            if alt {
+                run_frames(&ctx, &mut app, size, 1, Vec::new(), Modifiers::ALT);
+            }
+            let path = [
+                lane_point(&app, 20.0, 0),
+                lane_point(&app, 30.0, 0),
+                lane_point(&app, 40.0, 0),
+            ];
+            let mods = if alt { Modifiers::ALT } else { Modifiers::NONE };
+            let press = egui::Event::PointerButton {
+                pos: path[0],
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: mods,
+            };
+            run_frames(
+                &ctx,
+                &mut app,
+                size,
+                1,
+                vec![egui::Event::PointerMoved(path[0]), press],
+                mods,
+            );
+            for &p in &path[1..] {
+                run_frames(
+                    &ctx,
+                    &mut app,
+                    size,
+                    1,
+                    vec![egui::Event::PointerMoved(p)],
+                    mods,
+                );
+            }
+            assert_ne!(app.project, before, "alt {alt}: the drag edited");
+            let more = lane_point(&app, 60.0, 1);
+            escape_then_release(&ctx, &mut app, size, more);
+            assert_eq!(app.project, before, "alt {alt}: Esc restored the song");
+            assert_eq!(app.history.state(), state, "alt {alt}: not dirty");
+            assert!(!app.history.can_undo(), "alt {alt}: no undo step left");
+            assert_eq!(app.sel.clip, Some(clip), "alt {alt}: selection kept");
+            assert!(app.arranger.drag.is_none());
+        }
+    }
+
+    #[test]
+    fn escape_cancels_a_marker_drag_and_a_header_reorder() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let id = app.add_marker_named(32.0, "Verse".to_string()).unwrap();
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let before = app.project.clone();
+        let state = app.history.state();
+        let grid = app.arranger.grid;
+        let tl = app.arranger.timeline(grid);
+        let y = grid.top() - RULER_H + LOOP_LANE_H + MARKER_LANE_H * 0.5;
+        let flag = pos2(tl.x(32.0) + 8.0, y);
+        let path = [flag, pos2(tl.x(48.0) + 8.0, y), pos2(tl.x(64.0) + 8.0, y)];
+        pointer_hold(&ctx, &mut app, size, &path);
+        let step = |app: &CadenceApp| {
+            app.project
+                .markers
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .step
+        };
+        assert_ne!(step(&app), 32.0, "the marker moved");
+        escape_then_release(&ctx, &mut app, size, pos2(tl.x(96.0) + 8.0, y));
+        assert_eq!(step(&app), 32.0, "Esc put the marker back");
+        assert_eq!(app.project, before);
+        assert_eq!(app.history.state(), state);
+
+        let ids: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        let header_x = app.arranger.grid.left() - HEADER_W + 40.0;
+        let at = |app: &CadenceApp, row: f32| {
+            pos2(
+                header_x,
+                app.arranger.grid.top() + app.arranger.lane_h * row,
+            )
+        };
+        let path = [at(&app, 0.5), at(&app, 1.2), at(&app, 2.0), at(&app, 2.8)];
+        pointer_hold(&ctx, &mut app, size, &path);
+        assert!(app.arranger.header_drag.is_some());
+        let more = at(&app, 2.8);
+        escape_then_release(&ctx, &mut app, size, more);
+        let now: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(now, ids, "Esc cancelled the reorder");
+        assert_eq!(app.arranger.header_drag, None);
+        assert_eq!(app.history.state(), state);
     }
 
     #[test]

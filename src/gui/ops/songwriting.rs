@@ -157,7 +157,11 @@ fn write_lane_part(
     let bar = STEPS_PER_BAR as f64;
     let origin = (first.start / bar).floor() * bar;
     let end = last.end;
-    let length = ((end - origin).ceil() as u32).clamp(1, MAX_PATTERN_STEPS);
+    // Same placement rule as `add_clip`: the clip starts inside the song
+    // and its pattern never runs past `MAX_SONG_STEPS`.
+    let origin = clamp_clip_start(origin, 1.0);
+    let room = (MAX_SONG_STEPS - origin).floor().max(1.0) as u32;
+    let length = ((end - origin).ceil() as u32).clamp(1, MAX_PATTERN_STEPS.min(room));
     let mut pat = Pattern {
         id: next_id(),
         name: String::new(),
@@ -167,8 +171,14 @@ fn write_lane_part(
     for span in &spans {
         write(&mut pat, span, origin);
     }
+    // Notes the pattern cuts off (past its length) would never sound.
+    let span = length as f64;
+    pat.notes.retain(|n| n.start < span);
     pat.sort_notes();
     let notes = pat.notes.len();
+    if notes > MAX_NOTES_PER_PATTERN {
+        return Err(LanePartError::EventBudget);
+    }
 
     let mut t = t.clone();
     let replaceable: BTreeSet<u64> = t
@@ -213,7 +223,7 @@ fn write_lane_part(
     t.clips.push(Clip {
         id: clip_id,
         pattern_id,
-        start: origin,
+        start: clamp_clip_start(origin, span),
         loops: 1,
         fade_in: 0.0,
         fade_out: 0.0,
@@ -1398,5 +1408,34 @@ mod tests {
             chip.tracks.iter().filter(|t| t.preset.is_some()).count() >= 2,
             "uses the bundled 8-bit pack"
         );
+    }
+
+    #[test]
+    fn lane_part_on_the_last_bar_stays_inside_the_song() {
+        let last = MAX_SONG_STEPS - STEPS_PER_BAR as f64;
+        for step in [0.0, last, last + 7.5, MAX_SONG_STEPS - 0.25] {
+            let mut p = song_with_chords(&[(step, 0, ChordQuality::Major)]);
+            p.bars = MAX_BARS;
+            let keys = add_track(&mut p, Instrument::Piano).unwrap();
+            let bass = add_track(&mut p, Instrument::Bass).unwrap();
+            let strum = Some((0.5, StrumDirection::Down));
+            for part in [
+                play_chords_on_track(&mut p, keys, voice, strum, 0.8),
+                bassline_from_chords(&mut p, bass, BassStyle::OctaveBounce, ChordBass::Root, 0.8),
+            ] {
+                let Ok(part) = part else { continue };
+                let t = p
+                    .tracks
+                    .iter()
+                    .find(|t| t.clips.iter().any(|c| c.id == part.clip_id));
+                let t = t.unwrap();
+                let c = t.clips.iter().find(|c| c.id == part.clip_id).unwrap();
+                assert!(
+                    c.start + clip_len(t, c) <= MAX_SONG_STEPS + 1e-9,
+                    "step {step}"
+                );
+            }
+            p.validate().unwrap_or_else(|e| panic!("step {step}: {e}"));
+        }
     }
 }

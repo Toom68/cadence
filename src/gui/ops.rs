@@ -2561,7 +2561,19 @@ pub fn duplicate_section(project: &mut Project, marker_id: u64) -> Option<Vec<u6
                 if lane_pts.len() >= MAX_AUTOMATION_POINTS {
                     break;
                 }
+                // `insert_time` already holds the curve with a point at `b`
+                // (and an original point may sit there). Two points on one
+                // step are a jump (the later wins); an identical one adds
+                // nothing, so the seam never stacks redundant points.
                 let i = lane_pts.partition_point(|p| p.step <= c.step);
+                let same = lane_pts[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|p| p.step == c.step)
+                    .any(|p| p.value == c.value);
+                if same {
+                    continue;
+                }
                 lane_pts.insert(i, c);
             }
         }
@@ -6447,6 +6459,80 @@ mod tests {
         // The last section runs to the song end.
         let verse = p.markers[2].id;
         assert_eq!(section_range(&p, verse), Some((64.0, 128.0)));
+    }
+
+    #[test]
+    fn duplicate_section_never_stacks_redundant_automation_points() {
+        // Points before, inside and after the section; the curve has the
+        // same value at both section edges, plus a flat lane across it.
+        let (mut p, tid, _) = timeline_project();
+        let t = track_mut(&mut p, tid).unwrap();
+        let auto = t.automation.get_or_insert_with(Automation::default);
+        auto.volume = vec![
+            AutomationPoint {
+                step: 0.0,
+                value: 0.5,
+            },
+            AutomationPoint {
+                step: 16.0,
+                value: 1.0,
+            },
+            AutomationPoint {
+                step: 32.0,
+                value: 0.5,
+            },
+            AutomationPoint {
+                step: 48.0,
+                value: 0.9,
+            },
+        ];
+        auto.pan = vec![
+            AutomationPoint {
+                step: 0.0,
+                value: 0.25,
+            },
+            AutomationPoint {
+                step: 40.0,
+                value: 0.25,
+            },
+        ];
+        let intro = p.markers[0].id;
+        let before = p.clone();
+        duplicate_section(&mut p, intro).unwrap();
+        p.validate().unwrap();
+        let auto = track(&p, tid).unwrap().automation.clone().unwrap();
+        for lane in AutomationLane::ALL {
+            let pts = auto.lane(lane);
+            for w in pts.windows(2) {
+                assert!(w[0].step <= w[1].step, "{lane:?} sorted");
+                assert!(
+                    w[0].step < w[1].step || w[0].value != w[1].value,
+                    "{lane:?}: redundant point at {}",
+                    w[0].step
+                );
+            }
+            for w in pts.windows(3) {
+                assert!(w[0].step < w[2].step, "{lane:?}: 3 points at one step");
+            }
+            // The copy plays the section's curve; the original is untouched.
+            let old = before.tracks[0].automation.as_ref().unwrap().lane(lane);
+            for x in [0.0, 4.0, 16.0, 24.0, 31.0] {
+                assert_eq!(
+                    automation_value(pts, 32.0 + x),
+                    automation_value(old, x),
+                    "{lane:?} copy at {x}"
+                );
+                assert_eq!(
+                    automation_value(pts, x),
+                    automation_value(old, x),
+                    "{lane:?} original at {x}"
+                );
+            }
+        }
+        assert_eq!(
+            auto.volume.iter().map(|p| p.step).collect::<Vec<_>>(),
+            vec![0.0, 16.0, 32.0, 48.0, 64.0, 80.0]
+        );
     }
 
     // ----- split_clip --------------------------------------------------------

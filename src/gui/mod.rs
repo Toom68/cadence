@@ -209,6 +209,12 @@ pub struct CadenceApp {
     /// eframe storage like the theme (never in the song).
     export_normalize: bool,
     status: Option<StatusLine>,
+    /// Selection when the open undo group's first edit ran, keyed by that
+    /// group — Escape restores it when it cancels the gesture.
+    gesture_sel: Option<(String, Selection)>,
+    /// Esc cancelled a pointer gesture: the held button is ignored until it
+    /// is released, so the gesture can't re-arm itself.
+    gesture_cancelled: bool,
     engine_dirty: bool,
     last_edit: Option<Instant>,
     autosaved_state: u64,
@@ -363,6 +369,8 @@ impl CadenceApp {
             drop_import: None,
             export_normalize: false,
             status: None,
+            gesture_sel: None,
+            gesture_cancelled: false,
             engine_dirty: false,
             last_edit: None,
             autosaved_state: state,
@@ -428,10 +436,51 @@ impl CadenceApp {
     /// Applies an edit. Records undo only when the project actually changed.
     /// Edits sharing a `group` key coalesce into one undo step per gesture.
     fn edit(&mut self, label: &str, group: Option<&str>, f: impl FnOnce(&mut Project)) -> bool {
+        let opens = group.filter(|g| self.history.open_group() != Some(*g));
+        let sel = opens.map(|g| (g.to_owned(), self.sel.clone()));
         if !self.history.edit(&mut self.project, label, group, f) {
             return false;
         }
+        if sel.is_some() {
+            self.gesture_sel = sel;
+        }
         self.project_changed();
+        true
+    }
+
+    /// Escape during a pointer gesture (clip / note / marker / handle drag,
+    /// header reorder, marquee, paint stroke): rolls back whatever the
+    /// gesture already edited — its single coalesced undo step — restores
+    /// the selection it started from and ends it; the held button then
+    /// does nothing until release. `false` when no gesture is in flight.
+    fn cancel_gesture(&mut self) -> bool {
+        if !(self.arranger.gesture_active() || self.editor.gesture_active()) {
+            return false;
+        }
+        let marquee = self.arranger.marquee_active() || self.editor.marquee_active();
+        let groups: Vec<String> = self
+            .arranger
+            .gesture_group()
+            .into_iter()
+            .chain(self.editor.gesture_groups().into_iter().map(str::to_owned))
+            .collect();
+        let rolled = groups
+            .iter()
+            .find(|g| self.history.rollback_group(g, &mut self.project));
+        if let Some(g) = rolled {
+            if let Some((_, sel)) = self.gesture_sel.take().filter(|(k, _)| k == g) {
+                self.sel = sel;
+            }
+            self.project_changed();
+        }
+        if marquee {
+            self.clear_selection();
+        }
+        self.history.seal_unless(self.editor.record_take.as_deref());
+        self.arranger.end_gesture();
+        self.editor.end_gesture();
+        self.gesture_cancelled = true;
+        self.set_status(StatusKind::Info, "Cancelled");
         true
     }
 
@@ -1396,6 +1445,9 @@ impl CadenceApp {
         self.drop_overlay(ctx);
         theme::gallery(ctx, self.palette());
 
+        if ctx.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
+            self.gesture_cancelled = false;
+        }
         if ctx.input(|i| i.pointer.any_released()) {
             self.history.seal_unless(self.editor.record_take.as_deref());
             self.arranger.end_gesture();
@@ -1635,9 +1687,11 @@ impl CadenceApp {
         }
         // Esc cancels an inline rename (marker, pattern) without also
         // dropping the selection.
+        // Mid-gesture it cancels the drag instead (see `cancel_gesture`).
         if key(Modifiers::NONE, Key::Escape)
             && !self.marker_rename_active()
             && !self.pattern_rename_active()
+            && !self.cancel_gesture()
         {
             self.clear_selection();
         }
@@ -1650,15 +1704,19 @@ impl CadenceApp {
         if self.focus == Focus::Arranger && key(Modifiers::NONE, Key::B) {
             self.split_clip_at_playhead(ctx);
         }
-        if key(Modifiers::SHIFT, Key::ArrowUp) {
-            self.nudge(0, 12);
-        } else if key(Modifiers::NONE, Key::ArrowUp) {
-            self.nudge(0, 1);
-        }
-        if key(Modifiers::SHIFT, Key::ArrowDown) {
-            self.nudge(0, -12);
-        } else if key(Modifiers::NONE, Key::ArrowDown) {
-            self.nudge(0, -1);
+        // ↑/↓ transpose (Shift: an octave). These patterns would also match
+        // with Alt held, and Alt+↑/↓ has no meaning — leave those alone.
+        if !ctx.input(|i| i.modifiers.alt) {
+            if key(Modifiers::SHIFT, Key::ArrowUp) {
+                self.nudge(0, 12);
+            } else if key(Modifiers::NONE, Key::ArrowUp) {
+                self.nudge(0, 1);
+            }
+            if key(Modifiers::SHIFT, Key::ArrowDown) {
+                self.nudge(0, -12);
+            } else if key(Modifiers::NONE, Key::ArrowDown) {
+                self.nudge(0, -1);
+            }
         }
         // Most specific first: a NONE pattern also matches Shift/Alt held.
         if pressed(&SC_SHORTEN) {
