@@ -411,6 +411,100 @@ impl CadenceApp {
         }
     }
 
+    // ----- audio store cleanup ----------------------------------------------
+
+    /// File ▸ Clean Up Unused Audio…: lists the store's WAVs that nothing
+    /// known uses and asks before deleting (never automatic). Desktop only —
+    /// headless sessions must not look at the real data dir.
+    pub(super) fn open_audio_cleanup(&mut self) {
+        if !self.io_enabled {
+            self.set_status(
+                StatusKind::Warning,
+                "Cleaning the audio store is only available in the desktop app.",
+            );
+            return;
+        }
+        let plan =
+            persistence::unused_audio_files_in(&persistence::audio_dir(), &self.referenced_audio());
+        self.offer_audio_cleanup(plan);
+    }
+
+    /// Shows the confirm dialog for `plan`, or says there is nothing to do.
+    pub(super) fn offer_audio_cleanup(&mut self, plan: persistence::UnusedAudio) {
+        if plan.files.is_empty() {
+            self.set_status(
+                StatusKind::Info,
+                "Nothing to clean up: every file in the audio store is used by the open song, \
+                 the autosave or a recent song.",
+            );
+        } else {
+            self.dialog = Dialog::CleanAudio(plan);
+        }
+    }
+
+    /// Store names still in use: the open song and every state undo/redo can
+    /// restore, the crash-recovery autosave and each song in Open Recent.
+    /// (Songs elsewhere on disk can't be known — the dialog says so.)
+    pub(super) fn referenced_audio(&self) -> std::collections::BTreeSet<String> {
+        let mut refs: std::collections::BTreeSet<String> = std::iter::once(&self.project)
+            .chain(self.history.snapshots())
+            .flat_map(persistence::audio_refs)
+            .collect();
+        if let Some(work) = self
+            .recovery_dir
+            .as_deref()
+            .and_then(persistence::peek_recovery_in)
+        {
+            refs.extend(persistence::audio_refs(&work));
+        }
+        if let Dialog::Recovery(work) = &self.dialog {
+            refs.extend(persistence::audio_refs(&work.project));
+        }
+        for path in &self.recent_files {
+            if let Ok(song) = persistence::load_project(path) {
+                refs.extend(persistence::audio_refs(&song));
+            }
+        }
+        refs
+    }
+
+    /// The confirmed cleanup: deletes the planned files that are *still*
+    /// unused (re-checked now, in case a recent song changed meanwhile).
+    pub(super) fn run_audio_cleanup(&mut self, plan: &persistence::UnusedAudio) {
+        let refs = self.referenced_audio();
+        let files: Vec<PathBuf> = plan
+            .files
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| !refs.contains(n.to_string_lossy().as_ref()))
+            })
+            .cloned()
+            .collect();
+        let (removed, freed, errors) = persistence::remove_audio_files(&files);
+        if errors.is_empty() {
+            self.set_status(
+                StatusKind::Success,
+                format!(
+                    "Removed {removed} unused audio file{} and freed {}.",
+                    plural(removed),
+                    format_bytes(freed)
+                ),
+            );
+        } else {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Removed {removed} unused audio file{} ({}), but {} could not be deleted: {}",
+                    plural(removed),
+                    format_bytes(freed),
+                    errors.len(),
+                    errors[0]
+                ),
+            );
+        }
+    }
+
     // ----- recovery --------------------------------------------------------
 
     /// On launch, offer the crash-recovery autosave when a valid one exists —
@@ -886,7 +980,8 @@ impl CadenceApp {
                 StatusKind::Warning,
                 format!(
                     "Imported “{name}”{grown}. The audio store now holds {:.1} GB — \
-                     old imports are never deleted, so clear it in your app-data folder if disk runs low.",
+                     old imports are never deleted automatically; use File ▸ Clean Up Unused Audio… \
+                     if disk runs low.",
                     store as f64 / (1024.0 * 1024.0 * 1024.0)
                 ),
             );
@@ -1324,6 +1419,19 @@ fn drop_hover_title(kinds: &[DropKind], count: usize) -> String {
     }
 }
 
+/// "512 KB", "12.3 MB", "1.2 GB".
+pub(super) fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= KB * KB * KB {
+        format!("{:.1} GB", b / (KB * KB * KB))
+    } else if b >= KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else {
+        format!("{:.0} KB", (b / KB).ceil())
+    }
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
@@ -1596,6 +1704,70 @@ mod tests {
         assert_eq!(app.history.state(), state);
         let status = app.status.clone().unwrap();
         assert_eq!(status.kind, StatusKind::Success, "{}", status.text);
+    }
+
+    #[test]
+    fn audio_cleanup_keeps_everything_still_in_use() {
+        let store = tempfile::tempdir().unwrap();
+        let songs = tempfile::tempdir().unwrap();
+        let wav = |name: &str| {
+            let p = store.path().join(name);
+            std::fs::write(&p, vec![1u8; 2048]).unwrap();
+            name.to_owned()
+        };
+        let (live, undo, recent, autosave, stale) = (
+            wav("1111111111111111.wav"),
+            wav("2222222222222222.wav"),
+            wav("3333333333333333.wav"),
+            wav("4444444444444444.wav"),
+            wav("5555555555555555.wav"),
+        );
+        let with_clip = |p: &mut Project, file: &str| {
+            let mut track = crate::model::create_audio_track("Audio");
+            track
+                .audio_clips
+                .push(crate::model::AudioClip::new(file, "Take", 0.0, 16.0));
+            p.tracks.push(track);
+        };
+
+        let mut app = CadenceApp::headless(Project::empty());
+        // A clip that only undo can bring back still counts.
+        app.edit("Add", None, |p| with_clip(p, &undo));
+        app.edit("Remove", None, |p| p.tracks.clear());
+        app.edit("Add live", None, |p| with_clip(p, &live));
+        // A recent song and the autosave.
+        let mut song = Project::empty();
+        with_clip(&mut song, &recent);
+        let song_path = songs.path().join("recent.cadence");
+        persistence::save_project(&song, &song_path).unwrap();
+        app.recent_files = vec![song_path];
+        let rec = songs.path().join("recovery");
+        let mut saved = Project::empty();
+        with_clip(&mut saved, &autosave);
+        persistence::save_recovery_in(&rec, &saved, None).unwrap();
+        app.recovery_dir = Some(rec);
+
+        let refs = app.referenced_audio();
+        let plan = persistence::unused_audio_files_in(store.path(), &refs);
+        assert_eq!(plan.files, vec![store.path().join(&stale)]);
+        app.offer_audio_cleanup(plan.clone());
+        assert!(matches!(app.dialog, Dialog::CleanAudio(_)));
+
+        // Confirming deletes only the stale file.
+        app.dialog = Dialog::None;
+        app.run_audio_cleanup(&plan);
+        assert!(!store.path().join(&stale).exists());
+        for name in [&live, &undo, &recent, &autosave] {
+            assert!(store.path().join(name).is_file(), "{name}");
+        }
+        assert!(app.status.clone().unwrap().text.contains("freed 2 KB"));
+        // Nothing left: no dialog, just a note.
+        app.offer_audio_cleanup(persistence::unused_audio_files_in(store.path(), &refs));
+        assert!(!app.dialog.is_open());
+        // Headless sessions never scan the real store.
+        app.open_audio_cleanup();
+        assert!(!app.dialog.is_open());
+        assert_eq!(app.status.clone().unwrap().kind, StatusKind::Warning);
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

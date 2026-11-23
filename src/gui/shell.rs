@@ -516,6 +516,14 @@ impl CadenceApp {
         if menu_item(ui, pal, "Import Instrument Pack…", "", true, None).clicked() {
             self.import_pack_dialog();
         }
+        if menu_item(ui, pal, "Clean Up Unused Audio…", "", true, None)
+            .on_hover_text(
+                "Delete imported WAVs that no open, autosaved or recent song uses (asks first)",
+            )
+            .clicked()
+        {
+            self.open_audio_cleanup();
+        }
         menu_sep(ui, pal);
         let idle = self.export.is_none();
         let busy = "Exporting…";

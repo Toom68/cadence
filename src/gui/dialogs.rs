@@ -47,6 +47,8 @@ pub(super) enum Dialog {
     Update,
     /// App settings: theme, audio output, automatic update checks.
     Preferences,
+    /// Confirm deleting audio-store files nothing known uses.
+    CleanAudio(persistence::UnusedAudio),
 }
 
 /// Editable state of the New Song dialog.
@@ -224,6 +226,7 @@ impl CadenceApp {
             Dialog::Arp(draft) => self.arp_dialog(ctx, draft),
             Dialog::Update => self.update_dialog(ctx),
             Dialog::Preferences => self.preferences_dialog(ctx),
+            Dialog::CleanAudio(plan) => self.clean_audio_dialog(ctx, plan),
         };
         if keep {
             self.dialog = dialog;
@@ -1046,6 +1049,60 @@ impl CadenceApp {
         !closed && !resp.should_close()
     }
 
+    // ----- audio store cleanup ---------------------------------------------------
+
+    /// Confirms File ▸ Clean Up Unused Audio…. Destructive, so Enter does
+    /// not confirm; Escape, a backdrop click or Cancel keep every file.
+    fn clean_audio_dialog(&mut self, ctx: &Context, plan: &persistence::UnusedAudio) -> bool {
+        let pal = self.palette();
+        let mut remove = false;
+        let mut cancel = false;
+        let n = plan.files.len();
+        let size = super::files::format_bytes(plan.bytes);
+        let resp = show_dialog(ctx, "cadence-clean-audio", pal, W_COMPACT, |ui| {
+            header(
+                ui,
+                pal,
+                "AUDIO STORE",
+                &format!(
+                    "Remove {n} unused audio file{}?",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            ui.add_space(theme::GAP_S);
+            ui.label(RichText::new(format!("This frees {size} of disk space.")).color(pal.text));
+            ui.add_space(theme::GAP_S);
+            ui.label(
+                RichText::new(
+                    "These imported WAVs are not used by the open song (or its undo history), \
+                     the crash-recovery autosave, or any song in File ▸ Open Recent.",
+                )
+                .color(pal.text_dim),
+            );
+            ui.add_space(theme::GAP_S);
+            theme::hint(
+                ui,
+                pal,
+                "Other songs that still use them will play those clips silent. Open such songs \
+                 first, or keep a copy made with File ▸ Save Copy with Audio.",
+            );
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Remove Files").clicked() {
+                    remove = true;
+                }
+                if theme::secondary_button(ui, "Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if remove {
+            let plan = plan.clone();
+            self.run_audio_cleanup(&plan);
+            return false;
+        }
+        !cancel && !resp.should_close()
+    }
+
     // ----- pack errors ---------------------------------------------------------
 
     /// Lists non-fatal instrument-pack load problems. Reload Packs re-reads
@@ -1833,6 +1890,12 @@ mod tests {
         check("cadence-unsaved", || Dialog::Unsaved(PendingAction::Quit));
         check("cadence-new-song", || {
             Dialog::NewSong(NewSongDraft::default())
+        });
+        check("cadence-clean-audio", || {
+            Dialog::CleanAudio(persistence::UnusedAudio {
+                files: vec!["/store/0000000000000000.wav".into()],
+                bytes: 3 << 20,
+            })
         });
         let prefs_h = check("cadence-preferences", || Dialog::Preferences);
         assert!(

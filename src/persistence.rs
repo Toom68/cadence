@@ -418,6 +418,64 @@ pub fn audio_store_bytes() -> u64 {
         .unwrap_or(0)
 }
 
+/// Staged audio files nobody known references — what File ▸ Clean Up
+/// Unused Audio… offers to delete.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnusedAudio {
+    /// Full paths inside the store, sorted.
+    pub files: Vec<PathBuf>,
+    /// Their total size.
+    pub bytes: u64,
+}
+
+/// Lists the `.wav` files directly in `store` whose names are not in
+/// `referenced`. Only plain staged-style names count (subfolders, temp files
+/// and anything else in the folder are never offered). Read-only: deleting
+/// is a separate explicit step, [`remove_audio_files`].
+pub fn unused_audio_files_in(
+    store: &Path,
+    referenced: &std::collections::BTreeSet<String>,
+) -> UnusedAudio {
+    let mut unused = UnusedAudio::default();
+    let Ok(entries) = fs::read_dir(store) else {
+        return unused;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let wav = name.to_ascii_lowercase().ends_with(".wav");
+        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_file() {
+            unused.bytes += meta.len();
+            unused.files.push(entry.path());
+        }
+    }
+    unused.files.sort();
+    unused
+}
+
+/// Deletes `files` (an [`UnusedAudio`] list the user confirmed). Returns how
+/// many were removed, the bytes freed and a message per failure.
+pub fn remove_audio_files(files: &[PathBuf]) -> (usize, u64, Vec<String>) {
+    let mut removed = 0;
+    let mut freed = 0;
+    let mut errors = Vec::new();
+    for path in files {
+        let len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        match fs::remove_file(path) {
+            Ok(()) => {
+                removed += 1;
+                freed += len;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => errors.push(format!("{}: {err}", path.display())),
+        }
+    }
+    (removed, freed, errors)
+}
+
 /// Store size at which importing more audio starts warning — staged WAVs
 /// are deduplicated by content but never deleted, and few indie sessions
 /// legitimately need more than this.
@@ -745,6 +803,12 @@ pub fn load_recovery_in(dir: &Path) -> Result<Option<RecoveredWork>, String> {
             ))
         }
     }
+}
+
+/// The autosaved project in `dir`, if it loads — with none of
+/// [`load_recovery_in`]'s side effects (a damaged file is left in place).
+pub fn peek_recovery_in(dir: &Path) -> Option<Project> {
+    load_project(&dir.join(RECOVERY_FILE)).ok()
 }
 
 /// Deletes the autosave (after a clean save or an explicit discard).
@@ -1104,6 +1168,39 @@ mod tests {
         for dir in [src, store, out, other, third, fourth] {
             let _ = fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn unused_audio_lists_only_unreferenced_staged_wavs() {
+        let store = temp_dir("unused");
+        let src = temp_dir("unused-src");
+        let (wav, _) = write_test_wav(&src, "A.wav");
+        let kept = stage_audio_file_into(&store, &wav).unwrap();
+        fs::write(store.join("0123456789abcdef.wav"), vec![0u8; 100]).unwrap();
+        fs::write(store.join("notes.txt"), b"keep").unwrap();
+        fs::write(store.join(".x.wav.tmp"), b"keep").unwrap();
+        fs::create_dir_all(store.join("sub.wav")).unwrap();
+
+        let referenced: std::collections::BTreeSet<String> = [kept.file.clone()].into();
+        let unused = unused_audio_files_in(&store, &referenced);
+        assert_eq!(unused.files, vec![store.join("0123456789abcdef.wav")]);
+        assert_eq!(unused.bytes, 100);
+        // Listing never deletes.
+        assert!(store.join("0123456789abcdef.wav").is_file());
+
+        let (removed, freed, errors) = remove_audio_files(&unused.files);
+        assert_eq!((removed, freed), (1, 100));
+        assert!(errors.is_empty());
+        assert!(store.join(&kept.file).is_file());
+        assert!(store.join("notes.txt").is_file());
+        assert!(unused_audio_files_in(&store, &referenced).files.is_empty());
+        // A missing store is simply empty.
+        assert_eq!(
+            unused_audio_files_in(&store.join("nope"), &referenced),
+            UnusedAudio::default()
+        );
+        let _ = fs::remove_dir_all(&store);
+        let _ = fs::remove_dir_all(&src);
     }
 
     #[test]
