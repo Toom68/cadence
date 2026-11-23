@@ -965,6 +965,50 @@ fn zero_zooms_the_roll_to_fit_the_pattern_or_selection() {
 }
 
 #[test]
+fn cmd_click_on_a_roll_key_selects_that_pitch() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 61);
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.notes = vec![
+            Note::new(60, 0.0, 2.0, 0.8),
+            Note::new(61, 4.0, 2.0, 0.8),
+            Note::new(60, 8.0, 2.0, 0.8),
+        ];
+    }
+    ui.step();
+    let ids_of = |ui: &Ui, pitch: u8| -> BTreeSet<u64> {
+        ui.pattern(idx, 0)
+            .notes
+            .iter()
+            .filter(|n| n.pitch == pitch)
+            .map(|n| n.id)
+            .collect()
+    };
+    let before = ui.app.history.state();
+
+    // A plain click only auditions.
+    ui.click(ui.app.roll_key_center(60).unwrap());
+    assert!(ui.app.sel.notes.is_empty());
+    let c4 = ui.app.roll_key_center(60).unwrap();
+    click_with_mods(&mut ui, c4, Modifiers::COMMAND);
+    assert_eq!(ui.app.sel.notes, ids_of(&ui, 60), "every C4 selected");
+    assert_eq!(ui.app.focus, super::Focus::Editor);
+    // Cmd+click another key replaces; Cmd+Shift adds.
+    let black = ui.app.roll_key_center(61).unwrap();
+    click_with_mods(&mut ui, black, Modifiers::COMMAND);
+    assert_eq!(ui.app.sel.notes, ids_of(&ui, 61));
+    click_with_mods(&mut ui, c4, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(ui.app.sel.notes.len(), 3, "shift adds to the selection");
+    assert_eq!(ui.app.history.state(), before, "selection is not an edit");
+}
+
+#[test]
 fn arranger_clip_drag_moves_within_bounds() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

@@ -831,6 +831,22 @@ impl CadenceApp {
         roll.grid.contains(p).then_some(p)
     }
 
+    /// Centre of `pitch`'s key in the piano-roll key column (tests).
+    #[cfg(test)]
+    pub(crate) fn roll_key_center(&self, pitch: u8) -> Option<Pos2> {
+        let r = &self.editor.rects;
+        if r.grid == Rect::NOTHING {
+            return None;
+        }
+        let roll = self.roll_for_test();
+        // Left part of the column: black keys are only 62% wide.
+        let p = pos2(
+            roll.keys.left() + roll.keys.width() * 0.3,
+            roll.y(pitch) + roll.row_h * 0.5,
+        );
+        roll.keys.contains(p).then_some(p)
+    }
+
     /// Screen x of a pattern step on the piano roll (tests).
     #[cfg(test)]
     pub(crate) fn roll_x(&self, step: f64) -> Option<f32> {
@@ -1645,7 +1661,9 @@ impl CadenceApp {
 
         self.roll_input(ui, tid, pid, &roll, &grid_resp);
         self.paint_roll(ui, tid, pid, &roll, grid_resp.hover_pos());
-        self.paint_keys(ui, tid, &roll);
+        if let Some((pitch, add)) = self.paint_keys(ui, tid, &roll) {
+            self.select_pitch(tid, pid, pitch, add);
+        }
         self.paint_roll_ruler(ui, tid, pid, &roll);
         self.paint_vel_lane(ui, tid, pid, &roll, vel_labels);
         let mut sx = self.editor.roll_scroll_x;
@@ -2497,7 +2515,29 @@ impl CadenceApp {
         })
     }
 
-    fn paint_keys(&self, ui: &Ui, tid: u64, roll: &Roll) {
+    /// Cmd/Ctrl+click on the key column: selects every note of `pitch`
+    /// (`add` = Shift held, keeps the current selection too).
+    fn select_pitch(&mut self, tid: u64, pid: u64, pitch: u8, add: bool) {
+        let Some(pat) = self.pat_ref(tid, pid) else {
+            return;
+        };
+        let ids: Vec<u64> = pat
+            .notes
+            .iter()
+            .filter(|n| n.pitch == pitch)
+            .map(|n| n.id)
+            .collect();
+        if !add {
+            self.sel.notes.clear();
+        }
+        self.sel.notes.extend(ids);
+        self.focus = super::Focus::Editor;
+    }
+
+    /// Paints the piano-key column. Clicking or dragging a key auditions
+    /// it; a Cmd/Ctrl+click returns `(pitch, shift)` so the caller selects
+    /// that pitch's notes.
+    fn paint_keys(&self, ui: &Ui, tid: u64, roll: &Roll) -> Option<(u8, bool)> {
         let pal = self.palette();
         let p = ui.painter_at(roll.keys);
         let (white, black) = key_colors(pal);
@@ -2517,6 +2557,7 @@ impl CadenceApp {
         let label_font = theme::body_font(10.0);
         let (first_row, last_row) = roll.visible_rows();
         let mut preview_pitch = None;
+        let mut select = None;
         for row in first_row..last_row {
             let pitch = LAST_PITCH - row as u8;
             let black_key = is_black_key(pitch);
@@ -2559,6 +2600,12 @@ impl CadenceApp {
             if resp.clicked() || resp.dragged_by(PointerButton::Primary) {
                 preview_pitch = Some(pitch);
             }
+            if resp.clicked() {
+                let m = ui.input(|i| i.modifiers);
+                if m.command || m.ctrl {
+                    select = Some((pitch, m.shift));
+                }
+            }
         }
         p.vline(
             roll.keys.right(),
@@ -2568,6 +2615,7 @@ impl CadenceApp {
         if let Some(pitch) = preview_pitch {
             self.preview(tid, pitch, self.editor.velocity);
         }
+        select
     }
 
     fn paint_roll_ruler(&self, ui: &Ui, tid: u64, pid: u64, roll: &Roll) {

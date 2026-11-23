@@ -1583,6 +1583,10 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Erase", Mouse("Right-click / right-drag")),
             ("Set velocity", Mouse("Drag in the velocity lane")),
             ("Hear a pitch", Mouse("Click or drag the keys")),
+            (
+                "Select every note of a pitch",
+                Mouse("{cmd}+click its key / {cmd}+{shift}+click to add"),
+            ),
         ],
     },
     Section {
