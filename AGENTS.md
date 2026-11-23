@@ -18,6 +18,7 @@ cargo run --release -- --render-demo demo.wav     # headless audio acceptance ch
 scripts/mac-package.sh                            # dist/Cadence.app + .zip (+ .dmg); UNIVERSAL=1 for arm64+x86_64
 pwsh scripts/windows-package.ps1                  # dist/Cadence-<ver>-windows-x64/Cadence.exe + .zip + -setup.exe (Inno Setup 6; REQUIRE_INSTALLER=1 in CI)
 scripts/windows-cross-package.sh                  # same zip via x86_64-pc-windows-gnu on macOS/Linux (needs mingw-w64 + rustup target)
+scripts/release.sh X.Y.Z "what changed"           # bump + fmt/clippy/test + commit "X.Y.Z: ..."; prints the push/tag commands
 ```
 
 Always run fmt, clippy and test before finishing. `Cargo.lock` is committed; build with `--locked`.
@@ -28,7 +29,12 @@ releases change APIs. Prefer std over adding crates.
 Packaging is honest: macOS bundles are ad-hoc signed only (no Developer ID, not notarized);
 Windows executables and the installer are unsigned. Do not claim otherwise.
 
-Releases and updates: pushing a `vX.Y.Z` tag (must equal `Cargo.toml`'s version) makes CI sign
+Releases and updates: cut a release with `scripts/release.sh X.Y.Z "message" [--notes FILE] [--push]`
+from a clean `main` that equals `origin/main`. It bumps `Cargo.toml` + `Cargo.lock`, runs fmt --check,
+clippy and the full tests (undoing the bump if any fail), commits `X.Y.Z: message`, and prints
+`git push origin HEAD:main && git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z` (`--push` runs them).
+The annotated tag's message (message + notes file) becomes the in-app "what's new" text (`notes` in
+`latest.json`, ≤ 4 KB). Pushing a `vX.Y.Z` tag (must equal `Cargo.toml`'s version) makes CI sign
 every download with minisign (secret `MINISIGN_SECRET_KEY`), verify it against
 `packaging/update-key.pub`, write `latest.json`, and publish the GitHub release. The app's
 updater (`src/update.rs`) only installs files whose signature trusted comment is exactly

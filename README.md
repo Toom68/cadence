@@ -171,8 +171,8 @@ Keep `cadence-release.key` out of the repo and back it up (a password manager is
 
 **Each release:**
 
-1. Bump `version` in `Cargo.toml`, run `cargo check` (refreshes `Cargo.lock`), commit and push to `main`.
-2. `git tag v1.2.3` and `git push origin v1.2.3` — the tag must match `Cargo.toml`.
+1. On an up-to-date, clean `main`: `scripts/release.sh 1.2.3 "what changed"` (add `--notes notes.md` for a longer what's-new text). It bumps `Cargo.toml` and `Cargo.lock`, runs `cargo fmt --check`, clippy and the full test suite, and commits `1.2.3: what changed` — or stops and undoes the bump if a check fails.
+2. Run the commands it prints (`git push origin HEAD:main && git tag -a v1.2.3 -m … && git push origin v1.2.3`), or pass `--push` to step 1 to run them directly. The tag must match `Cargo.toml`; its message is shown in the app's Update dialog as the release notes.
 3. CI publishes the release. Installed copies offer it within a day, or at once via **Help → Check for Updates…**.
 
 ## Project files
