@@ -391,10 +391,9 @@ impl Sound {
 
     /// One-shot drum-kit voices: the built-in eight-piece kit or a pack kit.
     /// Used for seek-chase suppression (a drum hit is never re-armed
-    /// mid-ring). The built-in kit additionally gets same-kind choking in the
-    /// renderer — that path is matched on `Sound::Builtin(Instrument::Drums)`
-    /// directly because it relies on [`Voice::drum`]/[`drum_kind`], which kit
-    /// voices do not populate.
+    /// mid-ring). The renderer additionally chokes drum voices: the built-in
+    /// kit by kind (via [`Voice::drum`]/[`drum_kind`]), pack kits by each
+    /// piece's `choke_group` (via [`Voice::choke_group`]).
     pub fn is_drums(&self) -> bool {
         matches!(self, Sound::Builtin(Instrument::Drums) | Sound::Kit(_))
     }

@@ -2776,6 +2776,96 @@ mod tests {
     }
 
     #[test]
+    fn voicing_fields_default_validate_and_stay_out_of_saved_json() {
+        // Omitted: classic defaults, and they are not written back out.
+        let p = valid_preset();
+        assert_eq!(p.velocity_to_cutoff, DEFAULT_VELOCITY_TO_CUTOFF);
+        assert_eq!(p.spread, 0.0);
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(!text.contains("velocity_to_cutoff"), "{text}");
+        assert!(!text.contains("spread"), "{text}");
+        let minimal: InstrumentPreset =
+            serde_json::from_str(r#"{"id":"a.b","name":"B","oscillators":[{}]}"#).unwrap();
+        assert_eq!(minimal.velocity_to_cutoff, DEFAULT_VELOCITY_TO_CUTOFF);
+        assert_eq!(minimal.spread, 0.0);
+        // Set: round-trips.
+        let mut p = valid_preset();
+        p.velocity_to_cutoff = 3.5;
+        p.spread = 0.4;
+        let back: InstrumentPreset =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+        // Ranges.
+        for (mutate, path) in [
+            (
+                (|p| p.velocity_to_cutoff = -0.1) as fn(&mut InstrumentPreset),
+                "velocity_to_cutoff",
+            ),
+            (|p| p.velocity_to_cutoff = 6.5, "velocity_to_cutoff"),
+            (|p| p.velocity_to_cutoff = f32::NAN, "velocity_to_cutoff"),
+            (|p| p.spread = -0.1, "spread"),
+            (|p| p.spread = 1.1, "spread"),
+        ] {
+            let mut p = valid_preset();
+            mutate(&mut p);
+            let err = validate_preset(&p).unwrap_err();
+            assert!(err.contains(path), "{err}");
+        }
+    }
+
+    #[test]
+    fn kit_choke_group_parses_validates_and_reaches_the_stub() {
+        let mut p = kit_preset();
+        assert_eq!(p.kit.as_ref().unwrap().pieces[0].voice.choke_group, 0);
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(!text.contains("choke_group"), "{text}");
+        let voice = &mut p.kit.as_mut().unwrap().pieces[1].voice;
+        voice.choke_group = MAX_CHOKE_GROUP;
+        voice.spread = 0.3;
+        voice.velocity_to_cutoff = 1.0;
+        validate_preset(&p).unwrap();
+        let stub = p.kit.as_ref().unwrap().pieces[1].voice.to_preset_stub();
+        assert_eq!((stub.spread, stub.velocity_to_cutoff), (0.3, 1.0));
+        let back: InstrumentPreset =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+        p.kit.as_mut().unwrap().pieces[1].voice.choke_group = MAX_CHOKE_GROUP + 1;
+        let err = validate_preset(&p).unwrap_err();
+        assert!(err.contains("kit.pieces[1].voice.choke_group"), "{err}");
+    }
+
+    #[test]
+    fn bundled_kits_choke_their_hats() {
+        let mut kits = 0;
+        let packs: Vec<InstrumentPack> = EMBEDDED_PACKS
+            .iter()
+            .map(|(_, json)| parse_pack(json).unwrap())
+            .collect();
+        for preset in packs
+            .iter()
+            .flat_map(|pack| &pack.instruments)
+            .filter(|p| p.kit.is_some())
+        {
+            let pieces = &preset.kit.as_ref().unwrap().pieces;
+            let group = |pitch: u8| {
+                pieces
+                    .iter()
+                    .find(|piece| piece.pitch == pitch)
+                    .map(|piece| piece.voice.choke_group)
+            };
+            if let (Some(closed), Some(open)) = (group(42), group(46)) {
+                kits += 1;
+                assert!(closed != 0, "{}: closed hat has no choke group", preset.id);
+                assert_eq!(closed, open, "{}: hats in different groups", preset.id);
+                if let Some(pedal) = group(44) {
+                    assert_eq!(pedal, open, "{}: pedal hat group", preset.id);
+                }
+            }
+        }
+        assert!(kits >= 4, "expected the bundled hat kits, found {kits}");
+    }
+
+    #[test]
     fn kit_unknown_fields_are_rejected() {
         // Strictness extends into the kit section.
         for bad in [

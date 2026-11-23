@@ -41,8 +41,11 @@ object with an ordered `pieces` array (1-32 pieces). Each piece has a display
 `name` (1-64 chars), a MIDI `pitch` (0-127, unique within the kit) and a
 `voice` — the same synthesis fields as a preset (`oscillators`, `envelope`,
 `pitch_envelope`, `filter_envelope`, `filter_cutoff`, `filter_resonance`,
-`lfo`, `bit_depth`, `sample_hold`, `gain`; every field optional with the
-usual defaults, but `oscillators` needs 1-4 entries).
+`lfo`, `bit_depth`, `sample_hold`, `gain`, `velocity_to_cutoff`, `spread`;
+every field optional with the usual defaults, but `oscillators` needs 1-4
+entries). A piece voice may also set `choke_group` (0-16, default 0 = none):
+starting a piece fades out every sounding piece of the same group on the
+track, so closed/pedal/open hats sharing a group cut each other.
 
 ```json
 { "id": "my-kit.studio", "name": "Studio Kit",

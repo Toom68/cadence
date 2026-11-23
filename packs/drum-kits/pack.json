@@ -215,6 +215,7 @@
             "name": "Closed Hat",
             "pitch": 42,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -253,6 +254,7 @@
             "name": "Pedal Hat",
             "pitch": 44,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -335,6 +337,7 @@
             "name": "Open Hat",
             "pitch": 46,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -804,6 +807,7 @@
             "name": "Brush Hat",
             "pitch": 42,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -894,6 +898,7 @@
             "name": "Brush Open Hat",
             "pitch": 46,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -1543,6 +1548,7 @@
             "name": "Closed Hat",
             "pitch": 42,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -1581,6 +1587,7 @@
             "name": "Pedal Hat",
             "pitch": 44,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -1664,6 +1671,7 @@
             "name": "Open Hat",
             "pitch": 46,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -2426,6 +2434,7 @@
             "name": "Closed Hat",
             "pitch": 42,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",
@@ -2488,6 +2497,7 @@
             "name": "Open Hat",
             "pitch": 46,
             "voice": {
+              "choke_group": 1,
               "oscillators": [
                 {
                   "waveform": "noise",

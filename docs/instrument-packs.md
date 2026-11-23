@@ -39,6 +39,7 @@ Optional voicing fields (all default to the classic behaviour when omitted, so o
 
 - `velocity_to_cutoff` (0–6 octaves, default 2) — velocity opens the low-pass filter: the cutoff is scaled by 2^(`velocity_to_cutoff` × (velocity − 0.8)), so velocity 0.8 plays exactly at `filter_cutoff`, harder notes are brighter and softer notes darker. 0 turns it off; a fully open filter (`filter_cutoff` 20000) is never scaled. Applies to oscillator presets, sample presets and kit pieces.
 - `spread` (0–1, default 0 = mono) — stereo width. Above 0 the voice renders a second copy of its oscillators (or a second read head of its sample), detuned by up to ±7 cents and phase-offset, and pans the two copies apart; 1 = fully separated. It doubles that voice's oscillator cost, so use it on pads and leads rather than everything. A few bundled pads and leads (`neon.supersaw-pad`, `neon.supersaw-lead`, `psy-leads.wide-lead`, and four `psy-space` pads) ship with a modest spread.
+- `choke_group` (kit-piece `voice` only, 0–16, default 0 = none) — starting a piece quickly fades out every still-sounding piece of the same group on the same track. Give the closed, pedal and open hi-hats the same group so a closed hat cuts a ringing open hat; the bundled `drum-kits` hats use group 1.
 
 Limits: 2 MB per pack file, 128 instruments per pack, 4 oscillators per instrument.
 
