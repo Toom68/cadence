@@ -441,11 +441,14 @@ pub struct Effects {
     pub drive: f32,
 }
 
+/// Neutral starting point for new tracks and the mixer's double-click reset:
+/// a fully dry send. Never used when loading songs — every saved `effects`
+/// block carries its own `reverb` — so changing it only affects new tracks.
 impl Default for Effects {
     fn default() -> Self {
         Effects {
             cutoff_hz: MAX_CUTOFF_HZ,
-            reverb: 0.15,
+            reverb: 0.0,
             delay: 0.0,
             drive: 0.0,
         }
@@ -1611,14 +1614,16 @@ pub fn create_pattern(instrument: Instrument, length: u32) -> Pattern {
 /// A new track with sensible mix defaults, one empty one-bar pattern and a clip at the start.
 pub fn create_track(instrument: Instrument) -> Track {
     let pattern = create_pattern(instrument, STEPS_PER_BAR);
+    // Gentle sends only: every track shares one long reverb, so wet defaults
+    // stack into a washed-out mix. Bass stays dry to keep the low end tight.
     let (volume, reverb, cutoff) = match instrument {
-        Instrument::Drums => (0.78, 0.06, MAX_CUTOFF_HZ),
-        Instrument::Bass => (0.7, 0.02, 4000.0),
-        Instrument::Piano => (0.62, 0.2, MAX_CUTOFF_HZ),
-        Instrument::Pluck => (0.58, 0.2, MAX_CUTOFF_HZ),
-        Instrument::Guitar => (0.6, 0.22, MAX_CUTOFF_HZ),
-        Instrument::Pad => (0.5, 0.35, 6000.0),
-        Instrument::Lead => (0.56, 0.16, MAX_CUTOFF_HZ),
+        Instrument::Drums => (0.78, 0.04, MAX_CUTOFF_HZ),
+        Instrument::Bass => (0.7, 0.0, 4000.0),
+        Instrument::Piano => (0.62, 0.12, MAX_CUTOFF_HZ),
+        Instrument::Pluck => (0.58, 0.12, MAX_CUTOFF_HZ),
+        Instrument::Guitar => (0.6, 0.12, MAX_CUTOFF_HZ),
+        Instrument::Pad => (0.5, 0.25, 6000.0),
+        Instrument::Lead => (0.56, 0.1, MAX_CUTOFF_HZ),
     };
     Track {
         id: next_id(),
@@ -2813,6 +2818,27 @@ fn demo_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// New tracks start with gentle sends; saved songs keep exactly the
+    /// reverb they were written with (the field is required, so the
+    /// constructor default never reaches the loader).
+    #[test]
+    fn new_tracks_default_to_light_reverb_and_saved_songs_keep_theirs() {
+        assert_eq!(Effects::default().reverb, 0.0);
+        assert_eq!(create_audio_track("Vox").effects.reverb, 0.0);
+        for inst in Instrument::ALL {
+            let t = create_track(inst);
+            assert!(t.effects.reverb <= 0.25, "{inst:?} too wet by default");
+        }
+        assert_eq!(create_track(Instrument::Bass).effects.reverb, 0.0);
+        let legacy = r#"{"version":1,"id":1,"name":"Old","bpm":110,"swing":0,"bars":8,"master_volume":0.8,"tracks":[{"id":2,"name":"Keys","color":[255,132,104],"instrument":"piano","volume":0.8,"pan":0,"mute":false,"solo":false,"effects":{"cutoff_hz":20000,"reverb":0.15,"delay":0,"drive":0},"patterns":[],"clips":[]}]}"#;
+        let old: Project = serde_json::from_str(legacy).unwrap();
+        old.validate().unwrap();
+        assert_eq!(old.tracks[0].effects.reverb, 0.15);
+        // A missing reverb is a damaged file, not a silent default.
+        let missing = legacy.replace(r#""reverb":0.15,"#, "");
+        assert!(serde_json::from_str::<Project>(&missing).is_err());
+    }
 
     #[test]
     fn demo_is_valid_and_musical() {

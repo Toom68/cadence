@@ -122,7 +122,7 @@ impl Pedal {
             ),
             Pedal::Drive => (fx.drive, 0.0, fx.drive > 0.004),
             Pedal::Delay => (fx.delay, 0.0, fx.delay > 0.004),
-            Pedal::Reverb => (fx.reverb, 0.15, fx.reverb > 0.004),
+            Pedal::Reverb => (fx.reverb, Effects::default().reverb, fx.reverb > 0.004),
         }
     }
 
@@ -917,7 +917,7 @@ impl CadenceApp {
             });
         }
         for (label, value, default) in [
-            ("Reverb", fx.reverb, 0.15),
+            ("Reverb", fx.reverb, Effects::default().reverb),
             ("Delay", fx.delay, 0.0),
             ("Drive", fx.drive, 0.0),
         ] {
