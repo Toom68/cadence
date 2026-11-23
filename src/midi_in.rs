@@ -6,7 +6,8 @@
 //! [`plan_connections`], the preference format), so it is tested without
 //! hardware. Device I/O lives behind [`MidiInputHandle`]: one background
 //! thread owns every `midir` connection, rescans the ports every few
-//! seconds (faster while Preferences is open) to follow hot-plugging, and
+//! seconds (faster while Preferences is open, and at once when the port
+//! count changes) to follow hot-plugging, and
 //! pushes parsed messages into a bounded channel the GUI drains each frame.
 //! Headless sessions and tests never create a handle, so they never open
 //! a MIDI client.
@@ -32,6 +33,16 @@ const SCAN_FAST: Duration = Duration::from_millis(1000);
 /// Port rescan interval otherwise — enough to notice an unplugged or
 /// re-plugged controller within a few seconds.
 const SCAN_SLOW: Duration = Duration::from_millis(3000);
+
+/// Between full rescans the thread checks just the port *count* this often
+/// and rescans at once when it changed. A controller unplugged and plugged
+/// back into the same socket keeps its port id on some systems (CoreMIDI's
+/// unique id, WinMM's interface path), so a full rescan that missed the gap
+/// would see an unchanged port and keep a connection the backend has
+/// already dropped; noticing the dip in the count makes the rescan close it
+/// and reopen the port when it returns. An absence shorter than this
+/// interval (faster than USB re-enumeration) can still go unseen.
+const PRESENCE_POLL: Duration = Duration::from_millis(250);
 
 /// Client name Cadence registers with the system MIDI service.
 const CLIENT_NAME: &str = "Cadence";
@@ -203,7 +214,10 @@ pub enum MidiInputPref {
     /// Every input port, including ones plugged in later (the default).
     #[default]
     All,
-    /// One port, by its display name; reconnects when it comes back.
+    /// One port, by its display name; reconnects when it comes back. With
+    /// several identical devices the name carries a `#2`-style number from
+    /// enumeration order, which only identifies the same unit within a
+    /// session (see [`plan_connections`]).
     Device(String),
 }
 
@@ -292,7 +306,8 @@ pub fn strip_alsa_address(name: &str) -> &str {
 }
 
 /// Makes port display names unique: a second identical controller becomes
-/// `"Name #2"`, a third `"Name #3"`, in enumeration order.
+/// `"Name #2"`, a third `"Name #3"`, in enumeration order — so a number
+/// can move to another unit when they are re-plugged in a different order.
 pub fn unique_names(names: &[String]) -> Vec<String> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     names
@@ -318,42 +333,104 @@ pub struct PortEntry {
     pub id: String,
 }
 
+/// Why a rescan closes a live connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    /// The port is gone (unplugged).
+    Unplugged,
+    /// The port came back under a new id (re-plugged between two scans);
+    /// it is reopened in the same rescan.
+    Replugged,
+    /// The port is still there but the preference no longer selects it.
+    Deselected,
+}
+
 /// Connection changes a rescan should make.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionPlan {
-    /// Open connections to close (names).
-    pub close: Vec<String>,
+    /// Open connections to close (names), with the reason.
+    pub close: Vec<(String, CloseReason)>,
     /// Ports to open (names), in enumeration order.
     pub open: Vec<String>,
+    /// Open connections to keep whose port is now listed under another
+    /// name, `(old, new)` — an identical device came or went, so the
+    /// `#2` numbering shifted.
+    pub rename: Vec<(String, String)>,
+}
+
+/// Index of the only entry matching `pred`, if exactly one does.
+fn only_index(list: &[PortEntry], pred: impl Fn(&PortEntry) -> bool) -> Option<usize> {
+    let mut hits = list.iter().enumerate().filter(|(_, e)| pred(e));
+    let (first, _) = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
+/// Where the connected port `c` is in `available` now: the same name and
+/// id, or — when its id identifies one port in both lists — the same id
+/// under a renumbered name.
+fn current_index(c: &PortEntry, available: &[PortEntry], connected: &[PortEntry]) -> Option<usize> {
+    available.iter().position(|a| a == c).or_else(|| {
+        only_index(connected, |e| e.id == c.id)?;
+        only_index(available, |a| a.id == c.id)
+    })
 }
 
 /// Decides which ports to close and open so the live connections match
 /// `pref` given the ports `available` now. A connected port that vanished,
 /// or whose id changed (re-plugged), is closed; with [`MidiInputPref::All`]
 /// every available port is opened, with a device pick only that one.
+///
+/// `pinned` is the port id a device pick last connected to. Identical
+/// devices are told apart only by their `#2` numbering, which follows
+/// enumeration order and so can shift when one is re-plugged; while the
+/// pinned unit is listed it stays the pick whatever it is called now, and
+/// only otherwise is the exact saved name matched. Ids are not saved, so
+/// after a restart (or on a backend whose ids change on re-plug) the
+/// saved `"Name #2"` simply means the second such device enumerated.
 pub fn plan_connections(
     pref: &MidiInputPref,
     available: &[PortEntry],
     connected: &[PortEntry],
+    pinned: Option<&str>,
 ) -> ConnectionPlan {
-    let wanted = |name: &str| match pref {
+    let target = match pref {
+        MidiInputPref::Device(pick) => pinned
+            .and_then(|id| only_index(available, |a| a.id == id))
+            .or_else(|| available.iter().position(|a| &a.name == pick)),
+        _ => None,
+    };
+    let wanted = |i: usize| match pref {
         MidiInputPref::None => false,
         MidiInputPref::All => true,
-        MidiInputPref::Device(pick) => pick == name,
+        MidiInputPref::Device(_) => target == Some(i),
     };
     let mut plan = ConnectionPlan::default();
-    let mut keep = BTreeSet::new();
+    let mut kept = BTreeSet::new();
+    let mut gone = Vec::new();
     for c in connected {
-        if wanted(&c.name) && available.contains(c) {
-            keep.insert(c.name.as_str());
-        } else {
-            plan.close.push(c.name.clone());
+        match current_index(c, available, connected) {
+            Some(i) if wanted(i) && kept.insert(i) => {
+                if available[i].name != c.name {
+                    plan.rename
+                        .push((c.name.clone(), available[i].name.clone()));
+                }
+            }
+            Some(_) => plan.close.push((c.name.clone(), CloseReason::Deselected)),
+            None => gone.push(c),
         }
     }
-    for a in available {
-        if wanted(&a.name) && !keep.contains(a.name.as_str()) {
+    for (i, a) in available.iter().enumerate() {
+        if wanted(i) && !kept.contains(&i) {
             plan.open.push(a.name.clone());
         }
+    }
+    for c in gone {
+        let reason = if plan.open.contains(&c.name) {
+            CloseReason::Replugged
+        } else {
+            CloseReason::Unplugged
+        };
+        plan.close.push((c.name.clone(), reason));
     }
     plan
 }
@@ -363,22 +440,24 @@ pub fn plan_connections(
 /// What the input thread reports to the GUI.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MidiInputEvent {
-    Message(MidiMessage),
+    /// A message from the connection numbered `conn` (unique for the life
+    /// of the input thread; a reopened port gets a new number).
+    Message { conn: u64, message: MidiMessage },
     /// A port was opened. `initial` marks the connections made right at
     /// startup, which the GUI doesn't announce.
-    Connected {
-        name: String,
-        initial: bool,
-    },
-    /// An open port disappeared (unplugged) and was closed.
+    Connected { name: String, initial: bool },
+    /// An open port was closed. Unless the preference deselected it, any
+    /// note it was holding can no longer be released by the device.
+    ///
+    /// The connection's callback may still deliver a message or two after
+    /// this report; the GUI ignores messages from a closed `conn`.
     Disconnected {
         name: String,
+        conn: u64,
+        reason: CloseReason,
     },
     /// A port could not be opened (reported once until it succeeds).
-    Failed {
-        name: String,
-        error: String,
-    },
+    Failed { name: String, error: String },
     /// The system MIDI service could not be reached at all.
     Unavailable(String),
 }
@@ -394,6 +473,8 @@ struct Shared {
     ports: Vec<String>,
     connected: Vec<String>,
     scanned: bool,
+    /// Why MIDI input cannot work at all this session, if it cannot.
+    unavailable: Option<String>,
 }
 
 /// Owns the background MIDI input thread. Dropping it stops the thread and
@@ -414,10 +495,24 @@ impl MidiInputHandle {
         let (commands, rx) = crossbeam_channel::unbounded();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let thread_shared = Arc::clone(&shared);
-        let thread = std::thread::Builder::new()
+        let (thread_tx, thread_wake) = (tx.clone(), Arc::clone(&wake));
+        let thread = match std::thread::Builder::new()
             .name("cadence-midi-in".to_owned())
-            .spawn(move || run(pref, rx, tx, wake, thread_shared))
-            .ok();
+            .spawn(move || run(pref, rx, thread_tx, thread_wake, thread_shared))
+        {
+            Ok(thread) => Some(thread),
+            Err(err) => {
+                // Otherwise Preferences would say "Looking for MIDI
+                // devices…" forever.
+                mark_unavailable(
+                    &shared,
+                    &tx,
+                    &*wake,
+                    format!("could not start the MIDI input thread ({err})"),
+                );
+                None
+            }
+        };
         Self {
             events,
             commands,
@@ -460,6 +555,12 @@ impl MidiInputHandle {
         self.lock().scanned
     }
 
+    /// Why MIDI input cannot work this session (no MIDI service, or the
+    /// input thread could not start); `None` while it works.
+    pub fn unavailable(&self) -> Option<String> {
+        self.lock().unavailable.clone()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -476,9 +577,24 @@ fn emit(tx: &Sender<MidiInputEvent>, wake: &(dyn Fn() + Send + Sync), event: Mid
     }
 }
 
+/// Records that MIDI input cannot work this session and tells the GUI.
+fn mark_unavailable(
+    shared: &Mutex<Shared>,
+    tx: &Sender<MidiInputEvent>,
+    wake: &(dyn Fn() + Send + Sync),
+    reason: String,
+) {
+    let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+    s.scanned = true;
+    s.unavailable = Some(reason.clone());
+    drop(s);
+    emit(tx, wake, MidiInputEvent::Unavailable(reason));
+}
+
 /// An open input port.
 struct Live {
     entry: PortEntry,
+    conn: u64,
     _conn: midir::MidiInputConnection<()>,
 }
 
@@ -493,23 +609,33 @@ fn run(
     let scanner = match midir::MidiInput::new(CLIENT_NAME) {
         Ok(scanner) => scanner,
         Err(err) => {
-            shared.lock().unwrap_or_else(|p| p.into_inner()).scanned = true;
-            emit(&tx, &*wake, MidiInputEvent::Unavailable(err.to_string()));
+            mark_unavailable(&shared, &tx, &*wake, err.to_string());
             return;
         }
     };
     let mut live: Vec<Live> = Vec::new();
+    // Port id of the unit a device pick follows (see `plan_connections`).
+    let mut pinned: Option<String> = None;
+    let mut next_conn: u64 = 1;
     let mut failed: BTreeSet<String> = BTreeSet::new();
     let mut fast = false;
     let mut initial = true;
     let mut next_scan = Instant::now();
+    let mut scanned_count: Option<usize> = None;
     loop {
         pump_system_events();
-        if Instant::now() >= next_scan {
+        let count = scanner.port_count();
+        if Instant::now() >= next_scan || rescan_for_count(scanned_count, count) {
+            // The count as checked, not the listed ports: backends may skip
+            // a port they fail to describe, which must not look like a
+            // change on every check.
+            scanned_count = Some(count);
             scan(
                 &scanner,
                 &pref,
                 &mut live,
+                &mut pinned,
+                &mut next_conn,
                 &mut failed,
                 initial,
                 &tx,
@@ -519,10 +645,13 @@ fn run(
             initial = false;
             next_scan = Instant::now() + if fast { SCAN_FAST } else { SCAN_SLOW };
         }
-        let wait = next_scan.saturating_duration_since(Instant::now());
+        let wait = next_scan
+            .saturating_duration_since(Instant::now())
+            .min(PRESENCE_POLL);
         match commands.recv_timeout(wait) {
             Ok(Command::SetPref(p)) => {
                 pref = p;
+                pinned = None;
                 failed.clear();
                 next_scan = Instant::now();
             }
@@ -538,12 +667,20 @@ fn run(
     }
 }
 
+/// Whether the port count seen by the quick presence check differs from the
+/// one checked right before the last full scan (see [`PRESENCE_POLL`]).
+pub fn rescan_for_count(scanned: Option<usize>, count: usize) -> bool {
+    scanned.is_some_and(|n| n != count)
+}
+
 /// Lists the ports, applies [`plan_connections`] and publishes the result.
 #[allow(clippy::too_many_arguments)]
 fn scan(
     scanner: &midir::MidiInput,
     pref: &MidiInputPref,
     live: &mut Vec<Live>,
+    pinned: &mut Option<String>,
+    next_conn: &mut u64,
     failed: &mut BTreeSet<String>,
     initial: bool,
     tx: &Sender<MidiInputEvent>,
@@ -570,27 +707,48 @@ fn scan(
         })
         .collect();
     let connected: Vec<PortEntry> = live.iter().map(|l| l.entry.clone()).collect();
-    let plan = plan_connections(pref, &available, &connected);
-    for name in &plan.close {
-        let vanished = !available.iter().any(|a| &a.name == name);
-        live.retain(|l| &l.entry.name != name);
-        if vanished {
-            emit(
-                tx,
-                &**wake,
-                MidiInputEvent::Disconnected { name: name.clone() },
-            );
-        }
+    let plan = plan_connections(pref, &available, &connected, pinned.as_deref());
+    for (name, reason) in &plan.close {
+        let Some(i) = live.iter().position(|l| &l.entry.name == name) else {
+            continue;
+        };
+        let conn = live.remove(i).conn;
+        // Every close is reported, a re-plug included: the GUI must end the
+        // notes the old connection was holding.
+        emit(
+            tx,
+            &**wake,
+            MidiInputEvent::Disconnected {
+                name: name.clone(),
+                conn,
+                reason: *reason,
+            },
+        );
+    }
+    // Closes went first, so every old name is still that of one live entry.
+    let renames: Vec<(usize, &String)> = plan
+        .rename
+        .iter()
+        .filter_map(|(old, new)| Some((live.iter().position(|l| &l.entry.name == old)?, new)))
+        .collect();
+    for (i, new) in renames {
+        live[i].entry.name = new.clone();
     }
     for name in &plan.open {
         let Some(i) = available.iter().position(|a| &a.name == name) else {
             continue;
         };
-        match open_port(&ports[i], name, tx, wake) {
+        let id = *next_conn;
+        match open_port(&ports[i], name, id, tx, wake) {
             Ok(conn) => {
+                *next_conn += 1;
+                if matches!(pref, MidiInputPref::Device(_)) {
+                    *pinned = Some(available[i].id.clone());
+                }
                 failed.remove(name);
                 live.push(Live {
                     entry: available[i].clone(),
+                    conn: id,
                     _conn: conn,
                 });
                 emit(
@@ -632,6 +790,7 @@ fn scan(
 fn open_port(
     port: &midir::MidiInputPort,
     name: &str,
+    conn: u64,
     tx: &Sender<MidiInputEvent>,
     wake: &Arc<dyn Fn() + Send + Sync>,
 ) -> Result<midir::MidiInputConnection<()>, String> {
@@ -646,7 +805,7 @@ fn open_port(
             &format!("{CLIENT_NAME} input ({name})"),
             move |_stamp, bytes, _| {
                 if let Some(message) = parse_message(bytes) {
-                    emit(&tx, &*wake, MidiInputEvent::Message(message));
+                    emit(&tx, &*wake, MidiInputEvent::Message { conn, message });
                 }
             },
             (),
@@ -893,49 +1052,146 @@ mod tests {
     #[test]
     fn plan_follows_the_preference() {
         let avail = [entry("A", "1"), entry("B", "2")];
-        let all = plan_connections(&MidiInputPref::All, &avail, &[]);
+        let all = plan_connections(&MidiInputPref::All, &avail, &[], None);
         assert_eq!(all.open, vec!["A", "B"]);
         assert!(all.close.is_empty());
 
-        let none = plan_connections(&MidiInputPref::None, &avail, &avail);
-        assert_eq!(none.close, vec!["A", "B"]);
+        let none = plan_connections(&MidiInputPref::None, &avail, &avail, None);
+        assert_eq!(
+            none.close,
+            vec![
+                ("A".to_owned(), CloseReason::Deselected),
+                ("B".to_owned(), CloseReason::Deselected)
+            ]
+        );
         assert!(none.open.is_empty());
 
         let pick = MidiInputPref::Device("B".to_owned());
-        let one = plan_connections(&pick, &avail, &[entry("A", "1")]);
-        assert_eq!(one.close, vec!["A"]);
+        let one = plan_connections(&pick, &avail, &[entry("A", "1")], None);
+        assert_eq!(one.close, vec![("A".to_owned(), CloseReason::Deselected)]);
         assert_eq!(one.open, vec!["B"]);
 
-        let steady = plan_connections(&MidiInputPref::All, &avail, &avail);
+        let steady = plan_connections(&MidiInputPref::All, &avail, &avail, None);
         assert_eq!(steady, ConnectionPlan::default(), "nothing to do");
+    }
+
+    #[test]
+    fn an_unavailable_service_is_reported_not_left_scanning() {
+        let (tx, events) = bounded(4);
+        let (commands, _rx) = crossbeam_channel::unbounded();
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let handle = MidiInputHandle {
+            events,
+            commands,
+            shared: Arc::clone(&shared),
+            fast_scan: false,
+            _thread: None,
+        };
+        assert!(!handle.scanned() && handle.unavailable().is_none());
+        let woken = std::sync::atomic::AtomicBool::new(false);
+        let wake = || woken.store(true, std::sync::atomic::Ordering::Relaxed);
+        mark_unavailable(&shared, &tx, &wake, "no thread".to_owned());
+        assert!(handle.scanned(), "Preferences stops saying \"Looking…\"");
+        assert_eq!(handle.unavailable().as_deref(), Some("no thread"));
+        assert_eq!(
+            handle.drain(),
+            vec![MidiInputEvent::Unavailable("no thread".to_owned())]
+        );
+        assert!(woken.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_dip_in_the_port_count_triggers_a_rescan() {
+        assert!(!rescan_for_count(None, 2), "the first scan is on schedule");
+        assert!(!rescan_for_count(Some(2), 2));
+        assert!(rescan_for_count(Some(2), 1), "unplugged");
+        assert!(rescan_for_count(Some(1), 2), "plugged back in");
     }
 
     #[test]
     fn plan_handles_hot_plugging() {
         let pick = MidiInputPref::Device("Keys".to_owned());
         // Unplugged: the live connection is closed, nothing opens.
-        let gone = plan_connections(&pick, &[], &[entry("Keys", "7")]);
-        assert_eq!(gone.close, vec!["Keys"]);
+        let gone = plan_connections(&pick, &[], &[entry("Keys", "7")], None);
+        assert_eq!(
+            gone.close,
+            vec![("Keys".to_owned(), CloseReason::Unplugged)]
+        );
         assert!(gone.open.is_empty());
         // Missing at startup: nothing to do until it shows up.
         assert_eq!(
-            plan_connections(&pick, &[entry("Other", "1")], &[]),
+            plan_connections(&pick, &[entry("Other", "1")], &[], None),
             ConnectionPlan::default()
         );
         // Back again: reconnects.
-        let back = plan_connections(&pick, &[entry("Keys", "9")], &[]);
+        let back = plan_connections(&pick, &[entry("Keys", "9")], &[], None);
         assert_eq!(back.open, vec!["Keys"]);
         // Re-plugged between two scans under a new id: reopen.
-        let replug = plan_connections(&pick, &[entry("Keys", "9")], &[entry("Keys", "7")]);
-        assert_eq!(replug.close, vec!["Keys"]);
+        let replug = plan_connections(&pick, &[entry("Keys", "9")], &[entry("Keys", "7")], None);
+        assert_eq!(
+            replug.close,
+            vec![("Keys".to_owned(), CloseReason::Replugged)],
+            "reported, so held notes are released"
+        );
         assert_eq!(replug.open, vec!["Keys"]);
         // All inputs picks up a newly plugged device and drops a gone one.
         let all = plan_connections(
             &MidiInputPref::All,
             &[entry("A", "1"), entry("C", "3")],
             &[entry("A", "1"), entry("B", "2")],
+            None,
         );
-        assert_eq!(all.close, vec!["B"]);
+        assert_eq!(all.close, vec![("B".to_owned(), CloseReason::Unplugged)]);
         assert_eq!(all.open, vec!["C"]);
+    }
+
+    #[test]
+    fn identical_devices_keep_their_connections_when_renumbered() {
+        // Two "X" units; the first is unplugged, so the second is now
+        // listed as plain "X". Its connection is kept, just renamed.
+        let plan = plan_connections(
+            &MidiInputPref::All,
+            &[entry("X", "B")],
+            &[entry("X", "A"), entry("X #2", "B")],
+            None,
+        );
+        assert_eq!(plan.close, vec![("X".to_owned(), CloseReason::Unplugged)]);
+        assert_eq!(plan.rename, vec![("X #2".to_owned(), "X".to_owned())]);
+        assert!(plan.open.is_empty());
+        // Shared ids (a backend that cannot tell them apart) fall back to
+        // exact names.
+        let shared = plan_connections(
+            &MidiInputPref::All,
+            &[entry("X", "0")],
+            &[entry("X", "0"), entry("X #2", "0")],
+            None,
+        );
+        assert_eq!(
+            shared.close,
+            vec![("X #2".to_owned(), CloseReason::Unplugged)]
+        );
+        assert!(shared.rename.is_empty() && shared.open.is_empty());
+    }
+
+    #[test]
+    fn a_device_pick_follows_its_unit_not_the_numbering() {
+        let pick = MidiInputPref::Device("X #2".to_owned());
+        // Unit B was picked as "X #2"; re-plugged, it now enumerates first.
+        let swapped = [entry("X", "B"), entry("X #2", "A")];
+        let back = plan_connections(&pick, &swapped, &[], Some("B"));
+        assert_eq!(back.open, vec!["X"], "B, not the unit now called X #2");
+        let kept = plan_connections(&pick, &swapped, &[entry("X #2", "B")], Some("B"));
+        assert_eq!(kept.rename, vec![("X #2".to_owned(), "X".to_owned())]);
+        assert!(kept.close.is_empty() && kept.open.is_empty());
+        // With the pinned unit absent the exact saved name decides: only
+        // the other unit is left, and it is not called "X #2".
+        let alone = plan_connections(&pick, &[entry("X", "A")], &[], Some("B"));
+        assert_eq!(alone, ConnectionPlan::default());
+        // Without a pin (fresh launch) the saved name is matched as is.
+        let fresh = plan_connections(&pick, &swapped, &[], None);
+        assert_eq!(fresh.open, vec!["X #2"]);
+        // A pin from another unit never overrides "None".
+        let off = plan_connections(&MidiInputPref::None, &swapped, &[], Some("B"));
+        assert_eq!(off, ConnectionPlan::default());
     }
 }

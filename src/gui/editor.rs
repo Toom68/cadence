@@ -3556,10 +3556,13 @@ impl CadenceApp {
         }
         let track_id = self.sel.track?;
         if ops::track(&self.project, track_id).is_some_and(|t| t.audio) {
-            self.set_status(
-                StatusKind::Warning,
-                "Recording needs an instrument track — audio tracks only hold imported WAV clips.",
-            );
+            const AUDIO: &str =
+                "Recording needs an instrument track — audio tracks only hold imported WAV clips.";
+            // Once per arm, not per note: arming posts its own status, so the
+            // warning returns only after something else replaced it.
+            if self.status.as_ref().is_none_or(|s| s.text != AUDIO) {
+                self.set_status(StatusKind::Warning, AUDIO);
+            }
             return None;
         }
         let snap = self.record_snap();

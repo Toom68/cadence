@@ -1034,6 +1034,7 @@ impl CadenceApp {
         let midi_ports = self
             .midi_in
             .as_ref()
+            .filter(|h| h.unavailable().is_none())
             .map(|h| (h.ports(), h.connected(), h.scanned()));
         const COMBO_W: f32 = 260.0;
         let resp = show_dialog(ctx, "cadence-preferences", pal, W_FORM, |ui| {
