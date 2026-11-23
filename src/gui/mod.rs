@@ -50,6 +50,7 @@ pub(crate) const SC_SAVE: KeyboardShortcut = sc(Modifiers::COMMAND, Key::S);
 pub(crate) const SC_SAVE_AS: KeyboardShortcut = sc(CMD_SHIFT, Key::S);
 pub(crate) const SC_EXPORT_WAV: KeyboardShortcut = sc(Modifiers::COMMAND, Key::E);
 pub(crate) const SC_QUIT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Q);
+pub(crate) const SC_PREFERENCES: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Comma);
 pub(crate) const SC_UNDO: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Z);
 pub(crate) const SC_REDO: KeyboardShortcut = sc(CMD_SHIFT, Key::Z);
 pub(crate) const SC_REDO_ALT: KeyboardShortcut = sc(Modifiers::COMMAND, Key::Y);
@@ -1485,6 +1486,9 @@ impl CadenceApp {
         }
         if pressed(&SC_HELP) {
             self.dialog = Dialog::Help;
+        }
+        if pressed(&SC_PREFERENCES) {
+            self.dialog = Dialog::Preferences;
         }
         if pressed(&SC_EDITOR) {
             self.tab = Tab::Editor;

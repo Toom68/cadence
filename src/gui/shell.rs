@@ -22,8 +22,8 @@ use super::theme::{self, Icon, Palette, Segment, ThemeChoice};
 use super::{
     arranger, editor, ops, sidebar, CadenceApp, Clipboard, StatusKind, Tab, SC_COPY, SC_CUT,
     SC_DUPLICATE, SC_EDITOR, SC_EXPORT_WAV, SC_HELP, SC_HOME, SC_KEYS, SC_LOOP, SC_MAX_ARRANGER,
-    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_QUIT, SC_RECORD, SC_REDO,
-    SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
+    SC_MAX_EDITOR, SC_MIXER, SC_NEW, SC_OPEN, SC_PASTE, SC_PLAY, SC_PREFERENCES, SC_QUIT,
+    SC_RECORD, SC_REDO, SC_SAVE, SC_SAVE_AS, SC_SELECT_ALL, SC_UNDO,
 };
 use crate::audio::AudioEngine;
 use crate::model::Instrument;
@@ -529,6 +529,19 @@ impl CadenceApp {
         }
         if menu_item(ui, pal, "Export MIDI…", "", true, None).clicked() {
             self.export_midi_dialog();
+        }
+        menu_sep(ui, pal);
+        if menu_item(
+            ui,
+            pal,
+            "Preferences…",
+            &keys(ui, &SC_PREFERENCES),
+            true,
+            None,
+        )
+        .clicked()
+        {
+            self.dialog = Dialog::Preferences;
         }
         menu_sep(ui, pal);
         let quit = if cfg!(target_os = "macos") {

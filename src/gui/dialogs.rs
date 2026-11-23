@@ -45,6 +45,8 @@ pub(super) enum Dialog {
     Arp(ArpDraft),
     /// Update check result, download and install choice (see `updates.rs`).
     Update,
+    /// App settings: theme, audio output, automatic update checks.
+    Preferences,
 }
 
 /// Editable state of the New Song dialog.
@@ -221,6 +223,7 @@ impl CadenceApp {
             Dialog::NewSong(draft) => self.new_song_dialog(ctx, draft),
             Dialog::Arp(draft) => self.arp_dialog(ctx, draft),
             Dialog::Update => self.update_dialog(ctx),
+            Dialog::Preferences => self.preferences_dialog(ctx),
         };
         if keep {
             self.dialog = dialog;
@@ -948,6 +951,97 @@ impl CadenceApp {
                 }
             });
         });
+        closed |= enter_pressed(ctx);
+        !closed && !resp.should_close()
+    }
+
+    // ----- preferences ---------------------------------------------------------
+
+    /// File ▸ Preferences… (⌘/Ctrl+,): the app-wide settings in one place.
+    /// Every control applies immediately and is saved the same way as its
+    /// other entry point (View ▸ Theme, the status-bar output picker, the
+    /// update dialog's checkbox), so there is nothing to confirm or cancel.
+    fn preferences_dialog(&mut self, ctx: &Context) -> bool {
+        let pal = self.palette();
+        let mut closed = false;
+        let mut theme_pick = self.theme;
+        let mut device_pick: Option<Option<String>> = None;
+        let mut auto = self.update.prefs.auto_check;
+        let current_device = self.audio_device_pref.clone();
+        let live_device = self.engine.as_ref().map(|e| e.device_name());
+        let audio_error = self.audio_error.clone();
+        let list_devices = self.io_enabled;
+        const COMBO_W: f32 = 260.0;
+        let resp = show_dialog(ctx, "cadence-preferences", pal, W_FORM, |ui| {
+            header(ui, pal, "PREFERENCES", "Cadence settings");
+            ui.add_space(theme::GAP_M);
+
+            ui.label(theme::kicker_text(pal, "APPEARANCE"));
+            ui.add_space(theme::GAP_XS);
+            let options: Vec<theme::Segment<'_, theme::ThemeChoice>> = theme::ThemeChoice::ALL
+                .iter()
+                .map(|c| theme::Segment::new(*c, c.label()).tip(c.description()))
+                .collect();
+            theme::segmented(ui, pal, &mut theme_pick, &options, theme::CONTROL_M, None);
+            ui.add_space(theme::GAP_M);
+
+            ui.label(theme::kicker_text(pal, "AUDIO OUTPUT"));
+            ui.add_space(theme::GAP_XS);
+            let shown = current_device
+                .clone()
+                .unwrap_or_else(|| "System default".to_owned());
+            theme::combo("prefs-audio-device", shown, COMBO_W).show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current_device.is_none(), "System default")
+                    .clicked()
+                {
+                    device_pick = Some(None);
+                }
+                // Device enumeration only runs while the list is open, and
+                // never in headless sessions.
+                if list_devices {
+                    for name in crate::audio::AudioEngine::output_devices() {
+                        let on = current_device.as_deref() == Some(name.as_str());
+                        if ui.selectable_label(on, &name).clicked() {
+                            device_pick = Some(Some(name));
+                        }
+                    }
+                }
+            });
+            let note = match (&live_device, &audio_error) {
+                (Some(name), _) if !name.is_empty() => format!("Playing through {name}."),
+                (Some(_), _) => "Audio output ready.".to_owned(),
+                (None, Some(err)) => format!("No audio output: {err}"),
+                (None, None) => "No audio output.".to_owned(),
+            };
+            ui.add(egui::Label::new(RichText::new(note).small().color(pal.text_faint)).truncate());
+            ui.add_space(theme::GAP_M);
+
+            ui.label(theme::kicker_text(pal, "UPDATES"));
+            ui.add_space(theme::GAP_XS);
+            ui.checkbox(&mut auto, "Check for updates automatically");
+            theme::hint(
+                ui,
+                pal,
+                "At launch and once a day. Help ▸ Check for Updates… always works.",
+            );
+
+            button_row(ui, |ui| {
+                if theme::primary_button(ui, pal, "Done").clicked() {
+                    closed = true;
+                }
+            });
+        });
+        if theme_pick != self.theme {
+            self.set_theme(ctx, theme_pick);
+        }
+        if let Some(device) = device_pick {
+            self.set_audio_device(device);
+        }
+        if auto != self.update.prefs.auto_check {
+            self.update.prefs.auto_check = auto;
+            self.store_update_prefs();
+        }
         closed |= enter_pressed(ctx);
         !closed && !resp.should_close()
     }
@@ -1740,6 +1834,49 @@ mod tests {
         check("cadence-new-song", || {
             Dialog::NewSong(NewSongDraft::default())
         });
+        let prefs_h = check("cadence-preferences", || Dialog::Preferences);
+        assert!(
+            prefs_h < 420.0,
+            "preferences dialog stretched to {prefs_h} px"
+        );
+    }
+
+    /// ⌘, opens Preferences; Escape closes it; its controls change the
+    /// live settings without touching the song.
+    #[test]
+    fn preferences_open_with_the_shortcut_and_apply_live() {
+        let mut app = headless();
+        let ctx = Context::default();
+        let mut input = RawInput {
+            modifiers: Modifiers::COMMAND,
+            ..Default::default()
+        };
+        input.events.push(Event::Key {
+            key: Key::Comma,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        });
+        run_frame(&mut app, &ctx, input);
+        assert!(matches!(app.dialog, Dialog::Preferences));
+        for _ in 0..2 {
+            run_frame(&mut app, &ctx, RawInput::default());
+        }
+        assert!(matches!(app.dialog, Dialog::Preferences));
+        assert!(ctx
+            .memory(|m| m.area_rect(egui::Id::new("cadence-preferences")))
+            .is_some());
+
+        // The update checkbox writes the live prefs (headless: never saved).
+        let before = app.update.prefs.auto_check;
+        app.update.prefs.auto_check = !before;
+        run_frame(&mut app, &ctx, RawInput::default());
+        assert_eq!(app.update.prefs.auto_check, !before);
+        assert!(!app.dirty());
+
+        run_frame(&mut app, &ctx, escape_input());
+        assert!(matches!(app.dialog, Dialog::None));
     }
 
     fn close_input() -> RawInput {
