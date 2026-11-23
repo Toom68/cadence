@@ -1483,6 +1483,10 @@ const ARRANGER_SECTIONS: &[Section] = &[
                 Mouse("Drag a clip"),
             ),
             ("Copy", Mouse("{alt}+drag a clip")),
+            (
+                "Move to another track (same kind)",
+                Mouse("Drag a clip up or down"),
+            ),
             ("Fade in / fade out", Mouse("Drag a top corner")),
             ("Loop the clip", Mouse("Drag the right edge")),
             ("Edit its pattern", Mouse("Double-click it")),
@@ -1499,6 +1503,10 @@ const ARRANGER_SECTIONS: &[Section] = &[
                 "Paste here, place a pattern, markers",
                 Mouse("Right-click a lane"),
             ),
+            (
+                "Insert / delete bars",
+                Mouse("Right-click a lane or the ruler"),
+            ),
             ("New track with a sound", Mouse("Drag a library sound in")),
         ],
     },
@@ -1514,9 +1522,10 @@ const ARRANGER_SECTIONS: &[Section] = &[
             ("Clear the loop region", Mouse("Click ✕ next to its bars")),
             ("Add a section marker", Mouse("Double-click the ruler")),
             ("Move a marker", Mouse("Drag its flag")),
+            ("Rename a marker", Mouse("Double-click its flag")),
             (
-                "Rename / delete a marker",
-                Mouse("Double-click / right-click its flag"),
+                "Loop, select, duplicate or delete a section",
+                Mouse("Right-click its flag"),
             ),
             ("Markers and song end", Mouse("Right-click the ruler")),
         ],
@@ -1535,6 +1544,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
         title: "TRACKS",
         rows: &[
             ("Select a track", Mouse("Click its header")),
+            ("Reorder tracks", Mouse("Drag a header up or down")),
             ("Track settings", Mouse("Double-click its header")),
             ("Track height and more", Mouse("Right-click its header")),
             ("Mute / solo", Mouse("Click M / S")),

@@ -17,6 +17,7 @@ Cadence is a multi-track music-making app for Windows and macOS, written in Rust
 
 - **203 bundled instruments** — chiptune, psy-experimental banks, drum kits, guitars, neon leads, one-shot FX, mallets & keys — plus JSON instrument packs, `.sf2` SoundFonts, and `.wav` sample import
 - **Audio lanes** for your own WAV clips — move, loop, and fade them like pattern clips
+- **A real arranger** — drag clips between tracks, reorder tracks by their headers, insert or delete bars anywhere, and loop, select or duplicate whole sections from their markers
 - **A real mixer** — per-track volume/pan/mute/solo, FX, subgroup buses, live peak meters
 - **Local-first and offline** — songs are plain `.cadence` JSON files; crash recovery and autosave protect your work. No account, no subscription, no telemetry
 - **Keeps itself up to date** — install once; new versions download, get signature-checked and install with one click
