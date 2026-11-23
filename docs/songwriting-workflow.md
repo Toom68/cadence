@@ -28,7 +28,7 @@ The left **sidebar** has two tabs — **Instruments** (the library) and **Track*
 
 - The **Library** header folds the list and shows the track count (`n / 32 tracks`). Each sound is a card with a color bar, name, one-line description and a badge (KIT / PACK / FONT); its play button auditions the sound, **+** adds it as a track, double-click adds too, and cards drag straight onto the arranger lanes.
 - A **search** field ("Search sounds…") and a **bank chooser** filter the list — All, Built-in, one section per installed pack, and the SoundFont bank's 16 GM families. **Reset** appears only while a filter is active; sections collapse, and stay open while searching.
-- The footer has **Import pack…**, **Reload** and a folder button (open the packs folder); the SoundFont bank similarly offers **Add a SoundFont…** / **Open SoundFonts folder** — drop `.sf2` files there and they appear within a couple of seconds.
+- The footer has **Import pack…**, **Reload** and a folder button (open the packs folder); the SoundFont bank plays the built-in General MIDI font **Cadence GM (built-in)** out of the box and offers **Open SoundFonts folder** for more — drop `.sf2` files there and they appear within a couple of seconds (**Add a SoundFont…** appears only if no font is available at all).
 - The Track tab's **Add track** button opens the same grouped chooser inline (IN THIS SONG / BUILT-IN / PACKS / SOUNDFONT); **Track → Add Track** does it from the menu, including an **Audio Track** lane for imported WAV clips.
 
 Up to 32 tracks per song. Each track has a name, color, sound, volume, pan, mute/solo, effects and an output route. A new track starts with one empty pattern and a clip at the start of the song. Reorder, duplicate or delete tracks from the inspector's MANAGE section, the header's right-click menu, or the **Track** menu.
@@ -45,7 +45,7 @@ The seven built-in instruments:
 | Warm pad | Slow, wide chords from softly detuned oscillators |
 | Mono lead | A clear monophonic lead with glide and vibrato for hooks |
 
-Beyond the built-ins, tracks can play bundled or user **JSON pack presets**, a **SoundFont** program (`.sf2` files in the user font folder — sampled GM sounds that fall back to the track's preset sound when the font isn't installed), or an imported **WAV sample** (**File → Import Sample…** embeds the clip as a `sample.*` preset). All instruments are synthesized or sampled in-app — no binary plugins (see Limitations in the README).
+Beyond the built-ins, tracks can play bundled or user **JSON pack presets**, a **SoundFont** program (the built-in Cadence GM font or `.sf2` files in the user font folder — sampled GM sounds that fall back to the track's preset sound when the font isn't installed), or an imported **WAV sample** (**File → Import Sample…** embeds the clip as a `sample.*` preset). All instruments are synthesized or sampled in-app — no binary plugins (see Limitations in the README).
 
 ## 4. Write patterns
 
