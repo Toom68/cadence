@@ -266,6 +266,16 @@ struct ClipDrag {
     /// copy's id on the first Alt-copy frame, so the key cannot be derived
     /// from it per frame without splitting one gesture into two undo steps.
     group: String,
+    /// Track-list row of the grabbed clip's lane at press: the pointer's
+    /// row minus this is the lane shift.
+    row: usize,
+    /// Lane shift currently applied to the group (0 = source tracks).
+    lane: i32,
+    /// The project as it was before the group first left its tracks. While
+    /// the group sits on other lanes every frame replays the whole move
+    /// from here, so wandering across lanes (and back) never piles up
+    /// pattern copies. `None` until the first lane change.
+    base: Option<Box<Project>>,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +390,11 @@ enum ContextTarget {
     /// the chord lane): opens the structure menu at the clicked step.
     Ruler {
         step: f64,
+    },
+    /// Right-click on a section-marker flag: the marker's menu (rename,
+    /// loop/select/duplicate its section, delete).
+    Marker {
+        id: u64,
     },
     /// Right-click on an open automation strip's empty area (a point under
     /// the pointer is deleted outright, like a marker) — opens the strip's
@@ -552,6 +567,9 @@ pub(super) struct ArrangerView {
     /// quality)`: a chip auditions once when the pointer enters it, and
     /// again when a click changes its chord.
     chord_hover: Option<(u64, u8, ChordQuality)>,
+    /// A track header being dragged to reorder the lanes: the track and
+    /// the insertion slot (`0..=tracks.len()`) the pointer is over.
+    pub(super) header_drag: Option<(u64, usize)>,
     grid_width: f32,
     /// Last frame's timeline grid rect (also used by headless tests).
     pub(super) grid: Rect,
@@ -586,6 +604,7 @@ impl Default for ArrangerView {
             context: None,
             marker_rename: None,
             chord_hover: None,
+            header_drag: None,
             grid_width: 800.0,
             grid: Rect::NOTHING,
             auto_lanes: HashMap::new(),
@@ -627,6 +646,7 @@ impl ArrangerView {
         self.head_drag = false;
         self.region_press = None;
         self.pan = false;
+        self.header_drag = None;
     }
 
     /// Drops gesture and context state without touching zoom/scroll — used
@@ -1212,10 +1232,7 @@ impl CadenceApp {
     /// Drops the loop region (the song loops whole again), live in the
     /// engine too.
     fn clear_loop_region(&mut self) {
-        self.transport.loop_region = None;
-        if let Some(engine) = &self.engine {
-            engine.set_loop_region(None);
-        }
+        self.set_loop_region(None);
     }
 
     /// Height of a track's whole arranger row: the clip lane plus the
@@ -1501,6 +1518,9 @@ impl CadenceApp {
                                 originals,
                                 originals_audio,
                                 group: format!("clip-drag-{clip}"),
+                                row: ops::track_index(&self.project, track).unwrap_or(0),
+                                lane: 0,
+                                base: None,
                             }));
                         }
                     }
@@ -1613,7 +1633,7 @@ impl CadenceApp {
                     // deep-copied on every pointer move.
                     match d {
                         ArrangerDrag::Clip(mut cd) => {
-                            self.drag_clip_group(&mut cd, pos.x, tl);
+                            self.drag_clip_group(&mut cd, pos, grid, tl);
                             self.arranger.drag = Some(ArrangerDrag::Clip(cd));
                         }
                         ArrangerDrag::Fade { track, clip, edge } => {
@@ -1852,19 +1872,47 @@ impl CadenceApp {
         p.galley(lane.center() - g.size() * 0.5, g, pal.text_faint);
     }
 
-    fn drag_clip_group(&mut self, cd: &mut ClipDrag, x: f32, tl: Timeline) {
+    /// One frame of a clip drag: the group follows the pointer in time and
+    /// — onto compatible lanes ([`ops::can_shift_clip_lanes`]) — across
+    /// tracks. Alt copies the group on the first frame, then the copies
+    /// move. Every frame lands in one coalesced undo step.
+    fn drag_clip_group(&mut self, cd: &mut ClipDrag, pos: Pos2, grid: Rect, tl: Timeline) {
         let g = self.arranger.snap.steps();
-        let target = snap_round(tl.step(x) - cd.grab, g);
+        let target = snap_round(tl.step(pos.x) - cd.grab, g);
         let delta = ops::mixed_group_delta(
             &self.project,
             &cd.originals,
             &cd.originals_audio,
             target - cd.origin,
         );
-        if (delta.abs() <= f64::EPSILON && !cd.moved) || cd.copy_failed {
+        // The pointer's row picks the lane shift; off the lane stack (or on
+        // a lane the group can't land on) the last valid shift holds.
+        let mut dlane = self
+            .lane_row_at(grid.top(), pos.y)
+            .map_or(cd.lane, |(row, _)| row as i32 - cd.row as i32);
+        if dlane != cd.lane {
+            let reference = cd.base.as_deref().unwrap_or(&self.project);
+            if !ops::can_shift_clip_lanes(
+                reference,
+                &cd.originals,
+                &cd.originals_audio,
+                dlane,
+                true,
+            ) {
+                dlane = cd.lane;
+            }
+        }
+        if (delta.abs() <= f64::EPSILON && dlane == 0 && !cd.moved) || cd.copy_failed {
             return;
         }
         let group = cd.group.as_str();
+        let count = cd.originals.len() + cd.originals_audio.len();
+        let label = |copy: bool| match (copy, count) {
+            (true, 1) => "Copy clip",
+            (true, _) => "Copy clips",
+            (false, 1) => "Move clip",
+            (false, _) => "Move clips",
+        };
         if cd.copy && !cd.copied {
             // Borrowed, not cloned: the snapshots ride the drag state and a
             // per-frame deep copy of every selected clip would stall large
@@ -1874,15 +1922,9 @@ impl CadenceApp {
             let originals_audio = &cd.originals_audio;
             let primary_old = cd.clip;
             let mut copied = None;
-            self.edit(
-                if originals.len() + originals_audio.len() == 1 {
-                    "Copy clip"
-                } else {
-                    "Copy clips"
-                },
-                Some(group),
-                |p| copied = ops::copy_mixed_clip_group(p, originals, originals_audio, delta),
-            );
+            self.edit(label(true), Some(group), |p| {
+                copied = ops::copy_mixed_clip_group(p, originals, originals_audio, delta)
+            });
             match copied {
                 Some(ids) => {
                     let primary = originals
@@ -1911,21 +1953,49 @@ impl CadenceApp {
                     return;
                 }
             }
+            if dlane == 0 {
+                cd.moved = true;
+                return;
+            }
+        }
+        // Re-derived: after a fresh copy the group's origin moved with it.
+        let delta = ops::mixed_group_delta(
+            &self.project,
+            &cd.originals,
+            &cd.originals_audio,
+            target - cd.origin,
+        );
+        let originals = &cd.originals;
+        let originals_audio = &cd.originals_audio;
+        if dlane == 0 && cd.base.is_none() {
+            self.edit(label(false), Some(group), |p| {
+                ops::move_clip_group(p, originals, delta);
+                ops::move_audio_clip_group(p, originals_audio, delta);
+            });
         } else {
-            let originals = &cd.originals;
-            let originals_audio = &cd.originals_audio;
-            self.edit(
-                if originals.len() + originals_audio.len() == 1 {
-                    "Move clip"
-                } else {
-                    "Move clips"
-                },
-                Some(group),
-                |p| {
-                    ops::move_clip_group(p, originals, delta);
-                    ops::move_audio_clip_group(p, originals_audio, delta);
-                },
-            );
+            // Across lanes: replay the whole move from the pre-lane state
+            // every frame, so a pattern copied for one lane is gone again
+            // when the pointer moves on.
+            let base: &Project = cd
+                .base
+                .get_or_insert_with(|| Box::new(self.project.clone()));
+            self.edit(label(false), Some(group), |p| {
+                p.clone_from(base);
+                ops::move_clip_group_lanes(p, originals, originals_audio, delta, dlane);
+            });
+            if dlane != cd.lane {
+                cd.lane = dlane;
+                // The grabbed clip's track (and pattern id) may have
+                // changed: keep the header highlight and editor on it.
+                if let Some(track) = self.clip_track_id(cd.clip) {
+                    cd.track = track;
+                    self.sel.track = Some(track);
+                    if let Some(pid) = clip_pattern_id(&self.project, track, cd.clip) {
+                        self.select_pattern(track, pid);
+                    }
+                }
+                self.fix_selection();
+            }
         }
         cd.moved = true;
     }
@@ -2393,14 +2463,14 @@ impl CadenceApp {
                         egui::Button::new("Paste clips here")
                             .shortcut_text(ui.ctx().format_shortcut(&super::SC_PASTE)),
                     )
-                    .on_hover_text("Pastes the copied clips on their own tracks, starting here")
+                    .on_hover_text("Pastes the copied clips here, the topmost one on this track")
                     .on_disabled_hover_text(format!(
                         "Copy clips first ({} on a selection)",
                         ui.ctx().format_shortcut(&super::SC_COPY)
                     ))
                     .clicked()
                 {
-                    self.paste_clips_at(step);
+                    self.paste_clips_at(step, Some(track));
                 }
                 let patterns: Vec<(u64, String)> = ops::track(&self.project, track)
                     .map(|t| t.patterns.iter().map(|p| (p.id, p.name.clone())).collect())
@@ -2466,6 +2536,7 @@ impl CadenceApp {
             // The chord-lane menu is owned by the ruler's own context_menu
             // call (`chord_lane_menu`); the grid's menu can't open it.
             Some(ContextTarget::ChordLane { .. }) => {}
+            Some(ContextTarget::Marker { id }) => self.marker_menu(ui, id),
             Some(ContextTarget::Ruler { step }) => {
                 ui.label(
                     RichText::new(format!("At bar {}", ops::format_position(step).trim()))
@@ -2487,29 +2558,58 @@ impl CadenceApp {
         }
     }
 
-    /// "Paste clips here": the copied clips land back on their own tracks
-    /// with the group's left edge at `step` (where the lane menu opened),
-    /// like the playhead paste in `paste_clips`. One undo step; the copies
-    /// become the selection.
-    fn paste_clips_at(&mut self, step: f64) {
+    /// "Paste clips here": the copied clips land with the group's left edge
+    /// at `step` and the topmost clip on `track` (the lane the menu opened
+    /// on), like ⌘V onto a selected track — see [`Self::paste_clip_snapshots`].
+    fn paste_clips_at(&mut self, step: f64, track: Option<u64>) {
         let Clipboard::Clips(originals, audio) = &self.clipboard else {
             return;
         };
         let (originals, audio) = (originals.clone(), audio.clone());
+        self.paste_clip_snapshots(&originals, &audio, step, track);
+    }
+
+    /// Pastes clip snapshots with the group's left edge at `step`. With a
+    /// `target` track the topmost copied clip lands on it and the others
+    /// keep their lanes relative to it (patterns follow, see
+    /// [`ops::copy_clip_group_lanes`]); without one — or when the group
+    /// can't land there (another lane kind, past the last track, a full
+    /// track) — the copies go back to their own tracks. One undo step; the
+    /// copies become the selection.
+    pub(super) fn paste_clip_snapshots(
+        &mut self,
+        originals: &[(u64, Clip)],
+        audio: &[(u64, AudioClip)],
+        step: f64,
+        target: Option<u64>,
+    ) {
         if originals.is_empty() && audio.is_empty() {
             return;
         }
-        let gone = originals
+        // `copy_mixed_clip_group` checks clip limits atomically but pushes
+        // clips track by track — a track deleted since the copy would
+        // otherwise leave a partial paste behind. Refuse up front instead.
+        let sources: Vec<usize> = originals
             .iter()
             .map(|(t, _)| *t)
             .chain(audio.iter().map(|(t, _)| *t))
-            .any(|t| ops::track(&self.project, t).is_none());
-        if gone {
+            .filter_map(|t| ops::track_index(&self.project, t))
+            .collect();
+        if sources.len() != originals.len() + audio.len() {
             self.set_status(
                 StatusKind::Warning,
                 "Could not paste clips — a track they were copied from is gone.",
             );
             return;
+        }
+        let top = sources.iter().copied().min().unwrap_or(0);
+        let mut dlane = target
+            .and_then(|t| ops::track_index(&self.project, t))
+            .map_or(0, |i| i as i32 - top as i32);
+        let mut fell_back = false;
+        if dlane != 0 && !ops::can_shift_clip_lanes(&self.project, originals, audio, dlane, false) {
+            dlane = 0;
+            fell_back = true;
         }
         let min_start = originals
             .iter()
@@ -2519,13 +2619,19 @@ impl CadenceApp {
         let delta = step - min_start;
         let mut new = None;
         self.edit("Paste clips", None, |p| {
-            new = ops::copy_mixed_clip_group(p, &originals, &audio, delta);
+            new = ops::copy_clip_group_lanes(p, originals, audio, delta, dlane);
         });
         match new {
             Some(ids) => {
                 let primary = ids.first().copied();
                 self.set_clip_selection(ids.into_iter().collect(), primary);
                 self.focus = Focus::Arranger;
+                if fell_back {
+                    self.set_status(
+                        StatusKind::Info,
+                        "Pasted on the clips' own tracks — the selected track can't take them (other track kind, or not enough tracks below it).",
+                    );
+                }
             }
             None => self.clip_limit_status("paste clips"),
         }
@@ -2572,6 +2678,252 @@ impl CadenceApp {
         {
             self.set_song_end(step);
         }
+        self.time_menu(ui, step);
+    }
+
+    /// Insert/delete-time entries of the structure menu: whole bars at the
+    /// bar line nearest `step` (insert) or from the bar holding it (delete),
+    /// plus loop-region variants while a loop region is set. Everything
+    /// after the edit point shifts — see [`ops::insert_time`] and
+    /// [`ops::delete_time`].
+    fn time_menu(&mut self, ui: &mut Ui, step: f64) {
+        let bar = ops::STEPS_PER_BAR as f64;
+        let ins = snap_round(step, bar).max(0.0);
+        let del = snap_floor(step, bar).max(0.0);
+        let counts = |n: u32| {
+            if n == 1 {
+                "1 bar".to_string()
+            } else {
+                format!("{n} bars")
+            }
+        };
+        ui.separator();
+        ui.menu_button(format!("Insert bars at bar {}", bar_number(ins)), |ui| {
+            for n in [1, 2, 4, 8] {
+                if ui
+                    .button(counts(n))
+                    .on_hover_text(
+                        "Everything from here on moves later; clips crossing this bar line are cut",
+                    )
+                    .clicked()
+                {
+                    self.insert_time_at(ins, f64::from(n) * bar, false);
+                }
+            }
+        });
+        ui.menu_button(format!("Delete bars from bar {}", bar_number(del)), |ui| {
+            for n in [1, 2, 4, 8] {
+                if ui
+                    .button(counts(n))
+                    .on_hover_text(
+                        "Removes these bars and closes the gap; clips crossing the edges are cut",
+                    )
+                    .clicked()
+                {
+                    self.delete_time_range(del, del + f64::from(n) * bar);
+                }
+            }
+        });
+        if let Some((a, b)) = self.transport.loop_region {
+            if ui
+                .button("Insert silence for loop")
+                .on_hover_text("Inserts the loop's length of empty time at its start; the loop then plays the new gap")
+                .clicked()
+            {
+                self.insert_time_at(a, b - a, true);
+            }
+            if ui
+                .button("Delete loop region and close gap")
+                .on_hover_text("Removes the looped time; everything after it moves earlier")
+                .clicked()
+            {
+                self.delete_time_range(a, b);
+            }
+        }
+    }
+
+    /// Sets (or clears) the loop region, live in the engine too.
+    pub(super) fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
+        self.transport.loop_region = region;
+        if let Some(engine) = &self.engine {
+            engine.set_loop_region(region);
+        }
+    }
+
+    /// Inserts `len` empty steps at `at` as one undo step; the loop region
+    /// shifts/grows with the song, or — `keep_loop`, for "insert silence for
+    /// loop" — stays put to play the new gap.
+    pub(super) fn insert_time_at(&mut self, at: f64, len: f64, keep_loop: bool) -> bool {
+        let mut ok = false;
+        self.edit("Insert time", None, |p| ok = ops::insert_time(p, at, len));
+        if !ok {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "No room to insert time: songs are limited to {} bars (or a clip couldn't be cut).",
+                    ops::MAX_BARS
+                ),
+            );
+            return false;
+        }
+        if !keep_loop {
+            if let Some(r) = self.transport.loop_region {
+                self.set_loop_region(Some(ops::region_after_insert(r, at, len)));
+            }
+        }
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
+    }
+
+    /// Deletes the steps `[a, b)` and closes the gap as one undo step; the
+    /// loop region maps through the deletion (dropped when nothing of it
+    /// survives).
+    pub(super) fn delete_time_range(&mut self, a: f64, b: f64) -> bool {
+        let mut ok = false;
+        self.edit("Delete time", None, |p| ok = ops::delete_time(p, a, b));
+        if !ok {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not delete that time (a clip crossing its edge couldn't be cut).",
+            );
+            return false;
+        }
+        if let Some(r) = self.transport.loop_region {
+            self.set_loop_region(ops::region_after_delete(r, a, b));
+        }
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
+    }
+
+    /// A section marker's right-click menu. The section runs from the marker
+    /// to the next one (or the song end), see [`ops::section_range`].
+    fn marker_menu(&mut self, ui: &mut Ui, id: u64) {
+        let pal = self.palette();
+        let Some(name) = self
+            .project
+            .markers
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.name.clone())
+        else {
+            ui.close();
+            return;
+        };
+        let range = ops::section_range(&self.project, id);
+        ui.label(
+            RichText::new(match range {
+                Some((a, b)) => format!("{name} · bars {}–{}", bar_number(a), bar_number_end(b)),
+                None => format!("{name} · past the song end"),
+            })
+            .small()
+            .color(pal.text_faint),
+        );
+        if ui
+            .add(egui::Button::new("Rename…").shortcut_text("Double-click"))
+            .clicked()
+        {
+            self.arranger.marker_rename = Some(MarkerRename { id, text: name });
+        }
+        ui.separator();
+        let has = range.is_some();
+        if ui
+            .add_enabled(has, egui::Button::new("Loop this section"))
+            .on_hover_text(
+                "Sets the loop region from this marker to the next one (or the song end)",
+            )
+            .clicked()
+        {
+            self.loop_marker_section(id);
+        }
+        if ui
+            .add_enabled(has, egui::Button::new("Select section clips"))
+            .on_hover_text("Selects every clip that starts inside this section")
+            .clicked()
+        {
+            self.select_section_clips(id);
+        }
+        if ui
+            .add_enabled(has, egui::Button::new("Duplicate section after"))
+            .on_hover_text(
+                "Copies the section's clips, chords and automation right after it; later sections move back to make room",
+            )
+            .clicked()
+        {
+            self.duplicate_marker_section(id);
+        }
+        ui.separator();
+        if ui
+            .button(RichText::new("Delete marker").color(pal.danger))
+            .clicked()
+        {
+            self.edit("Delete marker", None, |p| {
+                ops::delete_marker(p, id);
+            });
+            if self
+                .arranger
+                .marker_rename
+                .as_ref()
+                .is_some_and(|r| r.id == id)
+            {
+                self.arranger.marker_rename = None;
+            }
+        }
+    }
+
+    /// "Loop this section": the marker's section becomes the loop region.
+    pub(super) fn loop_marker_section(&mut self, id: u64) {
+        if let Some(range) = ops::section_range(&self.project, id) {
+            self.set_loop_region(Some(range));
+        }
+    }
+
+    /// "Select section clips": every clip starting inside the section.
+    pub(super) fn select_section_clips(&mut self, id: u64) {
+        let Some((a, b)) = ops::section_range(&self.project, id) else {
+            return;
+        };
+        let ids = ops::clip_ids_starting_in(&self.project, a, b);
+        let n = ids.len();
+        let primary = ids.iter().next().copied();
+        self.set_clip_selection(ids, primary);
+        self.focus = Focus::Arranger;
+        self.set_status(
+            StatusKind::Info,
+            format!("Selected {n} clip{}.", sidebar::plural(n)),
+        );
+    }
+
+    /// "Duplicate section after" as one undo step; the copies become the
+    /// selection and the loop region follows the shifted song.
+    pub(super) fn duplicate_marker_section(&mut self, id: u64) -> bool {
+        let Some((a, b)) = ops::section_range(&self.project, id) else {
+            return false;
+        };
+        let mut new = None;
+        self.edit("Duplicate section", None, |p| {
+            new = ops::duplicate_section(p, id)
+        });
+        let Some(ids) = new else {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "No room to duplicate the section (songs hold up to {} bars and {} note events).",
+                    ops::MAX_BARS,
+                    ops::MAX_SONG_EVENTS
+                ),
+            );
+            return false;
+        };
+        if let Some(r) = self.transport.loop_region {
+            self.set_loop_region(Some(ops::region_after_insert(r, b, b - a)));
+        }
+        let primary = ids.first().copied();
+        self.set_clip_selection(ids.into_iter().collect(), primary);
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
     }
 
     /// Adds a section marker named `name` at `step` (grid-snapped) through
@@ -2673,18 +3025,8 @@ impl CadenceApp {
                         }
                     }
                 } else if let Some(id) = self.marker_at(ui.ctx(), pos, ruler, tl) {
-                    self.arranger.context = None;
-                    self.edit("Delete marker", None, |p| {
-                        ops::delete_marker(p, id);
-                    });
-                    if self
-                        .arranger
-                        .marker_rename
-                        .as_ref()
-                        .is_some_and(|r| r.id == id)
-                    {
-                        self.arranger.marker_rename = None;
-                    }
+                    self.focus = Focus::Arranger;
+                    self.arranger.context = Some(ContextTarget::Marker { id });
                 } else {
                     // Bare seek strip: the ruler's own context menu opens
                     // the structure menu at the clicked step.
@@ -2835,7 +3177,10 @@ impl CadenceApp {
         // instead.
         if matches!(self.arranger.context, Some(ContextTarget::ChordLane { .. })) {
             resp.context_menu(|ui| self.chord_lane_menu(ui));
-        } else if matches!(self.arranger.context, Some(ContextTarget::Ruler { .. })) {
+        } else if matches!(
+            self.arranger.context,
+            Some(ContextTarget::Ruler { .. } | ContextTarget::Marker { .. })
+        ) {
             resp.context_menu(|ui| self.arranger_context_menu(ui));
         }
         // Hovering a chord chip auditions it through the selected track
@@ -3765,7 +4110,7 @@ impl CadenceApp {
             // with the ruler's input handler.
             ui.interact(chip, ui.id().with(("marker_chip", m.id)), Sense::hover())
                 .on_hover_text(format!(
-                    "{}: drag to move · double-click to rename · right-click to delete",
+                    "{}: drag to move · double-click to rename · right-click for the section menu",
                     m.name
                 ));
         }
@@ -3821,6 +4166,60 @@ impl CadenceApp {
         }
     }
 
+    /// Insertion slot (`0..=tracks.len()`) for a lane-reorder drag at
+    /// screen `y`: the gap whose row midpoints bracket it.
+    fn header_slot_at(&self, lanes_top: f32, y: f32) -> usize {
+        let mut edge = lanes_top - self.arranger.scroll_y;
+        for (i, t) in self.project.tracks.iter().enumerate() {
+            let h = self.track_row_height(t.id);
+            if y < edge + h * 0.5 {
+                return i;
+            }
+            edge += h;
+        }
+        self.project.tracks.len()
+    }
+
+    /// Drag-to-reorder by the track header: while a header is dragged an
+    /// accent line marks the gap it would drop into; releasing moves the
+    /// track there as one undo step.
+    fn header_reorder(&mut self, ui: &Ui, header: Rect, grid: Rect, started: Option<u64>) {
+        if let Some(id) = started {
+            self.select_track(id);
+            self.focus = Focus::Arranger;
+            let idx = ops::track_index(&self.project, id).unwrap_or(0);
+            self.arranger.header_drag = Some((id, idx));
+        }
+        let Some((id, slot)) = self.arranger.header_drag else {
+            return;
+        };
+        let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
+        let slot = pointer.map_or(slot, |p| self.header_slot_at(grid.top(), p.y));
+        let Some(idx) = ops::track_index(&self.project, id) else {
+            self.arranger.header_drag = None;
+            return;
+        };
+        if !down {
+            self.arranger.header_drag = None;
+            self.edit("Move track", None, |p| {
+                ops::move_track_to(p, id, slot);
+            });
+            return;
+        }
+        self.arranger.header_drag = Some((id, slot));
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        if slot == idx || slot == idx + 1 {
+            return;
+        }
+        let pal = self.palette();
+        let y = (grid.top() + self.lane_top(slot) - self.arranger.scroll_y)
+            .clamp(grid.top() + 1.0, grid.bottom() - 1.0);
+        let area = Rect::from_min_max(pos2(header.left(), grid.top()), grid.max);
+        let p = ui.painter_at(area);
+        p.hline(area.x_range(), y, Stroke::new(2.0_f32, pal.accent));
+        p.circle_filled(pos2(header.left() + 5.0, y), 3.5, pal.accent);
+    }
+
     fn lane_headers(&mut self, ui: &mut Ui, header: Rect, grid: Rect) {
         let pal = self.palette();
         let mut hui = ui.new_child(UiBuilder::new().max_rect(header));
@@ -3832,6 +4231,7 @@ impl CadenceApp {
         let sub_font = theme::body_font(theme::TEXT_SMALL);
         let mut action: Option<(u64, &str)> = None;
         let mut new_height: Option<f32> = None;
+        let mut drag_start: Option<u64> = None;
         let mut y = grid.top() + self.lane_top(first) - self.arranger.scroll_y;
         for i in first..self.project.tracks.len() {
             if y > header.bottom() {
@@ -3843,7 +4243,15 @@ impl CadenceApp {
             let r = Rect::from_min_size(pos2(header.left(), y), vec2(HEADER_W, row_h));
             y += row_h;
             let lane = Rect::from_min_size(r.min, vec2(HEADER_W, lane_h));
-            let resp = hui.interact(r, hui.id().with(("lane_header", id)), Sense::click());
+            // Click-and-drag: a drag on the header reorders the lanes.
+            let resp = hui.interact(
+                r,
+                hui.id().with(("lane_header", id)),
+                Sense::click_and_drag(),
+            );
+            if resp.drag_started_by(PointerButton::Primary) {
+                drag_start = Some(id);
+            }
             let selected = self.sel.track == Some(id);
             let color = theme::rgb(track.color);
             let audible = self.project.is_track_audible(i);
@@ -3990,7 +4398,7 @@ impl CadenceApp {
                 }
             }
             let tip = format!(
-                "{}\n{}\nDouble-click for track settings · right-click for more",
+                "{}\n{}\nDouble-click for track settings · drag to reorder · right-click for more",
                 track.name, instrument
             );
             let resp = resp.on_hover_text(tip);
@@ -4094,6 +4502,7 @@ impl CadenceApp {
         if let Some(h) = new_height {
             self.arranger.set_lane_height(h, 0.0);
         }
+        self.header_reorder(ui, header, grid, drag_start);
         if let Some((id, what)) = action {
             self.focus = Focus::Arranger;
             match what {
@@ -5562,6 +5971,397 @@ mod tests {
         );
     }
 
+    /// Presses at `path[0]`, moves through the rest one frame per point and
+    /// releases at the last point, with `modifiers` held throughout.
+    fn pointer_drag(
+        ctx: &egui::Context,
+        app: &mut CadenceApp,
+        size: egui::Vec2,
+        path: &[Pos2],
+        modifiers: Modifiers,
+    ) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        let first = path[0];
+        run_frames(
+            ctx,
+            app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(first), button(first, true)],
+            modifiers,
+        );
+        for &p in &path[1..] {
+            run_frames(
+                ctx,
+                app,
+                size,
+                1,
+                vec![egui::Event::PointerMoved(p)],
+                modifiers,
+            );
+        }
+        let last = *path.last().unwrap();
+        run_frames(ctx, app, size, 1, vec![button(last, false)], modifiers);
+        run_frames(ctx, app, size, 1, Vec::new(), Modifiers::NONE);
+    }
+
+    /// Two drum lanes then a piano lane, each with its default clip on bar 1
+    /// (track 0's at bar 2), laid out and ready for pointer gestures.
+    fn lanes_app(ctx: &egui::Context, size: egui::Vec2) -> CadenceApp {
+        let mut project = Project::empty();
+        project.tracks = vec![
+            crate::model::create_track(Instrument::Drums),
+            crate::model::create_track(Instrument::Drums),
+            crate::model::create_track(Instrument::Piano),
+        ];
+        project.tracks[0].clips[0].start = 16.0;
+        project.tracks[0].patterns[0]
+            .notes
+            .push(crate::model::Note::new(36, 0.0, 1.0, 0.8));
+        let mut app = CadenceApp::headless(project);
+        app.arranger.snap = Snap::Step;
+        run_frames(ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        app
+    }
+
+    /// Screen point over `step` on lane `row` (no automation strips open).
+    fn lane_point(app: &CadenceApp, step: f64, row: usize) -> Pos2 {
+        let grid = app.arranger.grid;
+        let tl = app.arranger.timeline(grid);
+        pos2(
+            tl.x(step),
+            grid.top() + app.arranger.lane_h * (row as f32 + 0.6) - app.arranger.scroll_y,
+        )
+    }
+
+    #[test]
+    fn dragging_a_clip_onto_another_lane_moves_it_and_its_pattern() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let before = app.project.clone();
+        let clip = app.project.tracks[0].clips[0].id;
+        let pid = app.project.tracks[0].clips[0].pattern_id;
+        let (t0, t1) = (app.project.tracks[0].id, app.project.tracks[1].id);
+        // Wander down onto the piano lane (refused: it holds the last valid
+        // lane), back to the second drum lane, and drop it there.
+        let path = [
+            lane_point(&app, 20.0, 0),
+            lane_point(&app, 24.0, 0),
+            lane_point(&app, 28.0, 1),
+            lane_point(&app, 28.0, 2),
+            lane_point(&app, 36.0, 1),
+        ];
+        pointer_drag(&ctx, &mut app, size, &path, Modifiers::NONE);
+        let t = ops::track(&app.project, t1).unwrap();
+        let moved = t.clips.iter().find(|c| c.id == clip).expect("on track 2");
+        assert_eq!(moved.start, 32.0, "time follows the pointer too");
+        assert_eq!(
+            ops::pattern(t, moved.pattern_id).map(|p| p.notes.len()),
+            Some(1),
+            "the pattern travelled with it"
+        );
+        let src = ops::track(&app.project, t0).unwrap();
+        assert!(src.clips.is_empty() && ops::pattern(src, pid).is_none());
+        assert_eq!(t.patterns.len(), 2, "one pattern, not one per frame");
+        assert_eq!(app.sel.track, Some(t1));
+        app.project.validate().unwrap();
+        app.undo();
+        assert_eq!(app.project, before, "the whole drag is one undo step");
+    }
+
+    #[test]
+    fn clip_drags_never_land_on_another_lane_kind() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let t2 = app.project.tracks[2].id;
+        let clip = app.project.tracks[2].clips[0].id;
+        // Piano clip dragged up over both drum lanes stays on its track.
+        let path = [
+            lane_point(&app, 4.0, 2),
+            lane_point(&app, 8.0, 1),
+            lane_point(&app, 8.0, 0),
+        ];
+        pointer_drag(&ctx, &mut app, size, &path, Modifiers::NONE);
+        let t = ops::track(&app.project, t2).unwrap();
+        assert_eq!(t.clips.iter().find(|c| c.id == clip).unwrap().start, 4.0);
+        app.project.validate().unwrap();
+    }
+
+    #[test]
+    fn alt_dragging_a_clip_onto_another_lane_copies_it_there() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let clip = app.project.tracks[0].clips[0].id;
+        let pid = app.project.tracks[0].clips[0].pattern_id;
+        let path = [
+            lane_point(&app, 20.0, 0),
+            lane_point(&app, 24.0, 0),
+            lane_point(&app, 24.0, 1),
+        ];
+        pointer_drag(&ctx, &mut app, size, &path, Modifiers::ALT);
+        let t0 = &app.project.tracks[0];
+        assert_eq!(t0.clips.len(), 1, "the original stays");
+        assert_eq!((t0.clips[0].id, t0.clips[0].start), (clip, 16.0));
+        assert!(ops::pattern(t0, pid).is_some());
+        let t1 = &app.project.tracks[1];
+        assert_eq!(t1.clips.len(), 2, "the copy joined track 2");
+        let copy = t1.clips.iter().find(|c| c.start == 20.0).expect("copy");
+        assert!(app.sel.clips.contains(&copy.id));
+        app.project.validate().unwrap();
+        app.undo();
+        assert_eq!(app.project.tracks[1].clips.len(), 1);
+    }
+
+    #[test]
+    fn paste_targets_the_selected_track_and_falls_back_to_the_source() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let (t0, t1, t2) = (
+            app.project.tracks[0].id,
+            app.project.tracks[1].id,
+            app.project.tracks[2].id,
+        );
+        let clip = app.project.tracks[0].clips[0].id;
+        app.set_single_clip_selection(clip);
+        app.focus = Focus::Arranger;
+        app.copy_selection();
+        let Clipboard::Clips(o, a) = app.clipboard.clone() else {
+            panic!("clips copied");
+        };
+        // Another drum track selected: the copy lands there, pattern too.
+        app.select_track(t1);
+        app.transport.position = 32.0;
+        app.paste_clips(&o, &a);
+        let t = ops::track(&app.project, t1).unwrap();
+        let copy = t
+            .clips
+            .iter()
+            .find(|c| c.start == 32.0)
+            .expect("on track 2");
+        assert_eq!(
+            ops::pattern(t, copy.pattern_id).map(|p| p.notes.len()),
+            Some(1)
+        );
+        assert_eq!(app.sel.clip, Some(copy.id));
+        assert_eq!(app.sel.track, Some(t1));
+        // A piano track can't take a drum clip: back to the source track.
+        app.select_track(t2);
+        app.transport.position = 48.0;
+        app.paste_clips(&o, &a);
+        let src = ops::track(&app.project, t0).unwrap();
+        assert!(src.clips.iter().any(|c| c.start == 48.0));
+        assert_eq!(ops::track(&app.project, t2).unwrap().clips.len(), 1);
+        // The source track itself selected: plain paste in place.
+        app.select_track(t0);
+        app.transport.position = 64.0;
+        app.paste_clips(&o, &a);
+        assert!(ops::track(&app.project, t0)
+            .unwrap()
+            .clips
+            .iter()
+            .any(|c| c.start == 64.0));
+        // Without arranger focus the selected track is ignored.
+        app.select_track(t1);
+        app.focus = Focus::Editor;
+        app.transport.position = 80.0;
+        app.paste_clips(&o, &a);
+        assert!(ops::track(&app.project, t0)
+            .unwrap()
+            .clips
+            .iter()
+            .any(|c| c.start == 80.0));
+        app.project.validate().unwrap();
+        // "Paste clips here" always lands on the clicked lane.
+        app.paste_clips_at(96.0, Some(t1));
+        assert!(ops::track(&app.project, t1)
+            .unwrap()
+            .clips
+            .iter()
+            .any(|c| c.start == 96.0));
+        app.project.validate().unwrap();
+    }
+
+    #[test]
+    fn dragging_a_track_header_reorders_the_lanes_in_one_undo_step() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = lanes_app(&ctx, size);
+        let ids: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        let header_x = app.arranger.grid.left() - HEADER_W + 40.0;
+        let at = |app: &CadenceApp, row: f32| {
+            pos2(
+                header_x,
+                app.arranger.grid.top() + app.arranger.lane_h * row,
+            )
+        };
+        let path = [at(&app, 0.5), at(&app, 1.2), at(&app, 2.0), at(&app, 2.8)];
+        pointer_drag(&ctx, &mut app, size, &path, Modifiers::NONE);
+        let now: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(
+            now,
+            vec![ids[1], ids[2], ids[0]],
+            "dropped below the last lane"
+        );
+        assert_eq!(app.sel.track, Some(ids[0]));
+        assert_eq!(app.arranger.header_drag, None);
+        app.undo();
+        let now: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(now, ids, "one undo step");
+        // A plain click still just selects the track.
+        // (A frame first: the undo's status message relays the panels.)
+        run_frames(&ctx, &mut app, size, 2, Vec::new(), Modifiers::NONE);
+        let click = at(&app, 1.5);
+        pointer_drag(&ctx, &mut app, size, &[click], Modifiers::NONE);
+        assert_eq!(app.sel.track, Some(ids[1]));
+        let now: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(now, ids);
+    }
+
+    #[test]
+    fn time_edits_shift_the_song_and_the_loop_region_and_undo_in_one_step() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let before = app.project.clone();
+        let tid = app.project.tracks[0].id;
+        let starts = |app: &CadenceApp| -> Vec<f64> {
+            ops::track(&app.project, tid)
+                .unwrap()
+                .clips
+                .iter()
+                .map(|c| c.start)
+                .collect()
+        };
+        let original = starts(&app);
+        app.transport.loop_region = Some((32.0, 64.0));
+        // Two bars at bar 1: everything moves, the loop follows.
+        assert!(app.insert_time_at(0.0, 32.0, false));
+        let moved: Vec<f64> = original.iter().map(|s| s + 32.0).collect();
+        assert_eq!(starts(&app), moved);
+        assert_eq!(app.project.bars, before.bars + 2);
+        assert_eq!(app.transport.loop_region, Some((64.0, 96.0)));
+        app.project.validate().unwrap();
+        app.undo();
+        assert_eq!(app.project, before, "one undo step");
+        // "Insert silence for loop" keeps the loop on the new gap.
+        app.transport.loop_region = Some((32.0, 64.0));
+        assert!(app.insert_time_at(32.0, 32.0, true));
+        assert_eq!(app.transport.loop_region, Some((32.0, 64.0)));
+        let in_gap = app
+            .project
+            .tracks
+            .iter()
+            .any(|t| t.clips.iter().any(|c| c.start >= 32.0 && c.start < 64.0));
+        assert!(!in_gap, "the gap is empty");
+        // Deleting the loop region closes the gap and drops the region.
+        assert!(app.delete_time_range(32.0, 64.0));
+        assert_eq!(app.transport.loop_region, None);
+        assert_eq!(app.project.bars, before.bars);
+        assert_eq!(starts(&app), original, "back where it started");
+        app.project.validate().unwrap();
+        // Refused edits leave the song alone and explain why.
+        let now = app.project.clone();
+        assert!(!app.insert_time_at(16.0, ops::MAX_SONG_STEPS, false));
+        assert_eq!(app.project, now);
+    }
+
+    #[test]
+    fn marker_right_click_opens_its_menu_instead_of_deleting() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        let id = app.add_marker_named(32.0, "Verse".to_string()).unwrap();
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let grid = app.arranger.grid;
+        let tl = app.arranger.timeline(grid);
+        let flag = pos2(
+            tl.x(32.0) + 8.0,
+            grid.top() - RULER_H + LOOP_LANE_H + MARKER_LANE_H * 0.5,
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: flag,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(flag), button(true)],
+            Modifiers::NONE,
+        );
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            2,
+            vec![button(false)],
+            Modifiers::NONE,
+        );
+        assert!(
+            app.project.markers.iter().any(|m| m.id == id),
+            "right-click no longer deletes"
+        );
+        assert!(matches!(
+            app.arranger.context,
+            Some(ContextTarget::Marker { id: m }) if m == id
+        ));
+    }
+
+    #[test]
+    fn marker_section_menu_loops_selects_and_duplicates() {
+        let mut app = CadenceApp::headless(Project::demo());
+        app.arranger.snap = Snap::Bar;
+        app.project.markers.clear();
+        let verse = app.add_marker_named(0.0, "Verse".to_string()).unwrap();
+        app.add_marker_named(64.0, "Chorus".to_string()).unwrap();
+        app.loop_marker_section(verse);
+        assert_eq!(app.transport.loop_region, Some((0.0, 64.0)));
+        app.select_section_clips(verse);
+        let picked = app.selected_clip_ids();
+        let expected = ops::clip_ids_starting_in(&app.project, 0.0, 64.0);
+        assert!(!picked.is_empty());
+        assert_eq!(picked, expected);
+        let before = app.project.clone();
+        let events = app.project.events(false).len();
+        assert!(app.duplicate_marker_section(verse));
+        app.project.validate().unwrap();
+        assert_eq!(app.project.bars, before.bars + 4);
+        let names: Vec<(&str, f64)> = app
+            .project
+            .markers
+            .iter()
+            .map(|m| (m.name.as_str(), m.step))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("Verse", 0.0), ("Verse 2", 64.0), ("Chorus", 128.0)]
+        );
+        // The copy plays the section's notes a second time.
+        let in_verse = before
+            .events(false)
+            .iter()
+            .filter(|e| e.step < 64.0)
+            .count();
+        assert_eq!(app.project.events(false).len(), events + in_verse);
+        assert!(
+            !app.selected_clip_ids().is_empty(),
+            "the copies are selected"
+        );
+        assert_eq!(app.transport.loop_region, Some((0.0, 64.0)));
+        app.undo();
+        assert_eq!(app.project, before, "one undo step");
+    }
+
     /// The demo song with every optional toolbar item showing: a loop
     /// region and a multi-clip selection.
     fn busy_demo() -> CadenceApp {
@@ -5866,7 +6666,7 @@ mod tests {
         app.set_single_clip_selection(clip);
         app.focus = Focus::Arranger;
         app.copy_selection();
-        app.paste_clips_at(64.0);
+        app.paste_clips_at(64.0, Some(tid));
         let t = &app.project.tracks[0];
         assert_eq!(t.clips.len(), 2);
         let new = t.clips.iter().find(|c| c.id != clip).unwrap();
