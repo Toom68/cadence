@@ -394,6 +394,8 @@ pub struct Renderer {
     panic_len: usize,
     peak_l: f32,
     peak_r: f32,
+    /// Offline loudness-normalization gain ahead of the limiter (1 = off).
+    out_gain: f32,
     /// Smoothed mean-square power of the output (metered renders only).
     rms_power: f32,
     rms_coef: f32,
@@ -448,6 +450,7 @@ impl Renderer {
             panic_len: ((PANIC_SECONDS * sr) as usize).max(1),
             peak_l: 0.0,
             peak_r: 0.0,
+            out_gain: 1.0,
             rms_power: 0.0,
             rms_coef: 1.0 - time_coef(RMS_SECONDS, sr),
             font_bank: FontBank::new(sr, Arc::new(FontLibrary::empty())),
@@ -534,6 +537,17 @@ impl Renderer {
 
     pub fn latency(&self) -> usize {
         self.limiter.latency()
+    }
+
+    /// Linear gain applied after the glue and before the limiter, so the
+    /// -1 dBFS ceiling still holds. Offline loudness normalization only;
+    /// 1.0 (the default) leaves the signal untouched.
+    pub fn set_output_gain(&mut self, gain: f32) {
+        self.out_gain = if gain.is_finite() && gain > 0.0 {
+            gain
+        } else {
+            1.0
+        };
     }
 
     /// No voices and no effect tails left.
@@ -1283,6 +1297,13 @@ impl Renderer {
         }
         self.glue
             .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
+        if self.out_gain != 1.0 {
+            let g = self.out_gain;
+            for (ml, mr) in self.mix_l[..n].iter_mut().zip(self.mix_r[..n].iter_mut()) {
+                *ml *= g;
+                *mr *= g;
+            }
+        }
         self.limiter
             .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
 

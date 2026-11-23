@@ -1,6 +1,7 @@
 //! Offline rendering through exactly the same [`Renderer`] used for live playback, and
 //! streaming 16-bit WAV export with effect tails.
 
+use super::loudness::LoudnessMeter;
 use super::renderer::{Renderer, MAX_BLOCK};
 use super::song::SongData;
 use crate::audio::dsp::Rng;
@@ -40,21 +41,28 @@ struct OfflineRender {
     fade_from: Option<u64>,
 }
 
+/// Validates `project` and builds its render snapshot plus, when a track
+/// references a SoundFont, the font catalog.
+fn prepare(project: &Project) -> Result<(SongData, Option<Arc<FontLibrary>>), String> {
+    project
+        .validate()
+        .map_err(|e| format!("Cannot render this song: {e}"))?;
+    // Font tracks need the catalog; parsing .sf2 files is too slow to do
+    // unconditionally, so load only when the song actually references one.
+    // Missing fonts fall back to each track's preset/built-in sound.
+    let fonts = project
+        .tracks
+        .iter()
+        .any(|t| t.font.is_some())
+        .then(|| Arc::new(crate::font::load_library()));
+    Ok((SongData::from_project(project), fonts))
+}
+
 impl OfflineRender {
     fn new(project: &Project, sample_rate: u32, max_seconds: f64) -> Result<Self, String> {
-        project
-            .validate()
-            .map_err(|e| format!("Cannot render this song: {e}"))?;
-        // Font tracks need the catalog; parsing .sf2 files is too slow to do
-        // unconditionally, so load only when the song actually references one.
-        // Missing fonts fall back to each track's preset/built-in sound.
-        let fonts = project
-            .tracks
-            .iter()
-            .any(|t| t.font.is_some())
-            .then(|| Arc::new(crate::font::load_library()));
+        let (song, fonts) = prepare(project)?;
         Ok(Self::from_song(
-            SongData::from_project(project),
+            song,
             project.duration_seconds(),
             fonts,
             sample_rate,
@@ -209,10 +217,12 @@ fn to_i16(x: f32, rng: &mut Rng) -> i16 {
 /// Streams an in-progress render to `path` as a 16-bit stereo WAV at `sample_rate` via a
 /// temporary sibling renamed into place only on success. Shared by [`export_wav`] and
 /// [`export_stems`]; `progress` receives monotonically increasing values in 0..=1.
+/// `meter`, when given, measures the exact float signal that is written.
 fn write_rendered_wav(
     job: &mut OfflineRender,
     path: &Path,
     sample_rate: u32,
+    mut meter: Option<&mut LoudnessMeter>,
     mut progress: impl FnMut(f32),
 ) -> Result<(), String> {
     let tmp = partial_path(path);
@@ -234,6 +244,9 @@ fn write_rendered_wav(
             let n = job.next(&mut l, &mut r);
             if n == 0 {
                 break;
+            }
+            if let Some(m) = meter.as_deref_mut() {
+                m.push(&l[..n], &r[..n]);
             }
             for (&sl, &sr) in l[..n].iter().zip(r[..n].iter()) {
                 writer
@@ -271,9 +284,143 @@ fn write_rendered_wav(
 /// streamed to a temporary sibling and renamed into place only on success. `progress`
 /// receives monotonically increasing values in 0..=1, ending with 1.0.
 pub fn export_wav(project: &Project, path: &Path, progress: impl FnMut(f32)) -> Result<(), String> {
-    let max_seconds = project.duration_seconds() + MAX_TAIL_SECONDS;
-    let mut job = OfflineRender::new(project, EXPORT_SAMPLE_RATE, max_seconds)?;
-    write_rendered_wav(&mut job, path, EXPORT_SAMPLE_RATE, progress)
+    export_wav_with(project, path, WavExportOptions::default(), progress).map(|_| ())
+}
+
+/// Choices for [`export_wav_with`]. The default is a plain export of the mix
+/// exactly as it plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WavExportOptions {
+    /// Normalize the mix to this integrated loudness in LUFS (clamped to
+    /// [`MIN_TARGET_LUFS`]..=[`MAX_TARGET_LUFS`]); `None` exports as mixed.
+    pub normalize_lufs: Option<f32>,
+}
+
+/// What a finished [`export_wav_with`] wrote.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WavExportReport {
+    /// Integrated loudness (BS.1770, LUFS) of the written audio; `None` when
+    /// it is silent.
+    pub integrated_lufs: Option<f64>,
+    /// Normalization gain applied ahead of the limiter, in dB (0 when off).
+    pub gain_db: f32,
+}
+
+/// Quietest and loudest normalization targets accepted.
+pub const MIN_TARGET_LUFS: f32 = -30.0;
+pub const MAX_TARGET_LUFS: f32 = -6.0;
+/// Most the normalizer will boost a quiet mix (keeps near-silence from
+/// being dragged up into hiss) and cut a loud one.
+const MAX_BOOST_DB: f64 = 24.0;
+const MAX_CUT_DB: f64 = -40.0;
+/// Measurement renders spent finding the gain (the first is at 0 dB).
+const MAX_MEASURE_PASSES: usize = 4;
+/// Close enough: stop refining once a pass lands this near the target.
+const NORMALIZE_TOLERANCE_LU: f64 = 0.1;
+/// Share of the progress bar the measurement passes use.
+const MEASURE_SHARE: f32 = 0.5;
+
+/// Renders a whole job into the loudness meter without writing anything.
+fn measure_pass(job: &mut OfflineRender, mut progress: impl FnMut(f32)) -> Option<f64> {
+    let mut meter = LoudnessMeter::new(job.sample_rate as u32);
+    let mut l = [0.0f32; MAX_BLOCK];
+    let mut r = [0.0f32; MAX_BLOCK];
+    let mut reported = -1.0f32;
+    loop {
+        let n = job.next(&mut l, &mut r);
+        if n == 0 {
+            break;
+        }
+        meter.push(&l[..n], &r[..n]);
+        let p = job.progress();
+        if p - reported >= 0.01 {
+            reported = p;
+            progress(p);
+        }
+    }
+    meter.integrated_lufs()
+}
+
+/// Finds the pre-limiter gain (dB) that brings the render to `target` LUFS.
+/// `measure(gain_db, pass)` renders and measures. Below the limiter the
+/// relation is exact (one verification pass); when the boost drives the
+/// -1 dBFS limiter the loudness grows more slowly than the gain, so a few
+/// secant steps close in. The result never exceeds the ceiling — the
+/// limiter still runs after the gain — so a mix that cannot get that loud
+/// lands as close as the ceiling allows (capped at `MAX_BOOST_DB`).
+fn normalization_gain(target: f64, mut measure: impl FnMut(f64, usize) -> Option<f64>) -> f64 {
+    let Some(first) = measure(0.0, 0) else {
+        return 0.0; // Silence: nothing to normalize.
+    };
+    let clamp = |g: f64| g.clamp(MAX_CUT_DB, MAX_BOOST_DB);
+    let mut prev = (0.0, first);
+    let mut gain = clamp(target - first);
+    for pass in 1..MAX_MEASURE_PASSES {
+        if (gain - prev.0).abs() < 0.01 {
+            break;
+        }
+        let Some(level) = measure(gain, pass) else {
+            break;
+        };
+        let err = target - level;
+        if err.abs() <= NORMALIZE_TOLERANCE_LU {
+            break;
+        }
+        let slope = ((level - prev.1) / (gain - prev.0)).clamp(0.05, 1.0);
+        prev = (gain, level);
+        gain = clamp(gain + err / slope);
+    }
+    gain
+}
+
+/// [`export_wav`] with options. With `normalize_lufs` set, the song is first
+/// rendered (without writing) to measure its integrated loudness per ITU-R
+/// BS.1770 (K-weighting, 400 ms blocks, absolute and relative gates), then
+/// rendered again with a gain ahead of the master limiter so the file lands
+/// on the target — the -1 dBFS ceiling is never exceeded. Rendering is
+/// deterministic, so every pass sees identical audio. Returns what the
+/// written file measures.
+pub fn export_wav_with(
+    project: &Project,
+    path: &Path,
+    options: WavExportOptions,
+    mut progress: impl FnMut(f32),
+) -> Result<WavExportReport, String> {
+    let (song, fonts) = prepare(project)?;
+    let seconds = project.duration_seconds();
+    let max_seconds = seconds + MAX_TAIL_SECONDS;
+    let sr = EXPORT_SAMPLE_RATE;
+    let job = |gain_db: f64| {
+        let mut job =
+            OfflineRender::from_song(song.clone(), seconds, fonts.clone(), sr, max_seconds);
+        job.renderer
+            .set_output_gain(10f64.powf(gain_db / 20.0) as f32);
+        job
+    };
+    let (gain_db, write_from) = match options.normalize_lufs {
+        Some(target) => {
+            let target = if target.is_finite() {
+                target.clamp(MIN_TARGET_LUFS, MAX_TARGET_LUFS)
+            } else {
+                crate::audio::loudness::DEFAULT_TARGET_LUFS
+            };
+            progress(0.0);
+            let span = MEASURE_SHARE / MAX_MEASURE_PASSES as f32;
+            let gain = normalization_gain(f64::from(target), |gain, pass| {
+                measure_pass(&mut job(gain), |p| progress(span * (pass as f32 + p)))
+            });
+            (gain, MEASURE_SHARE)
+        }
+        None => (0.0, 0.0),
+    };
+    let mut meter = LoudnessMeter::new(sr);
+    write_rendered_wav(&mut job(gain_db), path, sr, Some(&mut meter), |p| {
+        progress(write_from + (1.0 - write_from) * p);
+    })?;
+    Ok(WavExportReport {
+        integrated_lufs: meter.integrated_lufs(),
+        gain_db: gain_db as f32,
+    })
 }
 
 /// Why track `index` gets no stem: the mixdown's gate is honoured exactly, in the same
@@ -398,7 +545,7 @@ pub fn export_stems(
         let mut job =
             OfflineRender::from_song(stem, seconds, fonts.clone(), sample_rate, max_seconds);
         let base = k as f32 / count;
-        write_rendered_wav(&mut job, path, sample_rate, |p| {
+        write_rendered_wav(&mut job, path, sample_rate, None, |p| {
             progress((base + p / count).clamp(0.0, 1.0));
         })?;
         written.push(path.clone());
@@ -633,6 +780,118 @@ mod tests {
         invalid.bpm = f64::NAN;
         assert!(export_wav(&invalid, &path, |_| {}).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn read_wav(path: &Path) -> (Vec<f32>, Vec<f32>) {
+        let mut reader = hound::WavReader::open(path).unwrap();
+        let s: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|x| x.unwrap() as f32 / 32768.0)
+            .collect();
+        s.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip()
+    }
+
+    fn file_lufs(path: &Path) -> Option<f64> {
+        let (l, r) = read_wav(path);
+        let mut m = LoudnessMeter::new(EXPORT_SAMPLE_RATE);
+        m.push(&l, &r);
+        m.integrated_lufs()
+    }
+
+    #[test]
+    fn loudness_normalized_export_hits_the_target_under_the_ceiling() {
+        let dir = std::env::temp_dir().join(format!("cadence-lufs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("norm.wav");
+        let mut p = two_track_song();
+        p.bars = 2;
+        p.tracks[0].patterns[0].length = 32;
+        p.tracks[0].patterns[0].notes = vec![
+            Note::new(60, 0.0, 8.0, 0.9),
+            Note::new(64, 8.0, 8.0, 0.8),
+            Note::new(67, 16.0, 12.0, 0.9),
+        ];
+        p.validate().unwrap();
+        let options = WavExportOptions {
+            normalize_lufs: Some(crate::audio::DEFAULT_TARGET_LUFS),
+        };
+        // A hot master needs a cut; a quiet one a boost into the limiter.
+        for master in [1.0, 0.6] {
+            p.master_volume = master;
+            let mut seen = Vec::new();
+            let report = export_wav_with(&p, &path, options, |x| seen.push(x)).unwrap();
+            assert!(seen.windows(2).all(|w| w[1] >= w[0]), "monotonic progress");
+            assert_eq!(*seen.last().unwrap(), 1.0);
+            let lufs = file_lufs(&path).unwrap();
+            assert!(
+                (lufs + 14.0).abs() <= 0.5,
+                "master {master}: {lufs} LUFS (gain {} dB)",
+                report.gain_db
+            );
+            assert!((report.integrated_lufs.unwrap() - lufs).abs() < 0.1);
+            let (l, r) = read_wav(&path);
+            let peak = l.iter().chain(&r).fold(0.0f32, |m, x| m.max(x.abs()));
+            assert!(
+                peak <= crate::audio::dsp::Limiter::CEILING + 2.0 / 32768.0,
+                "master {master}: peak {peak} over -1 dBFS"
+            );
+            if master < 1.0 {
+                assert!(report.gain_db > 0.0, "quiet mix is boosted");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn plain_export_is_unchanged_and_silence_is_not_normalized() {
+        let dir = std::env::temp_dir().join(format!("cadence-plain-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+        let p = two_track_song();
+        export_wav(&p, &a, |_| {}).unwrap();
+        let report = export_wav_with(&p, &b, WavExportOptions::default(), |_| {}).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+        assert_eq!(report.gain_db, 0.0);
+        assert!(report
+            .integrated_lufs
+            .is_some_and(|l| l < -6.0 && l > -40.0));
+        let mut silent = p.clone();
+        for t in &mut silent.tracks {
+            t.mute = true;
+        }
+        let options = WavExportOptions {
+            normalize_lufs: Some(-14.0),
+        };
+        let report = export_wav_with(&silent, &b, options, |_| {}).unwrap();
+        assert_eq!(report.gain_db, 0.0);
+        assert_eq!(report.integrated_lufs, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalization_gain_converges_through_a_compressive_curve() {
+        // Linear region: one verification pass.
+        let mut calls = 0;
+        let g = normalization_gain(-14.0, |g, _| {
+            calls += 1;
+            Some(-20.0 + g)
+        });
+        assert!((g - 6.0).abs() < 1e-9 && calls == 2);
+        // Above -16 LUFS only a third of the gain comes through (limiter).
+        let curve = |g: f64| {
+            let x = -22.0 + g;
+            Some(if x > -16.0 {
+                -16.0 + (x + 16.0) / 3.0
+            } else {
+                x
+            })
+        };
+        let g = normalization_gain(-14.0, |g, _| curve(g));
+        assert!((curve(g).unwrap() + 14.0).abs() < 0.3, "gain {g}");
+        // An unreachable target stops at the boost cap.
+        let g = normalization_gain(-14.0, |g, _| Some(-60.0 + g * 0.01));
+        assert_eq!(g, MAX_BOOST_DB);
+        assert_eq!(normalization_gain(-14.0, |_, _| None), 0.0);
     }
 
     /// One bar: a piano track ("Keys/Lead") plus a bass track, one note each.
