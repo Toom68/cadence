@@ -1618,6 +1618,10 @@ const EDITOR_SECTIONS: &[Section] = &[
                 Menu("Menus on the Chords row"),
             ),
             ("Tint the key's notes in the roll", Mouse("Click Scale")),
+            (
+                "Tint the chord lane's notes per chord",
+                Mouse("Click Chord tones"),
+            ),
         ],
     },
     Section {

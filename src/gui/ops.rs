@@ -968,6 +968,24 @@ pub fn chord_event_at_step(project: &Project, step: f64) -> Option<u64> {
         .map(|ev| ev.id)
 }
 
+/// The chord-lane chords sounding during song steps `from .. to`, as
+/// `(start, end, chord)` spans clipped to the window. A chord holds from its
+/// step until the next chord (the lane draws it that way); before the
+/// first chord nothing plays; of two chords on one step the later wins.
+pub fn chord_spans(project: &Project, from: f64, to: f64) -> Vec<(f64, f64, &ChordEvent)> {
+    let mut events: Vec<&ChordEvent> = project.chord_events.iter().collect();
+    events.sort_by(|a, b| a.step.total_cmp(&b.step));
+    let mut out = Vec::new();
+    for (i, &ev) in events.iter().enumerate() {
+        let end = events.get(i + 1).map_or(f64::INFINITY, |next| next.step);
+        if end <= from || ev.step >= to || end <= ev.step {
+            continue;
+        }
+        out.push((ev.step.max(from), end.min(to), ev));
+    }
+    out
+}
+
 /// Adds a chord label at `step` (clamped to `0..=MAX_PATTERN_STEPS`); `root`
 /// is taken mod 12 like every pitch class. `None` result means the
 /// [`MAX_CHORD_EVENTS`] cap is reached. The list stays sorted by step then id.
@@ -3141,6 +3159,32 @@ mod tests {
         let high: BTreeSet<u64> = [p.notes[1].id].into();
         assert_eq!(lowest_pitch(&p, &high), Some(64));
         assert_eq!(lowest_pitch(&p, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn chord_spans_hold_each_chord_until_the_next() {
+        let mut p = Project::empty();
+        p.chord_events.clear();
+        for (root, step) in [(0, 16.0), (7, 32.0), (9, 40.0)] {
+            add_chord_event(&mut p, step, root, ChordQuality::Major).unwrap();
+        }
+        let spans: Vec<(f64, f64, u8)> = chord_spans(&p, 8.0, 48.0)
+            .into_iter()
+            .map(|(a, b, ev)| (a, b, ev.root))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![(16.0, 32.0, 0), (32.0, 40.0, 7), (40.0, 48.0, 9)]
+        );
+        let spans: Vec<(f64, f64, u8)> = chord_spans(&p, 20.0, 36.0)
+            .into_iter()
+            .map(|(a, b, ev)| (a, b, ev.root))
+            .collect();
+        assert_eq!(spans, vec![(20.0, 32.0, 0), (32.0, 36.0, 7)]);
+        assert!(
+            chord_spans(&p, 0.0, 16.0).is_empty(),
+            "nothing before the first chord"
+        );
     }
 
     #[test]

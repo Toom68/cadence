@@ -267,6 +267,38 @@ fn ghost_notes(project: &Project, tid: u64, origin: f64, len: f64) -> Vec<GhostN
     out
 }
 
+/// One chord's stretch of the piano roll for the chord-tone tint: screen
+/// x range (clipped to the grid), its pitch classes and root.
+struct ChordBand {
+    x: egui::Rangef,
+    pcs: [bool; 12],
+    root: u8,
+}
+
+/// The chord-lane chords playing over the pattern placed at song step
+/// `origin` (`len` steps), as screen bands on `roll`.
+fn chord_bands(project: &Project, roll: &Roll, origin: f64, len: f64) -> Vec<ChordBand> {
+    ops::chord_spans(project, origin, origin + len)
+        .into_iter()
+        .filter_map(|(a, b, ev)| {
+            let x0 = roll.x(a - origin).max(roll.grid.left());
+            let x1 = roll.x(b - origin).min(roll.grid.right());
+            if x1 <= x0 {
+                return None;
+            }
+            let mut pcs = [false; 12];
+            for pc in ops::ChordSpec::new(ev.root, ev.quality).pitch_classes() {
+                pcs[pc as usize % 12] = true;
+            }
+            Some(ChordBand {
+                x: egui::Rangef::new(x0, x1),
+                pcs,
+                root: ev.root % 12,
+            })
+        })
+        .collect()
+}
+
 /// Length of a note drawn by dragging from `start` to the pointer at
 /// `pointer_step`: whole snap cells reaching past the pointer, at least one.
 fn draw_duration(start: f64, pointer_step: f64, snap: f64) -> f64 {
@@ -629,6 +661,9 @@ pub(super) struct EditorView {
     /// Shows the other melodic tracks' notes, read-only, as faint outlines
     /// behind the pattern (where they play against its clip). View state.
     pub ghost_notes: bool,
+    /// Tints the rows of the chord-lane chord playing at each point of the
+    /// pattern (root strongest). View state, off by default.
+    pub chord_tint: bool,
     /// Snaps drawn notes and vertical note drags onto the song key's scale
     /// tones. Session view state like `scale_highlight` — never serialized.
     /// Inert on the C-major default (treated as "no key chosen") and on drum
@@ -695,6 +730,7 @@ impl Default for EditorView {
             chord_bass: ops::ChordBass::default(),
             scale_highlight: false,
             ghost_notes: false,
+            chord_tint: false,
             scale_snap: false,
             kb_pointer: None,
             kb_down: false,
@@ -1908,6 +1944,18 @@ impl CadenceApp {
             {
                 ed.ghost_notes = !ed.ghost_notes;
             }
+            if tb
+                .toggle(
+                    Some(theme::Icon::Chords),
+                    "Chord tones",
+                    ed.chord_tint,
+                    "Tint the rows of the chord-lane chord playing at each point of this \
+                     pattern (its root strongest), so melodies can aim for chord tones",
+                )
+                .clicked()
+            {
+                ed.chord_tint = !ed.chord_tint;
+            }
             tb.separator();
             if let Some(a) = note_edit_items(tb, targets, &quantize_tip) {
                 act = Some(a);
@@ -2374,6 +2422,16 @@ impl CadenceApp {
             .scale_highlight
             .then(|| scale_pitch_classes(key));
         let rh = roll.row_h;
+        // Where the pattern sits in the song, for the ghost and chord layers.
+        let origin = if self.editor.ghost_notes || self.editor.chord_tint {
+            self.pattern_song_origin(track, pid)
+        } else {
+            None
+        };
+        let chord_bands = match origin.filter(|_| self.editor.chord_tint) {
+            Some(origin) => chord_bands(&self.project, roll, origin, pat.length as f64),
+            None => Vec::new(),
+        };
         // Row backgrounds: only the visible rows.
         let (first_row, last_row) = roll.visible_rows();
         for row in first_row..last_row {
@@ -2391,6 +2449,15 @@ impl CadenceApp {
             );
             if scale.is_some_and(|pcs| pcs[pitch as usize % 12]) {
                 p.rect_filled(r, 0.0, pal.accent.gamma_multiply(0.08));
+            }
+            let pc = pitch % 12;
+            for band in chord_bands.iter().filter(|b| b.pcs[pc as usize]) {
+                let strength = if pc == band.root { 0.20 } else { 0.11 };
+                p.rect_filled(
+                    Rect::from_x_y_ranges(band.x, r.y_range()),
+                    0.0,
+                    pal.link.gamma_multiply(strength),
+                );
             }
             // Octave boundary under every C, a hairline between other rows.
             if pitch.is_multiple_of(12) {
@@ -2442,7 +2509,7 @@ impl CadenceApp {
         // Ghost layer: other tracks' notes as faint outlines, computed once
         // per frame and only while the toggle is on.
         if self.editor.ghost_notes {
-            if let Some(origin) = self.pattern_song_origin(track, pid) {
+            if let Some(origin) = origin {
                 for g in ghost_notes(&self.project, tid, origin, pat.length as f64) {
                     if g.pitch < visible_lo || g.pitch > visible_hi {
                         continue;
@@ -5263,6 +5330,42 @@ mod tests {
     }
 
     #[test]
+    fn chord_bands_tint_each_chord_stretch_of_the_pattern() {
+        let mut project = Project::empty();
+        project.chord_events.clear();
+        ops::add_chord_event(&mut project, 0.0, 0, ChordQuality::Major).unwrap();
+        ops::add_chord_event(&mut project, 24.0, 9, ChordQuality::Minor).unwrap();
+        let grid = Rect::from_min_size(pos2(100.0, 0.0), vec2(1000.0, 400.0));
+        let roll = Roll {
+            grid,
+            keys: Rect::NOTHING,
+            ruler: Rect::NOTHING,
+            vel: Rect::NOTHING,
+            pps: 10.0,
+            row_h: ROW_H,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+        };
+        // The pattern plays from song step 16: C holds for its first eight
+        // steps, Am from step 8 (song 24) to its end.
+        let bands = chord_bands(&project, &roll, 16.0, 32.0);
+        assert_eq!(bands.len(), 2);
+        assert_eq!((bands[0].x.min, bands[0].x.max), (100.0, 180.0));
+        assert_eq!((bands[1].x.min, bands[1].x.max), (180.0, 420.0));
+        let pcs = |b: &ChordBand| (0..12).filter(|&i| b.pcs[i]).collect::<Vec<_>>();
+        assert_eq!((pcs(&bands[0]), bands[0].root), (vec![0, 4, 7], 0));
+        assert_eq!((pcs(&bands[1]), bands[1].root), (vec![0, 4, 9], 9));
+        // Scrolled past a chord: it clips to the grid.
+        let scrolled = Roll {
+            scroll_x: 100.0,
+            ..roll
+        };
+        let bands = chord_bands(&project, &scrolled, 16.0, 32.0);
+        assert_eq!(bands.len(), 1, "C scrolled off the left edge");
+        assert_eq!(bands[0].x.min, 100.0);
+    }
+
+    #[test]
     fn ghost_layer_follows_the_toggle_and_the_pattern_clip() {
         let mut project = Project::empty();
         project.tracks.clear();
@@ -5293,8 +5396,12 @@ mod tests {
         assert_eq!(app.pattern_song_origin(track, pid), Some(32.0));
         let mut f = Frames::new(app, 1360.0, 860.0);
         f.app.editor.ghost_notes = true;
+        f.app.editor.chord_tint = true;
         f.steps(3);
-        assert!(f.app.editor.ghost_notes, "paints with ghosts on");
+        assert!(
+            f.app.editor.ghost_notes,
+            "paints with ghosts and chord tones on"
+        );
     }
 
     fn pattern_of(app: &CadenceApp, tid: u64, pid: u64) -> &Pattern {
