@@ -817,6 +817,72 @@ fn arrow_keys_nudge_notes() {
 }
 
 #[test]
+fn digit_keys_pick_the_draw_length_and_set_selected_lengths() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    ui.click(ui.app.roll_cell_center(60, 2.0).unwrap());
+    ui.click(ui.app.roll_cell_center(62, 8.0).unwrap());
+    assert_eq!(ui.app.focus, super::Focus::Editor);
+
+    for (key, len) in [
+        (Key::Num1, 0.5),
+        (Key::Num2, 1.0),
+        (Key::Num3, 2.0),
+        (Key::Num4, 4.0),
+        (Key::Num5, 8.0),
+        (Key::Num6, 16.0),
+    ] {
+        ui.key(key);
+        assert_eq!(ui.app.editor.note_len, len, "{key:?} picks {len}");
+    }
+    ui.key(Key::Num3);
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2, "digits draw nothing");
+
+    // Shift+digit sets the selected notes' length — US layouts deliver
+    // Shift+1 as logical "!", so the physical key is what counts.
+    let durations = |ui: &Ui| -> Vec<f64> {
+        ui.pattern(idx, 0)
+            .notes
+            .iter()
+            .map(|n| n.duration)
+            .collect()
+    };
+    ui.app.sel.notes = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.key_mod(Key::Num4, Modifiers::SHIFT);
+    assert_eq!(durations(&ui), vec![4.0, 4.0]);
+    assert_eq!(ui.app.history.undo_label(), Some("Note length"));
+    assert_eq!(ui.app.editor.note_len, 2.0, "draw length unchanged");
+    ui.next.modifiers = Modifiers::SHIFT;
+    ui.event(Event::Key {
+        key: Key::Exclamationmark,
+        physical_key: Some(Key::Num1),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    assert_eq!(durations(&ui), vec![0.5, 0.5], "Shift+1 typed as \"!\"");
+    ui.key_mod(Key::Num4, Modifiers::SHIFT);
+    ui.app.sel.notes = [ui.pattern(idx, 0).notes[1].id].into();
+    ui.key_mod(Key::Num6, Modifiers::SHIFT);
+    assert_eq!(durations(&ui), vec![4.0, 8.0], "clamped at the pattern end");
+
+    // ⌘2 still switches tabs; digits do nothing once the arranger has focus.
+    ui.key_mod(Key::Num2, Modifiers::COMMAND);
+    assert_eq!(ui.app.tab, super::Tab::Mixer);
+    ui.key_mod(Key::Num1, Modifiers::COMMAND);
+    assert_eq!(ui.app.tab, super::Tab::Editor);
+    assert_eq!(ui.app.editor.note_len, 2.0);
+    ui.app.focus = super::Focus::Arranger;
+    ui.key(Key::Num5);
+    assert_eq!(ui.app.editor.note_len, 2.0, "arranger focus ignores digits");
+}
+
+#[test]
 fn arranger_clip_drag_moves_within_bounds() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

@@ -2774,6 +2774,21 @@ pub fn move_notes(p: &mut Pattern, originals: &[Note], dstep: f64, dpitch: i32) 
     }
 }
 
+/// Sets the length of the notes `ids` selects to `duration` steps, clamped
+/// to the pattern end. Returns how many notes changed.
+pub fn set_note_durations(p: &mut Pattern, ids: &BTreeSet<u64>, duration: f64) -> usize {
+    let len = p.length as f64;
+    let mut changed = 0;
+    for n in p.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+        let d = duration.min(len - n.start).max(MIN_NOTE_DURATION);
+        if d != n.duration {
+            n.duration = d;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Adds a copy of each of `originals` in place under a fresh id (stopping at
 /// [`MAX_NOTES_PER_PATTERN`]) and returns the copies — the snapshots an
 /// Alt+drag then moves with [`move_notes`].

@@ -71,7 +71,9 @@ pub(super) const CHORD_STRIP_EXTRA: f32 =
 /// Largest drum pad side on the Keyboard tab.
 const PAD_MAX: f32 = 168.0;
 /// Note-length and snap choices offered in the piano-roll toolbar.
-const NOTE_LENGTHS: [(f64, &str); 5] = [
+/// Keys 1–6 pick these in order (Shift+1–6 sets the selection's length).
+const NOTE_LENGTHS: [(f64, &str); 6] = [
+    (0.5, "1/32"),
     (1.0, "1/16"),
     (2.0, "1/8"),
     (4.0, "1/4"),
@@ -206,6 +208,23 @@ fn draw_duration(start: f64, pointer_step: f64, snap: f64) -> f64 {
     } else {
         cell
     }
+}
+
+/// `0`–`9` for the digit keys, `None` for any other key.
+fn digit_key(key: Key) -> Option<usize> {
+    const DIGITS: [Key; 10] = [
+        Key::Num0,
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ];
+    DIGITS.iter().position(|&k| k == key)
 }
 
 /// Recorded note start: the song step floored onto the snap grid.
@@ -861,6 +880,85 @@ impl CadenceApp {
     pub(super) fn editor_target(&self) -> Option<(u64, u64)> {
         let track = self.selected_track()?;
         Some((track.id, self.current_pattern_id(track)?))
+    }
+
+    /// The `(track, pattern)` the piano-roll keys (1–6, 0) act on: the
+    /// pattern editor is showing with keyboard focus on it and the selected
+    /// track uses the piano roll rather than the drum grid.
+    fn roll_key_target(&self) -> Option<(u64, u64)> {
+        if self.focus != super::Focus::Editor || self.tab != super::Tab::Editor {
+            return None;
+        }
+        let (tid, pid) = self.editor_target()?;
+        (!self.track_ref(tid)?.shows_drum_grid()).then_some((tid, pid))
+    }
+
+    /// Piano-roll digit keys, called once text fields had their chance:
+    /// 1–6 pick the draw length (1/32 … 1 bar) and Shift+1–6 give the
+    /// selected notes that length. Digits are read from the physical key
+    /// so Shift+1 works on layouts where it types "!"; Cmd/Ctrl/Alt chords
+    /// (⌘1–3 switch tabs) are left alone.
+    pub(super) fn roll_digit_keys(&mut self, ctx: &Context) {
+        let Some((tid, pid)) = self.roll_key_target() else {
+            return;
+        };
+        let mut digits = Vec::new();
+        ctx.input_mut(|i| {
+            i.events.retain(|e| match e {
+                Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !(modifiers.command
+                    || modifiers.ctrl
+                    || modifiers.alt
+                    || modifiers.mac_cmd) =>
+                {
+                    match digit_key(physical_key.unwrap_or(*key)).or_else(|| digit_key(*key)) {
+                        Some(d) => {
+                            digits.push((d, modifiers.shift));
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                _ => true,
+            })
+        });
+        for (digit, shift) in digits {
+            let Some(&(len, label)) = digit.checked_sub(1).and_then(|i| NOTE_LENGTHS.get(i)) else {
+                continue;
+            };
+            if shift {
+                self.set_selected_note_length(tid, pid, len, label);
+            } else {
+                self.editor.note_len = len;
+                self.set_status(StatusKind::Info, format!("Note length {label}."));
+            }
+        }
+    }
+
+    /// Gives every selected note `len` steps (clamped at the pattern end).
+    fn set_selected_note_length(&mut self, tid: u64, pid: u64, len: f64, label: &str) {
+        if self.sel.notes.is_empty() {
+            self.set_status(StatusKind::Info, "Select notes to change their length.");
+            return;
+        }
+        let ids = self.sel.notes.clone();
+        let mut count = 0;
+        self.edit("Note length", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                count = ops::set_note_durations(pat, &ids, len);
+            }
+        });
+        if count > 0 {
+            self.set_status(
+                StatusKind::Info,
+                format!("{count} note{} set to {label}.", sidebar::plural(count)),
+            );
+        }
     }
 
     /// Whether the note ops (quantize, humanize, velocity scale) have

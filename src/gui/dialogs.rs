@@ -810,10 +810,10 @@ impl CadenceApp {
                 .show(ui, |ui| match page {
                     HelpPage::Shortcuts => {
                         ui.columns(2, |cols| {
-                            for section in &SHORTCUT_SECTIONS[..2] {
+                            for section in &SHORTCUT_SECTIONS[..3] {
                                 help_section(&mut cols[0], pal, ctx, section);
                             }
-                            for section in &SHORTCUT_SECTIONS[2..] {
+                            for section in &SHORTCUT_SECTIONS[3..] {
                                 help_section(&mut cols[1], pal, ctx, section);
                             }
                         });
@@ -1373,7 +1373,7 @@ pub(super) struct Section {
 
 use Keys::{Either, Menu, Mouse, Shortcut, Text};
 
-/// The Shortcuts page: the first two sections fill the left column.
+/// The Shortcuts page: the first three sections fill the left column.
 const SHORTCUT_SECTIONS: &[Section] = &[
     Section {
         title: "TRANSPORT",
@@ -1398,6 +1398,13 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Export stems or MIDI", Menu("File menu")),
             ("Import MIDI, audio, packs", Menu("File menu")),
             ("Quit", Shortcut(&super::SC_QUIT)),
+        ],
+    },
+    Section {
+        title: "PIANO ROLL",
+        rows: &[
+            ("Note length 1/32 … 1 bar", Text("1 … 6")),
+            ("Give the selected notes that length", Text("Shift+1 … 6")),
         ],
     },
     Section {

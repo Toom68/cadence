@@ -1625,6 +1625,7 @@ impl CadenceApp {
         if key(Modifiers::NONE, Key::ArrowRight) {
             self.nudge(1, 0);
         }
+        self.roll_digit_keys(ctx);
         if key(Modifiers::NONE, Key::Equals) || key(Modifiers::NONE, Key::Plus) {
             self.zoom(1.25);
         }
