@@ -1558,6 +1558,7 @@ const EDITOR_SECTIONS: &[Section] = &[
                 Mouse("Click / {shift}+click a note"),
             ),
             ("Move the selected notes", Mouse("Drag a note")),
+            ("Copy the selected notes", Mouse("{alt}+drag a note")),
             ("Change a note's length", Mouse("Drag its right edge")),
             ("Erase", Mouse("Right-click / right-drag")),
             ("Set velocity", Mouse("Drag in the velocity lane")),

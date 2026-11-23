@@ -679,6 +679,60 @@ fn piano_non_first_note_group_drag_preserves_intervals_and_clamps() {
 }
 
 #[test]
+fn piano_alt_drag_copies_the_selected_notes() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 63);
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.notes = vec![Note::new(60, 2.0, 2.0, 0.8), Note::new(64, 6.0, 2.0, 0.8)];
+    }
+    let originals: BTreeSet<u64> = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.app.sel.notes = originals.clone();
+    ui.app.focus = super::Focus::Editor;
+    ui.step();
+    let before = ui.app.history.state();
+
+    // Alt+click without moving copies nothing.
+    let grab = ui.app.roll_cell_center(64, 6.0).unwrap();
+    ui.press_mod(grab, PointerButton::Primary, Modifiers::ALT);
+    ui.release_mod(grab, PointerButton::Primary, Modifiers::ALT);
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2);
+    assert_eq!(ui.app.history.state(), before);
+
+    let to = ui.app.roll_cell_center(67, 10.0).unwrap();
+    ui.drag_mod(grab, to, Modifiers::ALT);
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 4, "the selection was duplicated");
+    for n in pat.notes.iter().filter(|n| originals.contains(&n.id)) {
+        assert!(
+            (n.pitch, n.start) == (60, 2.0) || (n.pitch, n.start) == (64, 6.0),
+            "originals stay put: {n:?}"
+        );
+    }
+    let mut copies: Vec<(u8, f64)> = pat
+        .notes
+        .iter()
+        .filter(|n| !originals.contains(&n.id))
+        .map(|n| (n.pitch, n.start))
+        .collect();
+    copies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(copies, vec![(63, 6.0), (67, 10.0)], "copies moved together");
+    assert!(
+        ui.app.sel.notes.is_disjoint(&originals) && ui.app.sel.notes.len() == 2,
+        "the copies are selected"
+    );
+    assert_eq!(ui.app.history.undo_label(), Some("Copy notes"));
+    ui.app.undo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2, "one undo step");
+    assert_eq!(ui.app.history.state(), before);
+}
+
+#[test]
 fn velocity_lane_sets_velocity_of_selected_notes() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

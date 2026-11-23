@@ -2774,6 +2774,25 @@ pub fn move_notes(p: &mut Pattern, originals: &[Note], dstep: f64, dpitch: i32) 
     }
 }
 
+/// Adds a copy of each of `originals` in place under a fresh id (stopping at
+/// [`MAX_NOTES_PER_PATTERN`]) and returns the copies — the snapshots an
+/// Alt+drag then moves with [`move_notes`].
+pub fn clone_notes(p: &mut Pattern, originals: &[Note]) -> Vec<Note> {
+    let mut out = Vec::with_capacity(originals.len());
+    for o in originals {
+        if p.notes.len() >= MAX_NOTES_PER_PATTERN {
+            break;
+        }
+        let copy = Note {
+            id: next_id(),
+            ..o.clone()
+        };
+        p.notes.push(copy.clone());
+        out.push(copy);
+    }
+    out
+}
+
 /// Changes the length of `originals` by `ddur` steps, at least `min` steps
 /// and never past the pattern end.
 pub fn resize_notes(p: &mut Pattern, originals: &[Note], ddur: f64, min: f64) {

@@ -336,6 +336,8 @@ struct NoteDrag {
     dstep: f64,
     dpitch: i32,
     mode: DragMode,
+    /// Alt+drag: the first move duplicates `originals` and drags the copies.
+    copy: bool,
     anchor: Note,
     grab_step_offset: f64,
     grab_pitch: u8,
@@ -1846,6 +1848,7 @@ impl CadenceApp {
                 Some(hit) if hit.zone == HitZone::Resize => {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
                 }
+                Some(_) if alt => ui.ctx().set_cursor_icon(CursorIcon::Copy),
                 Some(_) => ui.ctx().set_cursor_icon(CursorIcon::Move),
                 None => {}
             }
@@ -1893,6 +1896,7 @@ impl CadenceApp {
                                 dstep: 0.0,
                                 dpitch: 0,
                                 mode,
+                                copy: alt && mode == DragMode::Move,
                                 anchor: note.clone(),
                                 grab_step_offset: roll.step(pos.x) - note.start,
                                 grab_pitch: roll.pitch_at(pos.y).unwrap_or(note.pitch),
@@ -1964,10 +1968,12 @@ impl CadenceApp {
                         drag.dstep = ds;
                         drag.dpitch = dp;
                         let label = match drag.mode {
+                            DragMode::Move if drag.copy => "Copy notes",
                             DragMode::Move => "Move notes",
                             DragMode::Resize => "Resize notes",
                         };
-                        let originals = drag.originals.clone();
+                        let copy = std::mem::take(&mut drag.copy);
+                        let mut originals = drag.originals.clone();
                         if drag.mode == DragMode::Move && dp_changed {
                             self.preview(
                                 tid,
@@ -1978,6 +1984,10 @@ impl CadenceApp {
                         }
                         self.edit(label, Some("note-drag"), |p| {
                             if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                                if copy {
+                                    // Same undo step as the move that follows.
+                                    originals = ops::clone_notes(pat, &originals);
+                                }
                                 match drag.mode {
                                     DragMode::Move => ops::move_notes(pat, &originals, ds, dp),
                                     DragMode::Resize => ops::resize_notes(
@@ -1989,6 +1999,10 @@ impl CadenceApp {
                                 }
                             }
                         });
+                        if copy {
+                            self.sel.notes = originals.iter().map(|n| n.id).collect();
+                            drag.originals = originals;
+                        }
                         self.editor.drag = Some(drag);
                     }
                 }
