@@ -165,7 +165,12 @@ impl CadenceApp {
         if !self.io_enabled {
             return;
         }
-        let outcome = update::review_handoff();
+        let mode = self
+            .update
+            .mode
+            .clone()
+            .unwrap_or_else(update::install_mode);
+        let outcome = update::review_handoff(&mode);
         self.apply_handoff_outcome(outcome);
     }
 

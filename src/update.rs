@@ -814,9 +814,10 @@ fn review(handoff: &Handoff, running: &str) -> (Option<HandoffOutcome>, Option<H
 
 /// Checks the previous run's hand-off (if any) at launch: updates the
 /// marker, removes the macOS rollback copy once the new version has
-/// launched twice, and says what to tell the user.
-pub fn review_handoff() -> Option<HandoffOutcome> {
-    review_handoff_in(&crate::persistence::data_dir(), &install_mode())
+/// launched twice, and says what to tell the user. `mode` is this copy's
+/// [`install_mode`].
+pub fn review_handoff(mode: &InstallMode) -> Option<HandoffOutcome> {
+    review_handoff_in(&crate::persistence::data_dir(), mode)
 }
 
 fn review_handoff_in(data_dir: &Path, mode: &InstallMode) -> Option<HandoffOutcome> {
