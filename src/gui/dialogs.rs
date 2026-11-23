@@ -215,7 +215,7 @@ impl CadenceApp {
             Dialog::Help => self.help_dialog(ctx),
             Dialog::About => self.about_dialog(ctx),
             Dialog::Notices => self.notices_dialog(ctx),
-            Dialog::Unsaved(action) => self.unsaved_dialog(ctx, *action),
+            Dialog::Unsaved(action) => self.unsaved_dialog(ctx, action.clone()),
             Dialog::Recovery(work) => self.recovery_dialog(ctx, work),
             Dialog::PackErrors(errors) => self.pack_errors_dialog(ctx, errors),
             Dialog::NewSong(draft) => self.new_song_dialog(ctx, draft),
@@ -273,7 +273,7 @@ impl CadenceApp {
                 None => theme::hint(ui, pal, "Not saved to a file yet"),
             }
             ui.add_space(theme::GAP_S);
-            let verb = if action == PendingAction::Quit {
+            let verb = if matches!(action, PendingAction::Quit) {
                 "quit Cadence"
             } else {
                 "continue"

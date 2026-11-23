@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use super::dialogs::{Dialog, NewSongDraft};
 use super::ops;
+use super::theme;
 use super::{CadenceApp, StatusKind};
 use crate::model::{Project, SongKey, MAX_NAME_CHARS};
 use crate::persistence;
@@ -31,7 +32,7 @@ pub(super) struct Document {
 }
 
 /// A file action that may need an unsaved-changes decision first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PendingAction {
     /// New empty song.
     New,
@@ -39,8 +40,12 @@ pub(super) enum PendingAction {
     Demo,
     /// Open a `.cadence` file.
     Open,
+    /// Open this `.cadence` file (Open Recent, a dropped song).
+    OpenPath(PathBuf),
     /// Import a Standard MIDI File as a new song.
     ImportMidi,
+    /// Import this MIDI file as a new song (a dropped `.mid`).
+    ImportMidiPath(PathBuf),
     /// Quit the app.
     Quit,
 }
@@ -123,7 +128,9 @@ impl CadenceApp {
                 );
             }
             PendingAction::Open => self.open_dialog(),
+            PendingAction::OpenPath(path) => self.open_path(path),
             PendingAction::ImportMidi => self.import_midi_dialog(),
+            PendingAction::ImportMidiPath(path) => self.import_midi_file(path),
             PendingAction::Quit => self.allow_close = true,
         }
     }
@@ -667,6 +674,23 @@ impl CadenceApp {
         track_id: Option<u64>,
         start: Option<f64>,
     ) {
+        self.place_audio_clip(path, track_id, start, false);
+    }
+
+    /// A dropped WAV: always a fresh audio track, clip at the playhead.
+    pub(super) fn import_audio_clip_on_new_track(&mut self, path: PathBuf) {
+        self.place_audio_clip(path, None, None, true);
+    }
+
+    /// Shared body of the audio-clip imports; `new_track` skips the lane
+    /// pick and always adds an "Audio" track.
+    fn place_audio_clip(
+        &mut self,
+        path: PathBuf,
+        track_id: Option<u64>,
+        start: Option<f64>,
+        new_track: bool,
+    ) {
         let staged = match persistence::stage_audio_file(&path) {
             Ok(staged) => staged,
             Err(err) => {
@@ -693,10 +717,14 @@ impl CadenceApp {
         });
         // Lane pick: an explicit target wins when it is an audio lane; then
         // the selection, then any audio lane, then a fresh one.
-        let lane = track_id
-            .or(self.sel.track)
-            .filter(|id| ops::track(&self.project, *id).is_some_and(|t| t.audio))
-            .or_else(|| self.project.tracks.iter().find(|t| t.audio).map(|t| t.id));
+        let lane = if new_track {
+            None
+        } else {
+            track_id
+                .or(self.sel.track)
+                .filter(|id| ops::track(&self.project, *id).is_some_and(|t| t.audio))
+                .or_else(|| self.project.tracks.iter().find(|t| t.audio).map(|t| t.id))
+        };
         let mut placed = None;
         let mut made_track = false;
         let file = staged.file.clone();
@@ -798,6 +826,222 @@ impl CadenceApp {
         }
     }
 
+    // ----- drag and drop ----------------------------------------------------
+
+    /// Picks up files dropped on the window this frame (called from
+    /// `frame()`): see [`CadenceApp::open_dropped_paths`].
+    pub(super) fn handle_file_drops(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.open_dropped_paths(dropped);
+        }
+    }
+
+    /// While files hover over the window: a full-window highlight saying
+    /// what dropping them will do. Paint-only (a foreground layer), so it
+    /// never steals input from the work surface.
+    pub(super) fn drop_overlay(&self, ctx: &egui::Context) {
+        let hovered: Vec<Option<PathBuf>> =
+            ctx.input(|i| i.raw.hovered_files.iter().map(|f| f.path.clone()).collect());
+        if hovered.is_empty() {
+            return;
+        }
+        let pal = self.palette();
+        let kinds: Vec<DropKind> = hovered.iter().flatten().map(|p| drop_kind(p)).collect();
+        let title = drop_hover_title(&kinds, hovered.len());
+        let rect = ctx.content_rect().shrink(theme::GAP_S);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("cadence-drop-overlay"),
+        ));
+        painter.rect(
+            rect,
+            theme::RADIUS_L,
+            pal.bg.gamma_multiply(0.82),
+            egui::Stroke::new(2.0_f32, pal.accent),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            rect.center() - egui::vec2(0.0, theme::GAP_M),
+            egui::Align2::CENTER_CENTER,
+            title,
+            egui::FontId::new(
+                theme::TEXT_HEADING,
+                ctx.style()
+                    .text_styles
+                    .get(&theme::strong())
+                    .map_or(egui::FontFamily::Proportional, |f| f.family.clone()),
+            ),
+            pal.text,
+        );
+        painter.text(
+            rect.center() + egui::vec2(0.0, theme::GAP_L),
+            egui::Align2::CENTER_CENTER,
+            ".cadence songs · .mid files · .wav audio · .json packs · .sf2 SoundFonts",
+            theme::body_font(theme::TEXT_BODY),
+            pal.text_dim,
+        );
+    }
+
+    /// Handles a drop by file type: a `.cadence` song opens and a `.mid`
+    /// imports as a new song (both through the unsaved-changes guard), each
+    /// `.wav` lands as an audio clip on a new audio track, `.json` installs an
+    /// instrument pack and `.sf2` a SoundFont. Only one song can replace the
+    /// current one, and audio dropped together with a song is skipped (it
+    /// would land in the song being replaced) — the status line says so.
+    pub(super) fn open_dropped_paths(&mut self, paths: Vec<PathBuf>) {
+        if self.dialog.is_open() {
+            self.set_status(
+                StatusKind::Info,
+                "Close the open dialog first, then drop the files again.",
+            );
+            return;
+        }
+        let mut replace: Option<(DropKind, PathBuf)> = None;
+        let mut audio = Vec::new();
+        let mut installs = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut unsupported: Vec<String> = Vec::new();
+        for path in paths {
+            match drop_kind(&path) {
+                kind @ (DropKind::Song | DropKind::Midi) => {
+                    if replace.is_none() {
+                        replace = Some((kind, path));
+                    } else {
+                        skipped.push(file_label(&path));
+                    }
+                }
+                DropKind::Audio => audio.push(path),
+                kind @ (DropKind::Pack | DropKind::SoundFont) => installs.push((kind, path)),
+                DropKind::Unsupported => unsupported.push(file_label(&path)),
+            }
+        }
+        if replace.is_some() {
+            skipped.extend(audio.drain(..).map(|p| file_label(&p)));
+        }
+        // The song first: when the document is clean it opens right away and
+        // the imports below land in it; otherwise its guard dialog comes up
+        // and the installs (which never touch the song) still go ahead.
+        let replacing = replace.is_some();
+        let mut problems: Vec<String> = Vec::new();
+        let mut run = |app: &mut Self, op: &mut dyn FnMut(&mut Self)| {
+            app.status = None;
+            op(app);
+            if let Some(s) = &app.status {
+                if matches!(s.kind, StatusKind::Error | StatusKind::Warning) {
+                    problems.push(s.text.clone());
+                }
+            }
+        };
+        if let Some((kind, path)) = replace {
+            run(self, &mut |app| {
+                let path = path.clone();
+                if kind == DropKind::Song {
+                    app.request(PendingAction::OpenPath(path));
+                } else {
+                    app.request(PendingAction::ImportMidiPath(path));
+                }
+            });
+        }
+        let mut done = 0usize;
+        for (kind, path) in installs {
+            done += 1;
+            run(self, &mut |app| {
+                if kind == DropKind::Pack {
+                    app.install_pack_file(path.clone());
+                } else {
+                    app.install_soundfont_file(path.clone());
+                }
+            });
+        }
+        for path in audio {
+            done += 1;
+            run(self, &mut |app| {
+                app.import_audio_clip_on_new_track(path.clone())
+            });
+        }
+        let several =
+            done + usize::from(replacing) > 1 || !skipped.is_empty() || !unsupported.is_empty();
+        if !several {
+            return;
+        }
+        let mut parts = Vec::new();
+        if done > 0 {
+            let ok = done.saturating_sub(problems.len());
+            parts.push(format!("Added {ok} of {done} dropped file{}", plural(done)));
+        }
+        if let Some(first) = problems.first() {
+            parts.push(first.trim_end_matches('.').to_owned());
+        }
+        if !skipped.is_empty() {
+            parts.push(format!(
+                "Skipped {} (drop one song at a time, and audio separately from songs)",
+                skipped.join(", ")
+            ));
+        }
+        if !unsupported.is_empty() {
+            parts.push(format!(
+                "Can't open {} — drop .cadence songs, .mid files, .wav audio, \
+                 .json instrument packs or .sf2 SoundFonts",
+                unsupported.join(", ")
+            ));
+        }
+        let kind = if problems.is_empty() && skipped.is_empty() && unsupported.is_empty() {
+            StatusKind::Success
+        } else {
+            StatusKind::Warning
+        };
+        if !parts.is_empty() {
+            self.set_status(kind, format!("{}.", parts.join(". ")));
+        }
+    }
+
+    /// Installs a dropped `.sf2` into the user SoundFont folder and reloads
+    /// the font catalog. A file that turns out not to parse is removed again
+    /// so it never lingers as a load error.
+    pub(super) fn install_soundfont_file(&mut self, path: PathBuf) {
+        let dir = crate::font::user_fonts_dir();
+        match install_soundfont_into(&dir, &path) {
+            Ok(FontInstall::Already(name)) => self.set_status(
+                StatusKind::Info,
+                format!("The SoundFont “{name}” is already installed."),
+            ),
+            Ok(FontInstall::Installed(dest)) => {
+                let name = dest
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.reload_fonts();
+                let failed = self.io_enabled && !self.fonts.fonts.iter().any(|f| f.name == name);
+                if failed {
+                    let _ = std::fs::remove_file(&dest);
+                    self.reload_fonts();
+                    self.set_status(
+                        StatusKind::Error,
+                        format!("Could not install “{name}”: it is not a readable SoundFont."),
+                    );
+                } else {
+                    self.set_status(
+                        StatusKind::Success,
+                        format!(
+                            "Installed the SoundFont “{name}”. Pick it from a track's sound menu."
+                        ),
+                    );
+                }
+            }
+            Err(err) => self.set_status(
+                StatusKind::Error,
+                format!("Could not install SoundFont: {err}"),
+            ),
+        }
+    }
+
     // ----- helpers ---------------------------------------------------------
 
     /// Native file dialogs only exist in the desktop app; in headless mode we
@@ -811,6 +1055,168 @@ impl CadenceApp {
             "File dialogs are only available in the desktop app.",
         );
         false
+    }
+}
+
+/// What dropping a file on the window does, by extension (case-insensitive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DropKind {
+    /// `.cadence`: open the song.
+    Song,
+    /// `.mid` / `.midi`: import as a new song.
+    Midi,
+    /// `.wav`: import as an audio clip on a new audio track.
+    Audio,
+    /// `.json`: install as an instrument pack.
+    Pack,
+    /// `.sf2`: install into the SoundFont folder.
+    SoundFont,
+    /// Anything else (including folders without a known extension).
+    Unsupported,
+}
+
+/// Classifies a dropped path by its extension.
+pub(super) fn drop_kind(path: &Path) -> DropKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        e if e == persistence::PROJECT_EXTENSION => DropKind::Song,
+        "mid" | "midi" => DropKind::Midi,
+        "wav" | "wave" => DropKind::Audio,
+        "json" => DropKind::Pack,
+        "sf2" => DropKind::SoundFont,
+        _ => DropKind::Unsupported,
+    }
+}
+
+/// Outcome of [`install_soundfont_into`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FontInstall {
+    /// Copied to this path.
+    Installed(PathBuf),
+    /// An identical file with this font name was already installed.
+    Already(String),
+}
+
+/// Copies the `.sf2` at `src` into the SoundFont folder `dir` (created on
+/// demand) under its own file name — the stem is the font name songs
+/// reference. Checks the size cap and the RIFF `sfbk` header first; a
+/// different file under an installed name is refused rather than
+/// overwritten (songs using that name would change sound). The copy goes
+/// through a temp file and a rename, so a failed copy leaves nothing behind.
+pub(super) fn install_soundfont_into(dir: &Path, src: &Path) -> Result<FontInstall, String> {
+    let shown = file_label(src);
+    let meta = std::fs::metadata(src).map_err(|err| format!("Could not open {shown}: {err}"))?;
+    if !meta.is_file() {
+        return Err(format!("{shown} is not a file."));
+    }
+    if meta.len() > crate::font::MAX_FONT_BYTES {
+        return Err(format!(
+            "{shown} is too large ({} MB, limit {} MB).",
+            meta.len() / (1024 * 1024),
+            crate::font::MAX_FONT_BYTES / (1024 * 1024)
+        ));
+    }
+    let mut head = [0u8; 12];
+    File::open(src)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .map_err(|_| format!("{shown} is not a SoundFont (.sf2) file."))?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"sfbk" {
+        return Err(format!("{shown} is not a SoundFont (.sf2) file."));
+    }
+    let Some(file_name) = src.file_name() else {
+        return Err(format!("{shown} has no file name."));
+    };
+    let name = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.trim().is_empty() {
+        return Err(format!("{shown} has no usable name."));
+    }
+    let dest = dir.join(file_name);
+    if dest.exists() {
+        if same_file_contents(src, &dest) {
+            return Ok(FontInstall::Already(name));
+        }
+        return Err(format!(
+            "a different SoundFont named “{name}” is already installed. \
+             Rename the file to install it alongside."
+        ));
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("Could not create {}: {err}", dir.display()))?;
+    let tmp = dir.join(format!(".{name}.{}.sf2.tmp", std::process::id()));
+    let copied = std::fs::copy(src, &tmp).and_then(|_| std::fs::rename(&tmp, &dest));
+    if let Err(err) = copied {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Could not copy {shown}: {err}"));
+    }
+    Ok(FontInstall::Installed(dest))
+}
+
+/// Byte-for-byte comparison, streamed (fonts can be hundreds of MB).
+fn same_file_contents(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(fa), Ok(fb)) = (File::open(a), File::open(b)) else {
+        return false;
+    };
+    let (mut ra, mut rb) = (std::io::BufReader::new(fa), std::io::BufReader::new(fb));
+    let (mut ba, mut bb) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let n = match ra.read(&mut ba) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if n == 0 {
+            return true;
+        }
+        if rb.read_exact(&mut bb[..n]).is_err() || ba[..n] != bb[..n] {
+            return false;
+        }
+    }
+}
+
+/// The drop overlay's headline for the hovered files (`kinds` may be empty
+/// when the platform doesn't report paths until the drop).
+fn drop_hover_title(kinds: &[DropKind], count: usize) -> String {
+    let only = |k: DropKind| !kinds.is_empty() && kinds.iter().all(|x| *x == k);
+    match kinds {
+        [] => format!(
+            "Drop {} to open or import",
+            if count == 1 { "the file" } else { "the files" }
+        ),
+        [DropKind::Song] => "Drop to open this song".to_owned(),
+        [DropKind::Midi] => "Drop to import this MIDI file as a new song".to_owned(),
+        _ if only(DropKind::Audio) => format!(
+            "Drop to import {} on new audio track{}",
+            if kinds.len() == 1 {
+                "the audio file".to_owned()
+            } else {
+                format!("{} audio files", kinds.len())
+            },
+            plural(kinds.len())
+        ),
+        _ if only(DropKind::Pack) => "Drop to install the instrument pack".to_owned(),
+        _ if only(DropKind::SoundFont) => "Drop to install the SoundFont".to_owned(),
+        _ if only(DropKind::Unsupported) => "Cadence can't open this file type".to_owned(),
+        _ => format!("Drop to open or import {} files", kinds.len()),
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
     }
 }
 
@@ -918,4 +1324,161 @@ fn read_file_capped(path: &Path, max: u64) -> Result<Vec<u8>, String> {
         return Err(format!("{shown} is too large."));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Context, DroppedFile, HoveredFile, RawInput};
+
+    fn frame(app: &mut CadenceApp, ctx: &Context, input: RawInput) {
+        let _ = ctx.run(input, |ctx| app.frame(ctx));
+    }
+
+    #[test]
+    fn drops_are_classified_by_extension() {
+        for (name, kind) in [
+            ("a.cadence", DropKind::Song),
+            ("A.CADENCE", DropKind::Song),
+            ("x.mid", DropKind::Midi),
+            ("x.MIDI", DropKind::Midi),
+            ("take.wav", DropKind::Audio),
+            ("pack.json", DropKind::Pack),
+            ("GM.sf2", DropKind::SoundFont),
+            ("song.mp3", DropKind::Unsupported),
+            ("folder", DropKind::Unsupported),
+        ] {
+            assert_eq!(drop_kind(Path::new(name)), kind, "{name}");
+        }
+        assert_eq!(
+            drop_hover_title(&[DropKind::Audio, DropKind::Audio], 2),
+            "Drop to import 2 audio files on new audio tracks"
+        );
+        assert!(drop_hover_title(&[], 1).contains("the file"));
+    }
+
+    #[test]
+    fn dropped_song_opens_through_the_unsaved_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Dropped.cadence");
+        let mut song = Project::empty();
+        song.name = "Dropped Song".into();
+        persistence::save_project(&song, &path).unwrap();
+
+        // Clean document: opens right away, through a real frame's input.
+        let mut app = CadenceApp::headless(Project::demo());
+        let ctx = Context::default();
+        let mut input = RawInput::default();
+        input.dropped_files.push(DroppedFile {
+            path: Some(path.clone()),
+            ..Default::default()
+        });
+        frame(&mut app, &ctx, input);
+        assert_eq!(app.project.name, "Dropped Song");
+        assert_eq!(app.doc.path.as_deref(), Some(path.as_path()));
+
+        // Dirty document: the guard comes up holding the dropped path.
+        app.edit("Rename", None, |p| p.name.push('!'));
+        app.open_dropped_paths(vec![path.clone()]);
+        assert!(
+            matches!(&app.dialog, Dialog::Unsaved(PendingAction::OpenPath(p)) if *p == path),
+            "{:?}",
+            app.dialog
+        );
+        // While a dialog is up further drops are refused, not queued.
+        app.open_dropped_paths(vec![dir.path().join("other.cadence")]);
+        assert!(matches!(&app.dialog, Dialog::Unsaved(PendingAction::OpenPath(p)) if *p == path));
+        app.run_pending_action(PendingAction::OpenPath(path));
+        assert_eq!(app.project.name, "Dropped Song");
+    }
+
+    #[test]
+    fn dropped_midi_imports_and_odd_files_explain_themselves() {
+        let dir = tempfile::tempdir().unwrap();
+        let mid = dir.path().join("groove.mid");
+        std::fs::write(&mid, crate::midi::export_midi(&Project::demo()).unwrap()).unwrap();
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, "hi").unwrap();
+
+        let mut app = CadenceApp::headless(Project::empty());
+        app.open_dropped_paths(vec![txt.clone()]);
+        let status = app.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Warning);
+        assert!(
+            status.text.contains("Can't open notes.txt"),
+            "{}",
+            status.text
+        );
+
+        // A MIDI file plus an audio file: the MIDI imports, the audio is
+        // skipped (it would land in the song being replaced) and said so.
+        let before = app.project.tracks.len();
+        app.open_dropped_paths(vec![mid, dir.path().join("take.wav")]);
+        assert!(
+            app.project.tracks.len() > before,
+            "MIDI import replaced the song"
+        );
+        assert!(app.project.tracks.iter().all(|t| !t.audio));
+        let status = app.status.clone().unwrap();
+        assert!(status.text.contains("Skipped take.wav"), "{}", status.text);
+    }
+
+    #[test]
+    fn hovering_files_paints_the_overlay_without_input_side_effects() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let ctx = Context::default();
+        let project = app.project.clone();
+        for _ in 0..2 {
+            let mut input = RawInput::default();
+            input.hovered_files.push(HoveredFile {
+                path: Some("take.wav".into()),
+                ..Default::default()
+            });
+            frame(&mut app, &ctx, input);
+        }
+        assert_eq!(app.project, project);
+        assert!(!app.dialog.is_open());
+    }
+
+    fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+        let mut bytes = b"RIFF\0\0\0\0sfbk".to_vec();
+        bytes.extend_from_slice(body);
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn soundfonts_install_once_and_never_overwrite() {
+        let src = tempfile::tempdir().unwrap();
+        let fonts = tempfile::tempdir().unwrap();
+        let dir = fonts.path().join("fonts");
+        let font = fake_font(src.path(), "Piano.sf2", b"one");
+
+        let dest = dir.join("Piano.sf2");
+        assert_eq!(
+            install_soundfont_into(&dir, &font),
+            Ok(FontInstall::Installed(dest.clone()))
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&font).unwrap());
+        assert_eq!(
+            install_soundfont_into(&dir, &font),
+            Ok(FontInstall::Already("Piano".into()))
+        );
+
+        // Same name, different bytes: refused, installed file untouched.
+        let other = tempfile::tempdir().unwrap();
+        let clash = fake_font(other.path(), "Piano.sf2", b"two");
+        let err = install_soundfont_into(&dir, &clash).unwrap_err();
+        assert!(err.contains("already installed"), "{err}");
+        assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&font).unwrap());
+
+        // Not a SoundFont, or missing: errors, and nothing else is left.
+        let bogus = src.path().join("Fake.sf2");
+        std::fs::write(&bogus, b"RIFF\0\0\0\0WAVEfmt ").unwrap();
+        assert!(install_soundfont_into(&dir, &bogus).is_err());
+        assert!(install_soundfont_into(&dir, &src.path().join("nope.sf2")).is_err());
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1);
+    }
 }

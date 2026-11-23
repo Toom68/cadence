@@ -1312,6 +1312,7 @@ impl CadenceApp {
         self.auto_check_updates(ctx);
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
+        self.handle_file_drops(ctx);
 
         self.fit_window(ctx);
         self.menu_bar(ctx);
@@ -1321,6 +1322,7 @@ impl CadenceApp {
         self.central(ctx);
         self.dialogs(ctx);
         self.toast_ui(ctx);
+        self.drop_overlay(ctx);
         theme::gallery(ctx, self.palette());
 
         if ctx.input(|i| i.pointer.any_released()) {
