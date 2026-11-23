@@ -19,7 +19,14 @@ scripts/mac-package.sh                            # dist/Cadence.app + .zip (+ .
 pwsh scripts/windows-package.ps1                  # dist/Cadence-<ver>-windows-x64/Cadence.exe + .zip + -setup.exe (Inno Setup 6; REQUIRE_INSTALLER=1 in CI)
 scripts/windows-cross-package.sh                  # same zip via x86_64-pc-windows-gnu on macOS/Linux (needs mingw-w64 + rustup target)
 scripts/release.sh X.Y.Z "what changed"           # bump + fmt/clippy/test + commit "X.Y.Z: ..."; prints the push/tag commands
+scripts/fetch-soundfont.sh                        # download + SHA-256-verify the bundled GM SoundFont into .cache/soundfonts (packaging; REQUIRE_SOUNDFONT=1 in CI)
 ```
+
+Parallel git worktrees must not share one `CARGO_TARGET_DIR`: every worktree builds `cadence-studio`
+with the same hash, so cargo silently runs another worktree's binaries and tests. To share
+dependency builds, use a common `build.build-dir`, a per-worktree `target-dir`, and a distinct
+`[profile.dev.package.cadence-studio] codegen-units` per worktree (in an untracked config above the
+repo — `.cargo/config.toml` in the repo is tracked).
 
 Always run fmt, clippy and test before finishing. `Cargo.lock` is committed; build with `--locked`.
 Dependencies are pinned to known APIs (eframe/egui 0.33.3, cpal 0.16.0, rfd 0.15.4, midly 0.5,
