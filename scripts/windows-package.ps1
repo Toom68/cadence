@@ -86,9 +86,10 @@ Remove-Item $Out
 # soundfonts folder means it never falls back to the repo's dev cache).
 if ($SoundFontStaged) {
     $Saved = @{}
-    foreach ($name in 'CADENCE_DATA_DIR', 'CADENCE_SOUNDFONT_DIR', 'CADENCE_FONTS_DIR', 'CADENCE_PACKS_DIR') {
-        $Saved[$name] = [Environment]::GetEnvironmentVariable($name)
-        [Environment]::SetEnvironmentVariable($name, $null)
+    # Not $name: PowerShell variables are case-insensitive, so it would clobber $Name.
+    foreach ($EnvVar in 'CADENCE_DATA_DIR', 'CADENCE_SOUNDFONT_DIR', 'CADENCE_FONTS_DIR', 'CADENCE_PACKS_DIR') {
+        $Saved[$EnvVar] = [Environment]::GetEnvironmentVariable($EnvVar)
+        [Environment]::SetEnvironmentVariable($EnvVar, $null)
     }
     $SmokeData = Join-Path ([System.IO.Path]::GetTempPath()) "cadence-package-smoke-$PID"
     $env:CADENCE_DATA_DIR = $SmokeData
@@ -103,7 +104,7 @@ if ($SoundFontStaged) {
     } finally {
         if (Test-Path $Out) { Remove-Item $Out }
         if (Test-Path $SmokeData) { Remove-Item -Recurse -Force $SmokeData }
-        foreach ($name in $Saved.Keys) { [Environment]::SetEnvironmentVariable($name, $Saved[$name]) }
+        foreach ($EnvVar in $Saved.Keys) { [Environment]::SetEnvironmentVariable($EnvVar, $Saved[$EnvVar]) }
     }
 }
 
