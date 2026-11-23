@@ -6,7 +6,7 @@ Cadence exports through the native **File** menu (and headlessly via CLI flags).
 
 **File → Export WAV…** (⌘/Ctrl+E) renders the full song — every audible track through its instrument voice (built-in or embedded pack preset), mixer level/pan, and effects — to a `.wav` file via the native save dialog.
 
-- The render runs through the **same `Renderer` as live playback** (`src/audio/`), including per-track drive/filter/fader/pan, subgroup-bus routing, track automation, per-track arpeggiator/glide, shared reverb and tempo-synced ping-pong delay sends, master gain, and the look-ahead limiter — so the export sounds like what you hear, minus the monitor path. Audio lanes play their imported WAV clips in the mix too.
+- The render runs through the **same `Renderer` as live playback** (`src/audio/`), including per-track drive/three-band EQ/filter/fader/pan, subgroup-bus routing, track automation, per-track arpeggiator/glide, shared reverb and tempo-synced ping-pong delay sends, master gain, the optional master glue compressor, and the look-ahead limiter — so the export sounds like what you hear, minus the monitor path. Audio lanes play their imported WAV clips in the mix too.
 - Output is **44.1 kHz, 16-bit stereo** with TPDF dither (`export_wav` in `src/audio/export.rs`).
 - Only audible tracks are rendered: a muted track is skipped, soloing limits the mix to soloed tracks, and the same gates apply per bus — a track on a muted or non-soloed bus stays silent. Master volume applies.
 - After the last bar the render continues for the **effect tail** — reverb/delay rings decay on their own, up to 12 seconds, ending early once the output has been silent for ~0.25 s. A 50 ms fade protects the hard limit.
@@ -15,6 +15,16 @@ Cadence exports through the native **File** menu (and headlessly via CLI flags).
 - Notes are clipped at pattern and song boundaries, matching playback exactly.
 
 Use this for sharing a finished mix or dropping the song into another app as audio.
+
+### Loudness normalization
+
+Tick **File → Normalize WAV Export (-14 LUFS)** to have Export WAV… bring the mixdown to a target integrated loudness. It is **off by default**; the choice is remembered between launches (in the app's settings, never in the song). Stems and the CLI render paths are never normalized.
+
+- Loudness is measured per **ITU-R BS.1770 / EBU R 128**: K-weighting (head shelf + RLB high-pass, derived for the export sample rate), 400 ms blocks with 75 % overlap, an absolute gate at -70 LUFS and a relative gate 10 LU below the ungated level (`src/audio/loudness.rs`). The effect tail is part of the measured file; silence is gated out.
+- It is a **two-pass** render (`export_wav_with` in `src/audio/export.rs`): the song is rendered once without writing to measure it, then written with a gain applied **after the glue compressor and before the master limiter**. Rendering is deterministic, so both passes see identical audio.
+- The **-1 dBFS ceiling always holds**: the limiter still runs after the gain. When a boost pushes the mix into the limiter, loudness rises more slowly than the gain, so up to three extra measurement passes refine the gain (secant steps) until the result is within 0.1 LU. A quiet or very peaky mix that cannot reach the target under the ceiling lands as close as it allows; boosts are capped at +24 dB so near-silence is never dragged up into hiss. A completely silent mix is written unchanged.
+- The ceiling is a **sample-peak** limit; inter-sample (true) peaks of a heavily limited mix can sit slightly above -1 dBFS.
+- The status line reports the measured loudness of the written file and the applied gain, e.g. `Exported WAV at -14.0 LUFS (+4.2 dB)`. Expect a normalized export to take roughly 2–5× as long as a plain one.
 
 ## Export Stems…
 

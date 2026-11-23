@@ -4,8 +4,9 @@
 use super::voice::{FontKey, KitParams, PresetParams, Sound};
 use crate::model::{
     audio_ref_name_ok, swung_step, ArpDirection, ArpSettings, Automation, Bus, Project, SongEvent,
-    Track, MAX_ARP_OCTAVES, MAX_AUDIO_CLIPS_PER_TRACK, MAX_BPM, MAX_CUTOFF_HZ, MAX_GLIDE_SECONDS,
-    MAX_SONG_EVENTS, MAX_TRACKS, MIN_ARP_GATE, MIN_BPM, MIN_CUTOFF_HZ, NUM_BUSES, STEPS_PER_BEAT,
+    Track, MAX_ARP_OCTAVES, MAX_AUDIO_CLIPS_PER_TRACK, MAX_BPM, MAX_CUTOFF_HZ, MAX_EQ_DB,
+    MAX_GLIDE_SECONDS, MAX_SONG_EVENTS, MAX_TRACKS, MIN_ARP_GATE, MIN_BPM, MIN_CUTOFF_HZ,
+    NUM_BUSES, STEPS_PER_BEAT,
 };
 
 /// Mixer and sound settings of one track.
@@ -25,6 +26,8 @@ pub struct TrackParams {
     pub reverb: f32,
     pub delay: f32,
     pub drive: f32,
+    /// Channel EQ `[low, mid, high]` gains in dB (all 0 = bypass).
+    pub eq: [f32; 3],
     /// Per-track portamento slide time in seconds, 0 = off. While above
     /// zero, melodic voices on the track retarget legato-style instead of
     /// stacking (see [`crate::model::Track::glide`]).
@@ -128,6 +131,13 @@ impl TrackParams {
             reverb: unit(track.effects.reverb),
             delay: unit(track.effects.delay),
             drive: unit(track.effects.drive),
+            eq: track.eq.bands().map(|db| {
+                if db.is_finite() {
+                    db.clamp(-MAX_EQ_DB, MAX_EQ_DB)
+                } else {
+                    0.0
+                }
+            }),
             glide: if track.glide.is_finite() {
                 track.glide.clamp(0.0, MAX_GLIDE_SECONDS)
             } else {
@@ -214,6 +224,8 @@ pub struct SongData {
     pub bpm: f64,
     pub total_steps: f64,
     pub master_volume: f32,
+    /// Master glue compression amount, 0..=1 (0 = bypass).
+    pub glue: f32,
 }
 
 impl SongData {
@@ -337,6 +349,7 @@ impl SongData {
             },
             total_steps: project.total_steps().max(1.0),
             master_volume: unit(project.master_volume),
+            glue: unit(project.glue),
         }
     }
 
@@ -351,6 +364,7 @@ impl SongData {
             bpm: 120.0,
             total_steps: 16.0,
             master_volume: 0.8,
+            glue: 0.0,
         }
     }
 

@@ -148,6 +148,11 @@ impl SvfCoefs {
         let fc = cutoff.clamp(10.0, sample_rate * 0.47);
         let g = (PI * fc / sample_rate).tan();
         let k = 1.0 / q.max(0.05);
+        SvfCoefs::from_gk(g, k)
+    }
+
+    /// Coefficients from the pre-warped integrator gain `g` and damping `k`.
+    fn from_gk(g: f32, k: f32) -> Self {
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -201,6 +206,186 @@ impl Svf {
 
     pub fn is_quiet(&self) -> bool {
         self.ic1.abs() < 1e-7 && self.ic2.abs() < 1e-7
+    }
+}
+
+/// One EQ band: an [`Svf`] whose outputs are re-mixed into a bell or shelf
+/// (Simper's linear trapezoidal SVF forms), so gain changes stay click-free.
+/// At 0 dB every form reduces to `1·x + 0·band + 0·low`, i.e. exactly `x`.
+#[derive(Clone, Copy, Debug)]
+pub struct EqBandCoefs {
+    svf: SvfCoefs,
+    m0: f32,
+    m1: f32,
+    m2: f32,
+}
+
+impl EqBandCoefs {
+    fn warp(freq: f32, sample_rate: f32) -> f32 {
+        let fc = freq.clamp(10.0, sample_rate * 0.45);
+        (PI * fc / sample_rate).tan()
+    }
+
+    fn amp(db: f32) -> f32 {
+        10f32.powf(db / 40.0)
+    }
+
+    pub fn low_shelf(freq: f32, q: f32, db: f32, sample_rate: f32) -> Self {
+        let a = Self::amp(db);
+        let k = 1.0 / q.max(0.05);
+        EqBandCoefs {
+            svf: SvfCoefs::from_gk(Self::warp(freq, sample_rate) / a.sqrt(), k),
+            m0: 1.0,
+            m1: k * (a - 1.0),
+            m2: a * a - 1.0,
+        }
+    }
+
+    pub fn bell(freq: f32, q: f32, db: f32, sample_rate: f32) -> Self {
+        let a = Self::amp(db);
+        let k = 1.0 / (q.max(0.05) * a);
+        EqBandCoefs {
+            svf: SvfCoefs::from_gk(Self::warp(freq, sample_rate), k),
+            m0: 1.0,
+            m1: k * (a * a - 1.0),
+            m2: 0.0,
+        }
+    }
+
+    pub fn high_shelf(freq: f32, q: f32, db: f32, sample_rate: f32) -> Self {
+        let a = Self::amp(db);
+        let k = 1.0 / q.max(0.05);
+        EqBandCoefs {
+            svf: SvfCoefs::from_gk(Self::warp(freq, sample_rate) * a.sqrt(), k),
+            m0: a * a,
+            m1: k * (1.0 - a) * a,
+            m2: 1.0 - a * a,
+        }
+    }
+
+    #[inline]
+    pub fn process(&self, state: &mut Svf, x: f32) -> f32 {
+        let o = state.process(&self.svf, x);
+        self.m0 * x + self.m1 * o.band + self.m2 * o.low
+    }
+}
+
+/// Stereo three-band channel EQ: low shelf, broad mid bell, high shelf.
+/// Gains glide in dB per block (~30 ms) and a band sitting at exactly 0 dB
+/// is skipped, so a flat EQ is a true bypass. Fixed-size and `Copy`: no
+/// allocation anywhere.
+#[derive(Clone, Copy, Debug)]
+pub struct ThreeBandEq {
+    sample_rate: f32,
+    gain: [f32; 3],
+    target: [f32; 3],
+    coefs: [EqBandCoefs; 3],
+    l: [Svf; 3],
+    r: [Svf; 3],
+}
+
+impl ThreeBandEq {
+    pub const LOW_HZ: f32 = 120.0;
+    pub const MID_HZ: f32 = 1_000.0;
+    pub const HIGH_HZ: f32 = 7_000.0;
+    const SHELF_Q: f32 = 0.707;
+    const MID_Q: f32 = 0.7;
+    const GLIDE_SECONDS: f32 = 0.03;
+
+    pub fn new(sample_rate: f32) -> Self {
+        let mut eq = ThreeBandEq {
+            sample_rate,
+            gain: [0.0; 3],
+            target: [0.0; 3],
+            coefs: [EqBandCoefs::bell(1000.0, 1.0, 0.0, sample_rate); 3],
+            l: [Svf::default(); 3],
+            r: [Svf::default(); 3],
+        };
+        for band in 0..3 {
+            eq.coefs[band] = eq.band_coefs(band);
+        }
+        eq
+    }
+
+    fn band_coefs(&self, band: usize) -> EqBandCoefs {
+        let (db, sr) = (self.gain[band], self.sample_rate);
+        match band {
+            0 => EqBandCoefs::low_shelf(Self::LOW_HZ, Self::SHELF_Q, db, sr),
+            1 => EqBandCoefs::bell(Self::MID_HZ, Self::MID_Q, db, sr),
+            _ => EqBandCoefs::high_shelf(Self::HIGH_HZ, Self::SHELF_Q, db, sr),
+        }
+    }
+
+    /// Sets the low/mid/high gains in dB; `snap` jumps there immediately.
+    pub fn set(&mut self, db: [f32; 3], snap: bool) {
+        for (t, v) in self.target.iter_mut().zip(db) {
+            *t = if v.is_finite() { v } else { 0.0 };
+        }
+        if snap {
+            self.snap();
+        }
+    }
+
+    /// Jumps to the target gains and clears the filter state.
+    pub fn snap(&mut self) {
+        self.gain = self.target;
+        for band in 0..3 {
+            self.coefs[band] = self.band_coefs(band);
+        }
+        self.clear();
+    }
+
+    pub fn clear(&mut self) {
+        self.l = [Svf::default(); 3];
+        self.r = [Svf::default(); 3];
+    }
+
+    pub fn settled(&self) -> bool {
+        self.gain == self.target
+    }
+
+    /// Flat and staying flat: processing would return the input unchanged.
+    pub fn is_bypassed(&self) -> bool {
+        self.gain == [0.0; 3] && self.target == [0.0; 3]
+    }
+
+    pub fn is_quiet(&self) -> bool {
+        self.l.iter().chain(&self.r).all(Svf::is_quiet)
+    }
+
+    /// Advances the gain glide by one block of `frames`.
+    pub fn advance(&mut self, frames: usize) {
+        if self.settled() {
+            return;
+        }
+        let k = 1.0 - time_coef(Self::GLIDE_SECONDS, self.sample_rate).powi(frames as i32);
+        for band in 0..3 {
+            let (g, t) = (self.gain[band], self.target[band]);
+            if g == t {
+                continue;
+            }
+            let next = g + (t - g) * k;
+            self.gain[band] = if (t - next).abs() < 0.01 { t } else { next };
+            if self.gain[band] == 0.0 {
+                // Back to flat: the band is skipped from now on, so drop its
+                // state (its output already equals the input).
+                self.l[band] = Svf::default();
+                self.r[band] = Svf::default();
+            }
+            self.coefs[band] = self.band_coefs(band);
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, mut x: f32, mut y: f32) -> (f32, f32) {
+        for band in 0..3 {
+            if self.gain[band] != 0.0 {
+                let c = &self.coefs[band];
+                x = c.process(&mut self.l[band], x);
+                y = c.process(&mut self.r[band], y);
+            }
+        }
+        (x, y)
     }
 }
 
@@ -611,6 +796,125 @@ impl PingPongDelay {
     }
 }
 
+/// Gentle stereo-linked bus compressor for the master ("glue"): RMS-style
+/// detection, soft knee, ~2:1, 10 ms attack / 120 ms release, no automatic
+/// make-up gain. One `amount` (0..=1) lowers the threshold from -6 to
+/// -24 dBFS and fades the ratio in over the first fifth of its travel, so
+/// 0 is a true bypass — the block is not touched at all.
+#[derive(Clone, Copy, Debug)]
+pub struct GlueCompressor {
+    amount: Smoother,
+    /// Detector: smoothed mean square of the louder channel.
+    power: f32,
+    power_coef: f32,
+    /// Smoothed gain reduction in dB (>= 0).
+    env_db: f32,
+    attack: f32,
+    release: f32,
+    /// Largest gain reduction (dB) in the last processed block.
+    pub gain_reduction_db: f32,
+}
+
+impl GlueCompressor {
+    pub const RATIO: f32 = 2.0;
+    pub const KNEE_DB: f32 = 6.0;
+    pub const ATTACK_SECONDS: f32 = 0.010;
+    pub const RELEASE_SECONDS: f32 = 0.120;
+    const DETECTOR_SECONDS: f32 = 0.005;
+
+    pub fn new(sample_rate: f32) -> Self {
+        GlueCompressor {
+            amount: Smoother::new(0.0, 0.05, sample_rate),
+            power: 0.0,
+            power_coef: 1.0 - time_coef(Self::DETECTOR_SECONDS, sample_rate),
+            env_db: 0.0,
+            attack: 1.0 - time_coef(Self::ATTACK_SECONDS, sample_rate),
+            release: 1.0 - time_coef(Self::RELEASE_SECONDS, sample_rate),
+            gain_reduction_db: 0.0,
+        }
+    }
+
+    /// Sets the glue amount (clamped to 0..=1); `snap` skips the ramp.
+    pub fn set_amount(&mut self, amount: f32, snap: bool) {
+        let a = if amount.is_finite() {
+            amount.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if snap {
+            self.amount.snap(a);
+        } else {
+            self.amount.target = a;
+        }
+    }
+
+    /// Threshold in dBFS for a glue `amount`.
+    pub fn threshold_db(amount: f32) -> f32 {
+        -6.0 - 18.0 * amount
+    }
+
+    /// Static gain reduction (dB, >= 0) for a detector level `x_db`.
+    #[inline]
+    fn curve(over_db: f32, slope: f32) -> f32 {
+        let half = Self::KNEE_DB * 0.5;
+        if over_db <= -half {
+            0.0
+        } else if over_db >= half {
+            slope * over_db
+        } else {
+            let t = over_db + half;
+            slope * t * t / (2.0 * Self::KNEE_DB)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.power = 0.0;
+        self.env_db = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+
+    /// Off and fully released: `process` leaves the signal untouched.
+    pub fn is_bypassed(&self) -> bool {
+        self.amount.value == 0.0 && self.amount.target == 0.0 && self.env_db == 0.0
+    }
+
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let amount = self.amount.skip(l.len());
+        if self.is_bypassed() {
+            self.power = 0.0;
+            self.gain_reduction_db = 0.0;
+            return;
+        }
+        let threshold = Self::threshold_db(amount);
+        let slope = (1.0 - 1.0 / Self::RATIO) * (amount * 5.0).min(1.0);
+        let mut max_gr = 0.0f32;
+        for (sl, sr) in l.iter_mut().zip(r.iter_mut()) {
+            let p = (*sl * *sl).max(*sr * *sr);
+            self.power = flush(self.power + (p - self.power) * self.power_coef);
+            // 10·log10 of a mean square is the RMS level in dB.
+            let level_db = 10.0 * self.power.max(1e-12).log10();
+            let gr = Self::curve(level_db - threshold, slope);
+            let coef = if gr > self.env_db {
+                self.attack
+            } else {
+                self.release
+            };
+            self.env_db = flush(self.env_db + (gr - self.env_db) * coef);
+            if self.env_db > 0.0 {
+                let g = 10f32.powf(-self.env_db / 20.0);
+                *sl *= g;
+                *sr *= g;
+            }
+            max_gr = max_gr.max(self.env_db);
+        }
+        if amount == 0.0 && self.env_db < 1e-3 {
+            // Released while switched off: back to a true bypass.
+            self.env_db = 0.0;
+        }
+        self.gain_reduction_db = max_gr;
+    }
+}
+
 /// Stereo-linked look-ahead peak limiter followed by a soft safety clip.
 #[derive(Clone, Debug)]
 pub struct Limiter {
@@ -738,6 +1042,160 @@ mod tests {
             .collect();
         assert!(rms(&lo[4800..]) > 0.65);
         assert!(rms(&hi[4800..]) < 0.01);
+    }
+
+    fn db(x: f32) -> f32 {
+        20.0 * x.max(1e-12).log10()
+    }
+
+    /// Steady-state level change (dB) the EQ applies to a `freq` sine.
+    fn eq_gain_at(gains: [f32; 3], freq: f32) -> f32 {
+        let sr = 48_000.0;
+        let mut eq = ThreeBandEq::new(sr);
+        eq.set(gains, true);
+        let src = tone(freq, sr, 24_000);
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        for &x in &src {
+            let (a, b) = eq.process(x, x);
+            l.push(a);
+            r.push(b);
+        }
+        assert_eq!(l, r, "both channels get the same curve");
+        db(rms(&l[12_000..])) - db(rms(&src[12_000..]))
+    }
+
+    #[test]
+    fn flat_eq_is_bit_identical() {
+        let sr = 44_100.0;
+        let mut rng = Rng::new(3);
+        let src: Vec<f32> = (0..4096).map(|_| rng.noise() * 0.8).collect();
+        for c in [
+            EqBandCoefs::low_shelf(120.0, 0.707, 0.0, sr),
+            EqBandCoefs::bell(1000.0, 0.7, 0.0, sr),
+            EqBandCoefs::high_shelf(7000.0, 0.707, 0.0, sr),
+        ] {
+            let mut st = Svf::default();
+            for &x in &src {
+                assert_eq!(c.process(&mut st, x).to_bits(), x.to_bits());
+            }
+        }
+        let mut eq = ThreeBandEq::new(sr);
+        assert!(eq.is_bypassed());
+        for &x in &src {
+            let (a, b) = eq.process(x, -x);
+            assert_eq!((a.to_bits(), b.to_bits()), (x.to_bits(), (-x).to_bits()));
+        }
+    }
+
+    #[test]
+    fn eq_bands_shape_their_region() {
+        // Low shelf: +6 dB well below the corner, nothing up high.
+        assert!((eq_gain_at([6.0, 0.0, 0.0], 40.0) - 6.0).abs() < 0.6);
+        assert!(eq_gain_at([6.0, 0.0, 0.0], 5_000.0).abs() < 0.3);
+        // Mid bell: full cut at its centre, little effect at the extremes.
+        assert!((eq_gain_at([0.0, -6.0, 0.0], 1_000.0) + 6.0).abs() < 0.3);
+        assert!(eq_gain_at([0.0, -6.0, 0.0], 40.0).abs() < 0.6);
+        // High shelf: +6 dB in the air band, nothing in the bass.
+        assert!((eq_gain_at([0.0, 0.0, 6.0], 16_000.0) - 6.0).abs() < 0.8);
+        assert!(eq_gain_at([0.0, 0.0, 6.0], 100.0).abs() < 0.3);
+        // Extreme settings stay finite and bounded.
+        let g = eq_gain_at([12.0, 12.0, 12.0], 3_000.0);
+        assert!(g.is_finite() && g < 14.0);
+    }
+
+    #[test]
+    fn eq_glides_to_its_target_and_back_to_bypass() {
+        let sr = 48_000.0;
+        let mut eq = ThreeBandEq::new(sr);
+        eq.set([9.0, 0.0, -9.0], false);
+        assert!(!eq.settled() && !eq.is_bypassed());
+        for _ in 0..200 {
+            eq.advance(256);
+        }
+        assert!(eq.settled());
+        eq.set([0.0; 3], false);
+        let mut out = 0.0f32;
+        for i in 0..400 {
+            eq.advance(256);
+            for k in 0..256 {
+                let (a, _) = eq.process((((i * 256 + k) as f32) * 0.05).sin(), 0.0);
+                out = out.max(a.abs());
+            }
+        }
+        assert!(out.is_finite() && out < 4.0);
+        assert!(eq.is_bypassed(), "a glide back to 0 dB ends in bypass");
+    }
+
+    fn crest_db(l: &[f32], r: &[f32]) -> f32 {
+        let peak = l.iter().chain(r).fold(0.0f32, |m, x| m.max(x.abs()));
+        let rms_lr = ((rms(l).powi(2) + rms(r).powi(2)) * 0.5).sqrt();
+        db(peak) - db(rms_lr)
+    }
+
+    /// Loud, dense material with a slow swell: two detuned partials whose
+    /// level swings between -24 and -2 dBFS at 1.5 Hz.
+    fn dense_swell(sr: f32, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut rng = Rng::new(11);
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr;
+                let env = 0.06 + 0.74 * (0.5 + 0.5 * (TAU * 1.5 * t).sin()).powi(2);
+                let x = (TAU * 110.0 * t).sin() * 0.6 + (TAU * 331.0 * t).sin() * 0.3;
+                let n = rng.noise() * 0.1;
+                (env * (x + n), env * (x * 0.9 - n))
+            })
+            .unzip()
+    }
+
+    #[test]
+    fn glue_off_is_a_true_bypass() {
+        let sr = 48_000.0;
+        let (src_l, src_r) = dense_swell(sr, 24_000);
+        let mut glue = GlueCompressor::new(sr);
+        let (mut l, mut r) = (src_l.clone(), src_r.clone());
+        for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            glue.process(a, b);
+        }
+        assert!(glue.is_bypassed());
+        assert_eq!((l, r), (src_l, src_r));
+    }
+
+    #[test]
+    fn glue_lowers_crest_factor_and_releases_when_switched_off() {
+        let sr = 48_000.0;
+        let (src_l, src_r) = dense_swell(sr, 96_000);
+        let mut glue = GlueCompressor::new(sr);
+        glue.set_amount(0.7, true);
+        let (mut l, mut r) = (src_l.clone(), src_r.clone());
+        let mut most = 0.0f32;
+        for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            glue.process(a, b);
+            most = most.max(glue.gain_reduction_db);
+        }
+        let (before, after) = (crest_db(&src_l, &src_r), crest_db(&l, &r));
+        assert!(
+            after < before - 0.5,
+            "glue tames the swell: crest {before:.2} dB -> {after:.2} dB"
+        );
+        assert!(
+            most > 2.0 && most < 12.0,
+            "gentle, not squashing ({most} dB)"
+        );
+        // No make-up gain: the output never gets louder than the input.
+        let peak = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak(&l) <= peak(&src_l) + 1e-6);
+        // Switched off, it releases and returns to a bit-exact bypass.
+        glue.set_amount(0.0, false);
+        let mut quiet = vec![0.01f32; 256];
+        let mut quiet_r = quiet.clone();
+        for _ in 0..400 {
+            glue.process(&mut quiet, &mut quiet_r);
+            quiet.fill(0.01);
+            quiet_r.fill(0.01);
+        }
+        assert!(glue.is_bypassed());
+        glue.process(&mut quiet, &mut quiet_r);
+        assert!(quiet.iter().all(|&x| x == 0.01));
     }
 
     #[test]

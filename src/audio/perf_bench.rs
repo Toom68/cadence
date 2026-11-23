@@ -17,6 +17,12 @@ fn dense_project() -> Project {
                 delay: 1.0,
                 drive: 1.0,
             };
+            // Worst case: every EQ band engaged.
+            track.eq = crate::model::TrackEq {
+                low_db: 4.0,
+                mid_db: -3.0,
+                high_db: 2.0,
+            };
             let pattern = &mut track.patterns[0];
             let offset = i as f64 / (2 * MAX_TRACKS) as f64;
             pattern.notes = (0..16)

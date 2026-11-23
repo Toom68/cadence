@@ -13,6 +13,7 @@ Cadence songs are saved as **pretty-printed JSON** (UTF-8; a leading BOM is tole
   "swing": 0,                // 0–0.6
   "bars": 8,                 // 1–128
   "master_volume": 0.8,      // 0–1
+  "glue": 0,                 // master glue compression 0–1 (absent = off)
   "tracks": [
     {
       "id": 1234567891,
@@ -36,6 +37,7 @@ Cadence songs are saved as **pretty-printed JSON** (UTF-8; a leading BOM is tole
         "delay": 0,              // 0–1
         "drive": 0               // 0–1
       },
+      "eq": { "low_db": 0, "mid_db": 0, "high_db": 0 },  // ±12 dB shelf/bell/shelf (absent = flat bypass)
       "patterns": [
         {
           "id": 1234567892,

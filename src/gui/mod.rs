@@ -177,6 +177,10 @@ pub struct CadenceApp {
     focus: Focus,
     dialog: Dialog,
     export: Option<ExportJob>,
+    /// File ▸ "Normalize WAV Export": loudness-normalize WAV exports to
+    /// [`crate::audio::DEFAULT_TARGET_LUFS`]. Off by default; remembered in
+    /// eframe storage like the theme (never in the song).
+    export_normalize: bool,
     status: Option<StatusLine>,
     engine_dirty: bool,
     last_edit: Option<Instant>,
@@ -247,6 +251,10 @@ impl CadenceApp {
         let mut app = Self::build(Project::demo(), engine, true);
         app.theme = theme;
         app.transport.count_in = transport::count_in_from_storage(cc.storage);
+        app.export_normalize = cc
+            .storage
+            .and_then(|s| s.get_string(files::NORMALIZE_STORAGE_KEY))
+            .is_some_and(|v| v == "1");
         app.audio_device_pref = device_pref;
         if let Some(err) = audio_error {
             app.set_status(
@@ -315,6 +323,7 @@ impl CadenceApp {
             focus: Focus::Arranger,
             dialog: Dialog::None,
             export: None,
+            export_normalize: false,
             status: None,
             engine_dirty: false,
             last_edit: None,
@@ -1802,13 +1811,17 @@ impl eframe::App for CadenceApp {
         self.frame(ctx);
     }
 
-    /// Persists only UI preferences (theme, count-in) — song state is saved
+    /// Persists only UI preferences (theme, count-in, export loudness) — song state is saved
     /// through `.cadence` files, never through eframe storage.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(theme::STORAGE_KEY, self.theme.id().to_owned());
         storage.set_string(
             transport::COUNT_IN_KEY,
             if self.transport.count_in { "1" } else { "0" }.to_owned(),
+        );
+        storage.set_string(
+            files::NORMALIZE_STORAGE_KEY,
+            if self.export_normalize { "1" } else { "0" }.to_owned(),
         );
     }
 

@@ -24,7 +24,7 @@ use egui::{
 use super::theme::{self, MixerPalette, Palette, CONTROL_S, GAP_XS};
 use super::{ops, sidebar, CadenceApp};
 use crate::audio::MixerPeaks;
-use crate::model::{Effects, Project, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ};
+use crate::model::{Effects, Project, TrackEq, MAX_CUTOFF_HZ, MAX_EQ_DB, MIN_CUTOFF_HZ};
 
 const STRIP_W: f32 = 168.0;
 /// Narrower channel strip used by the compact mixer density.
@@ -61,8 +61,13 @@ const PEDAL_W: f32 = 66.0;
 const PEDAL_MAX_H: f32 = 116.0;
 /// Width of the chevron painted between two pedals.
 const ARROW_W: f32 = 10.0;
-/// Total width of the four pedals and the arrows between them.
-const PEDAL_CHAIN_W: f32 = 4.0 * PEDAL_CELL_W + 3.0 * ARROW_W;
+/// Slot of the three-knob EQ pedal (wider than the single-knob pedals).
+const EQ_CELL_W: f32 = 3.0 * EQ_KNOB_W + 16.0;
+/// Footprint of one EQ band knob: narrower than `KNOB_MIN_W` so the three
+/// bands fit a channel's right column.
+const EQ_KNOB_W: f32 = 28.0;
+/// Total width of the four pedals, the EQ pedal and the arrows between them.
+const PEDAL_CHAIN_W: f32 = 4.0 * PEDAL_CELL_W + EQ_CELL_W + 4.0 * ARROW_W;
 /// Thickness of the strip row's horizontal scrollbar.
 const SCROLLBAR_H: f32 = 8.0;
 /// Quietest level a meter shows; the bar spans this to 0 dBFS.
@@ -88,8 +93,9 @@ const COMPACT_KEY: &str = "cadence.mixer.compact";
 const SCROLL_KEY: &str = "cadence.mixer.scroll";
 const METERS_KEY: &str = "cadence.mixer.meters";
 
-/// The four per-track effects, in the order the engine processes them:
-/// drive -> filter -> [fader/pan] -> delay -> reverb. Delay and reverb are
+/// The four single-knob per-track effects, in the order the engine processes
+/// them: drive -> [EQ] -> filter -> [fader/pan] -> delay -> reverb. The
+/// three-band EQ is its own pedal (see `CadenceApp::eq_knobs`). Delay and reverb are
 /// post-fader sends to shared buses (the delay feed also hits reverb at 0.2x);
 /// see `Strip::process` in `src/audio/renderer.rs`.
 #[derive(Clone, Copy)]
@@ -122,7 +128,7 @@ impl Pedal {
             ),
             Pedal::Drive => (fx.drive, 0.0, fx.drive > 0.004),
             Pedal::Delay => (fx.delay, 0.0, fx.delay > 0.004),
-            Pedal::Reverb => (fx.reverb, 0.15, fx.reverb > 0.004),
+            Pedal::Reverb => (fx.reverb, Effects::default().reverb, fx.reverb > 0.004),
         }
     }
 
@@ -400,6 +406,10 @@ struct Meters {
     tracks: HashMap<u64, Gauge>,
     buses: [Gauge; ops::NUM_BUSES],
     master: [Gauge; 2],
+    /// Master output RMS (linear, already ~300 ms smoothed by the engine).
+    master_rms: f32,
+    /// Glue compressor gain reduction in dB.
+    glue_db: f32,
     last_peaks: Option<MixerPeaks>,
 }
 
@@ -425,6 +435,9 @@ impl Meters {
         for (gauge, input) in self.master.iter_mut().zip(master) {
             gauge.update(input, dt, fall, MASTER_CLIP_LEVEL);
         }
+        let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        self.master_rms = finite(peaks.map_or(0.0, |p| p.master_rms));
+        self.glue_db = finite(peaks.map_or(0.0, |p| p.glue_reduction_db));
     }
 
     fn any_active(&self) -> bool {
@@ -531,8 +544,27 @@ fn mixer_knob(
     color: Color32,
     size: f32,
 ) -> Response {
+    mixer_knob_w(
+        ui, look, norm, default, bipolar, label, value_text, color, size, KNOB_MIN_W,
+    )
+}
+
+/// [`mixer_knob`] with an explicit narrowest footprint `min_w`.
+#[allow(clippy::too_many_arguments)]
+fn mixer_knob_w(
+    ui: &mut Ui,
+    look: Look,
+    norm: &mut f32,
+    default: f32,
+    bipolar: bool,
+    label: &str,
+    value_text: &str,
+    color: Color32,
+    size: f32,
+    min_w: f32,
+) -> Response {
     let mx = look.mx;
-    let total = vec2(size.max(KNOB_MIN_W), size + 30.0);
+    let total = vec2(size.max(min_w), size + 30.0);
     let (rect, mut resp) = ui.allocate_exact_size(total, Sense::click_and_drag());
     let before = *norm;
     if resp.dragged() {
@@ -862,6 +894,39 @@ pub(super) fn hz_text(hz: f32) -> String {
     }
 }
 
+/// EQ band gain (dB) to a bipolar knob position and back. Positions within
+/// a quarter dB of the centre snap to exactly 0 dB, the bit-exact bypass.
+pub(super) fn eq_to_norm(db: f32) -> f32 {
+    ((db + MAX_EQ_DB) / (2.0 * MAX_EQ_DB)).clamp(0.0, 1.0)
+}
+
+pub(super) fn norm_to_eq(n: f32) -> f32 {
+    let db = (n.clamp(0.0, 1.0) * 2.0 - 1.0) * MAX_EQ_DB;
+    if db.abs() < 0.25 {
+        0.0
+    } else {
+        (db * 10.0).round() / 10.0
+    }
+}
+
+/// Short knob caption: "+3", "-12", "0".
+fn eq_text(db: f32) -> String {
+    if db == 0.0 {
+        "0".to_owned()
+    } else {
+        format!("{db:+.0}")
+    }
+}
+
+/// Master glue knob caption: "Off" at 0 (a true bypass), else the amount.
+fn glue_text(glue: f32) -> String {
+    if glue <= 0.0 {
+        "Off".to_owned()
+    } else {
+        format!("{:.0}%", glue * 100.0)
+    }
+}
+
 /// "Master" or "Bus A": the route's short name.
 fn route_label(bus: u8) -> String {
     if bus == 0 {
@@ -884,6 +949,7 @@ struct ChannelView {
     solo: bool,
     bus: u8,
     fx: Effects,
+    eq: TrackEq,
     audible: bool,
     selected: bool,
 }
@@ -917,7 +983,7 @@ impl CadenceApp {
             });
         }
         for (label, value, default) in [
-            ("Reverb", fx.reverb, 0.15),
+            ("Reverb", fx.reverb, Effects::default().reverb),
             ("Delay", fx.delay, 0.0),
             ("Drive", fx.drive, 0.0),
         ] {
@@ -1192,6 +1258,7 @@ impl CadenceApp {
                 solo: track.solo,
                 bus: track.bus,
                 fx: track.effects.clone(),
+                eq: track.eq,
                 audible: self.project.is_track_audible(index),
                 selected: self.sel.track == Some(track.id),
             }
@@ -1288,7 +1355,7 @@ impl CadenceApp {
             fx_open,
             mx.pan,
             chip,
-            "Effect pedalboard: drive, filter, delay and reverb",
+            "Effect pedalboard: drive, EQ, filter, delay and reverb",
         )
         .clicked()
         {
@@ -1439,6 +1506,14 @@ impl CadenceApp {
                 );
                 self.fx_knob(ui, look, id, &view.fx, pedal, view.color, ks, r);
             }
+            // The EQ row sits under the grid when the strip is tall enough;
+            // otherwise it lives on the pedalboard only.
+            let eq_y = gy + 2.0 * (ks + 30.0 + GAP_XS);
+            let eks = 20.0;
+            if zone.bottom() - eq_y >= eks + 30.0 {
+                let ex = col3 + (col3_w - 3.0 * EQ_KNOB_W) * 0.5;
+                self.eq_knobs(ui, look, id, view.eq, view.color, eks, pos2(ex, eq_y));
+            }
         }
 
         if !view.audible {
@@ -1551,18 +1626,126 @@ impl CadenceApp {
         color: Color32,
         area: Rect,
     ) {
-        for (i, pedal) in Pedal::ALL.into_iter().enumerate() {
-            let x = area.left() + i as f32 * (PEDAL_CELL_W + ARROW_W);
+        let eq = ops::track(&self.project, id).map_or(TrackEq::FLAT, |t| t.eq);
+        // Engine order: drive -> EQ -> filter -> delay -> reverb.
+        let mut x = area.left();
+        for i in 0..=Pedal::ALL.len() {
             if i > 0 {
-                let c = pos2(x - ARROW_W * 0.5, area.center().y);
+                let c = pos2(x + ARROW_W * 0.5, area.center().y);
                 let tip = pos2(c.x + 2.0, c.y);
                 let stroke = Stroke::new(1.5_f32, look.mx.text_faint);
                 let p = ui.painter();
                 p.line_segment([pos2(c.x - 3.0, c.y - 5.0), tip], stroke);
                 p.line_segment([tip, pos2(c.x - 3.0, c.y + 5.0)], stroke);
+                x += ARROW_W;
             }
-            let cell = Rect::from_min_size(pos2(x, area.top()), vec2(PEDAL_CELL_W, area.height()));
-            self.fx_pedal(ui, look, id, fx, pedal, color, cell);
+            let w = if i == 1 { EQ_CELL_W } else { PEDAL_CELL_W };
+            let cell = Rect::from_min_size(pos2(x, area.top()), vec2(w, area.height()));
+            match i {
+                0 => self.fx_pedal(ui, look, id, fx, Pedal::Drive, color, cell),
+                1 => self.eq_pedal(ui, look, id, eq, color, cell),
+                _ => self.fx_pedal(ui, look, id, fx, Pedal::ALL[i - 1], color, cell),
+            }
+            x += w;
+        }
+    }
+
+    /// The EQ pedal: a wider block holding the three band knobs, dimmed
+    /// while every band is flat (the engine then skips the EQ entirely).
+    #[allow(clippy::too_many_arguments)]
+    fn eq_pedal(
+        &mut self,
+        ui: &mut Ui,
+        look: Look,
+        id: u64,
+        eq: TrackEq,
+        color: Color32,
+        cell: Rect,
+    ) {
+        let mx = look.mx;
+        let ph = (cell.height() - 4.0).clamp(48.0, PEDAL_MAX_H);
+        let prect = Rect::from_center_size(cell.center(), vec2(cell.width() - 8.0, ph));
+        let (fill, edge) = if eq.is_flat() {
+            (mx.control.gamma_multiply(0.7), mx.border_soft)
+        } else {
+            (mx.control, mx.border)
+        };
+        ui.painter().rect(
+            prect,
+            8.0,
+            fill,
+            Stroke::new(1.0_f32, edge),
+            StrokeKind::Inside,
+        );
+        let inner = prect.shrink2(vec2(4.0, 6.0));
+        let ksize = (inner.height() - 30.0).clamp(6.0, EQ_KNOB_W - 4.0);
+        let top = inner.center().y - (ksize + 30.0) * 0.5;
+        if inner.height() >= ksize + 44.0 {
+            ui.painter().text(
+                pos2(prect.center().x, prect.top() + 5.0),
+                Align2::CENTER_TOP,
+                "EQ",
+                theme::body_font(10.0),
+                mx.text_faint,
+            );
+        }
+        let x = prect.center().x - 1.5 * EQ_KNOB_W;
+        self.eq_knobs(ui, look, id, eq, color, ksize, pos2(x, top));
+    }
+
+    /// Low / mid / high EQ knobs side by side from `origin`, each
+    /// `EQ_KNOB_W` wide and `size + 30` tall. Bipolar, ±12 dB, double-click
+    /// returns a band to 0 dB (flat).
+    #[allow(clippy::too_many_arguments)]
+    fn eq_knobs(
+        &mut self,
+        ui: &mut Ui,
+        look: Look,
+        id: u64,
+        eq: TrackEq,
+        color: Color32,
+        size: f32,
+        origin: Pos2,
+    ) {
+        for (band, (label, db)) in [("Low", eq.low_db), ("Mid", eq.mid_db), ("High", eq.high_db)]
+            .into_iter()
+            .enumerate()
+        {
+            let rect = Rect::from_min_size(
+                origin + vec2(band as f32 * EQ_KNOB_W, 0.0),
+                vec2(EQ_KNOB_W, size + 30.0),
+            );
+            let mut kui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt(("mixer.eq", id, band))
+                    .max_rect(rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            let mut v = eq_to_norm(db);
+            let resp = mixer_knob_w(
+                &mut kui,
+                look,
+                &mut v,
+                0.5,
+                true,
+                label,
+                &eq_text(db),
+                color,
+                size,
+                EQ_KNOB_W,
+            );
+            if resp.changed() {
+                let db = norm_to_eq(v);
+                self.edit("Track EQ", Some(&format!("eq{band}-{id}")), |p| {
+                    if let Some(t) = ops::track_mut(p, id) {
+                        match band {
+                            0 => t.eq.low_db = db,
+                            1 => t.eq.mid_db = db,
+                            _ => t.eq.high_db = db,
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -1799,8 +1982,57 @@ impl CadenceApp {
             mx.text,
             title.width(),
         );
+        // Loudness line under the title: output RMS, plus the glue's gain
+        // reduction while it is working.
+        let info = Rect::from_min_size(pos2(inner.left(), y + 20.0), vec2(inner.width(), 14.0));
+        let rms = meters.master_rms;
+        let glue_db = meters.glue_db;
+        let info_resp = ui.interact(info, sid.with("rms"), Sense::hover());
+        info_resp.widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Label,
+                true,
+                format!("Master RMS {}", level_db_text(rms)),
+            )
+        });
+        theme::paint_elided(
+            ui,
+            info.left_center(),
+            Align2::LEFT_CENTER,
+            &format!("RMS {}", level_db_text(rms)),
+            theme::body_font(theme::TEXT_SMALL),
+            mx.text_dim,
+            info.width(),
+        );
+        if glue_db >= 0.1 && !compact {
+            theme::paint_elided(
+                ui,
+                info.right_center(),
+                Align2::RIGHT_CENTER,
+                &format!("GR {:.1}", -glue_db),
+                theme::body_font(theme::TEXT_SMALL),
+                mx.text_faint,
+                info.width() * 0.45,
+            );
+        }
+        lazy_tip(info_resp, || {
+            format!(
+                "Master RMS: {} dBFS (300 ms average)\nGlue gain reduction: {:.1} dB",
+                level_db_text(rms),
+                glue_db
+            )
+        });
         y += 20.0 + 14.0 + GAP_XS;
-        let _ = pal;
+
+        // Glue knob along the bottom when the strip is tall enough.
+        let ks: f32 = if compact { 20.0 } else { 28.0 };
+        let knob_h = ks + 30.0;
+        let has_glue = inner.bottom() - y >= knob_h + GAP_XS + 120.0;
+        let bottom = if has_glue {
+            inner.bottom() - knob_h - GAP_XS
+        } else {
+            inner.bottom()
+        };
 
         // Group: fader column | dB scale | meter L | meter R, centered.
         let ro_w = look.readout_w();
@@ -1809,7 +2041,38 @@ impl CadenceApp {
         let meters_w = 2.0 * mw + 3.0;
         let group_w = ro_w + GAP_XS + scale_w + 2.0 + meters_w;
         let gx = inner.left() + (inner.width() - group_w) * 0.5;
-        let zone = Rect::from_min_max(pos2(inner.left(), y), inner.max);
+        let zone = Rect::from_min_max(pos2(inner.left(), y), pos2(inner.right(), bottom));
+
+        if has_glue {
+            let knob_w = ks.max(KNOB_MIN_W);
+            let mut kui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt("mixer.master.glue")
+                    .max_rect(Rect::from_min_size(
+                        pos2(inner.center().x - knob_w * 0.5, bottom + GAP_XS),
+                        vec2(knob_w, knob_h),
+                    ))
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            let glue = self.project.glue;
+            let mut v = glue;
+            if mixer_knob(
+                &mut kui,
+                look,
+                &mut v,
+                0.0,
+                false,
+                "Glue",
+                &glue_text(glue),
+                pal.accent,
+                ks,
+            )
+            .changed()
+            {
+                let v = if v < 0.01 { 0.0 } else { v.clamp(0.0, 1.0) };
+                self.edit("Master glue", Some("glue"), |p| p.glue = v);
+            }
+        }
 
         let volume = self.project.master_volume;
         paint_readout(
@@ -2017,6 +2280,19 @@ mod tests {
     }
 
     #[test]
+    fn eq_knob_math_round_trips_and_snaps_flat() {
+        use super::{eq_to_norm, norm_to_eq};
+        assert_eq!(eq_to_norm(0.0), 0.5);
+        assert_eq!(norm_to_eq(0.5), 0.0);
+        assert_eq!(norm_to_eq(0.505), 0.0, "near-centre snaps to bypass");
+        assert_eq!(norm_to_eq(0.0), -12.0);
+        assert_eq!(norm_to_eq(1.0), 12.0);
+        for db in [-12.0, -6.5, 3.0, 11.9] {
+            assert!((norm_to_eq(eq_to_norm(db)) - db).abs() < 0.051);
+        }
+    }
+
+    #[test]
     fn db_math_round_trips() {
         assert_eq!(db_text(fader_db(0.0, 0.0)), "-\u{221e}");
         assert_eq!(db_text(fader_db(1.0, 0.0)), "0.0");
@@ -2090,6 +2366,15 @@ mod tests {
         assert!(m.any_active());
         m.reset();
         assert_eq!(m.master_peak(), m.master[0].level.max(m.master[1].level));
+        // Master RMS and glue reduction come straight from the engine tap.
+        assert_eq!((m.master_rms, m.glue_db), (0.0, 0.0));
+        m.last_peaks = Some(crate::audio::MixerPeaks {
+            master_rms: 0.1,
+            glue_reduction_db: f32::NAN,
+            ..Default::default()
+        });
+        m.advance(&project, [0.3, 0.2], 1.0 / 60.0);
+        assert_eq!((m.master_rms, m.glue_db), (0.1, 0.0));
     }
 
     /// `legible` only moves a color when it must, and always reaches the

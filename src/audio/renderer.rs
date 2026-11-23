@@ -5,7 +5,8 @@
 //! After construction nothing here allocates; commands only swap pointers.
 
 use super::dsp::{
-    soft_clip, time_coef, DcBlock, Limiter, PingPongDelay, Reverb, Smoother, Svf, SvfCoefs,
+    soft_clip, time_coef, DcBlock, GlueCompressor, Limiter, PingPongDelay, Reverb, Smoother, Svf,
+    SvfCoefs, ThreeBandEq,
 };
 use super::font::{FontBank, FontSynth};
 use super::meter::BlockPeaks;
@@ -35,6 +36,8 @@ const DELAY_SEND: f32 = 0.7;
 /// Delay echo spacing: a dotted eighth.
 const DELAY_STEPS: f64 = 3.0;
 const PANIC_SECONDS: f32 = 0.012;
+/// Integration time of the master RMS meter.
+const RMS_SECONDS: f32 = 0.3;
 
 /// Messages from the control thread. `Box` payloads are built off the audio thread.
 // `Preview` carries a `TrackParams` whose `Sound::Kit` variant is ~5 KB; the
@@ -73,6 +76,8 @@ struct Strip {
     reverb: Smoother,
     delay: Smoother,
     drive: Smoother,
+    /// Channel EQ between drive and filter; flat = skipped entirely.
+    eq: ThreeBandEq,
     cutoff: f32,
     cutoff_target: f32,
     coefs: SvfCoefs,
@@ -99,6 +104,7 @@ impl Strip {
             reverb: Smoother::new(0.0, 0.02, sr),
             delay: Smoother::new(0.0, 0.02, sr),
             drive: Smoother::new(0.0, 0.03, sr),
+            eq: ThreeBandEq::new(sr),
             cutoff: MAX_CUTOFF_HZ,
             cutoff_target: MAX_CUTOFF_HZ,
             coefs: SvfCoefs::new(MAX_CUTOFF_HZ, 0.707, sr),
@@ -135,6 +141,7 @@ impl Strip {
                 s.target = t;
             }
         }
+        self.eq.set(p.eq, snap);
         self.cutoff_target = p.cutoff;
         if snap {
             self.cutoff = p.cutoff;
@@ -170,6 +177,7 @@ impl Strip {
                 s.target = t;
             }
         }
+        self.eq.set([0.0; 3], snap);
         self.cutoff_target = MAX_CUTOFF_HZ;
         if snap {
             self.cutoff = MAX_CUTOFF_HZ;
@@ -214,6 +222,7 @@ impl Strip {
     fn reset(&mut self) {
         self.filt_l.reset();
         self.filt_r.reset();
+        self.eq.snap();
         self.live = false;
         for s in [
             &mut self.gain_l,
@@ -225,6 +234,11 @@ impl Strip {
             s.snap(s.target);
         }
         self.cutoff = self.cutoff_target;
+    }
+
+    /// A parameter is still gliding (the strip must settle even while idle).
+    fn unsettled(&self) -> bool {
+        !self.gain_l.settled() || self.cutoff != self.cutoff_target || !self.eq.settled()
     }
 
     /// Settles parameters while the strip is idle so it resumes at its targets.
@@ -258,6 +272,8 @@ impl Strip {
                 (self.cutoff.ln() + (self.cutoff_target.ln() - self.cutoff.ln()) * k).exp();
             self.coefs = SvfCoefs::new(self.cutoff, 0.707, sr);
         }
+        self.eq.advance(n);
+        let eq = !self.eq.is_bypassed();
         let (out_l, out_r) = out;
         let (rev_l, rev_r) = rev;
         let (dly_l, dly_r) = dly;
@@ -268,6 +284,9 @@ impl Strip {
             if pre > 1.0 {
                 x = soft_clip(x * pre) * makeup;
                 y = soft_clip(y * pre) * makeup;
+            }
+            if eq {
+                (x, y) = self.eq.process(x, y);
             }
             x = self.filt_l.low(&self.coefs, x);
             y = self.filt_r.low(&self.coefs, y);
@@ -286,7 +305,10 @@ impl Strip {
                 output_peak = output_peak.max(ol.abs()).max(or.abs());
             }
         }
-        self.live = peak > 1e-7 || !self.filt_l.is_quiet() || !self.filt_r.is_quiet();
+        self.live = peak > 1e-7
+            || !self.filt_l.is_quiet()
+            || !self.filt_r.is_quiet()
+            || (eq && !self.eq.is_quiet());
         output_peak
     }
 }
@@ -368,6 +390,8 @@ pub struct Renderer {
     click_buf: Vec<f32>,
     delay: PingPongDelay,
     reverb: Reverb,
+    /// Master bus compressor ahead of the limiter; bypassed at glue 0.
+    glue: GlueCompressor,
     limiter: Limiter,
     dc_l: DcBlock,
     dc_r: DcBlock,
@@ -377,6 +401,11 @@ pub struct Renderer {
     panic_len: usize,
     peak_l: f32,
     peak_r: f32,
+    /// Offline loudness-normalization gain ahead of the limiter (1 = off).
+    out_gain: f32,
+    /// Smoothed mean-square power of the output (metered renders only).
+    rms_power: f32,
+    rms_coef: f32,
     /// SoundFont catalog + per-track synthesizers for `Sound::Font` notes.
     font_bank: FontBank,
     /// Stereo scratch for rustysynth output (its `render` needs separate L/R).
@@ -421,6 +450,7 @@ impl Renderer {
             click_buf: vec![0.0; MAX_BLOCK],
             delay: PingPongDelay::new(sr),
             reverb: Reverb::new(sr),
+            glue: GlueCompressor::new(sr),
             limiter: Limiter::new(sr),
             dc_l: DcBlock::new(sr),
             dc_r: DcBlock::new(sr),
@@ -429,6 +459,9 @@ impl Renderer {
             panic_len: ((PANIC_SECONDS * sr) as usize).max(1),
             peak_l: 0.0,
             peak_r: 0.0,
+            out_gain: 1.0,
+            rms_power: 0.0,
+            rms_coef: 1.0 - time_coef(RMS_SECONDS, sr),
             font_bank: FontBank::new(sr, Arc::new(FontLibrary::empty())),
             font_scratch_l: vec![0.0; MAX_BLOCK],
             font_scratch_r: vec![0.0; MAX_BLOCK],
@@ -461,6 +494,7 @@ impl Renderer {
         fresh.metronome = self.metronome;
         fresh.loop_region = self.loop_region;
         fresh.master.snap(Self::master_gain(&fresh.song));
+        fresh.glue.set_amount(fresh.song.glue, true);
         for (strip, p) in fresh.strips.iter_mut().zip(fresh.song.tracks.iter()) {
             strip.set(p, fresh.sr, true);
         }
@@ -517,6 +551,17 @@ impl Renderer {
 
     pub fn latency(&self) -> usize {
         self.limiter.latency()
+    }
+
+    /// Linear gain applied after the glue and before the limiter, so the
+    /// -1 dBFS ceiling still holds. Offline loudness normalization only;
+    /// 1.0 (the default) leaves the signal untouched.
+    pub fn set_output_gain(&mut self, gain: f32) {
+        self.out_gain = if gain.is_finite() && gain > 0.0 {
+            gain
+        } else {
+            1.0
+        };
     }
 
     /// No voices and no effect tails left.
@@ -608,6 +653,7 @@ impl Renderer {
         } else {
             self.master.target = Self::master_gain(&song);
         }
+        self.glue.set_amount(song.glue, snap);
         let old = std::mem::replace(&mut self.song, song);
         self.font_bank.retain_tracks(&self.song.tracks);
         self.resync();
@@ -675,6 +721,7 @@ impl Renderer {
         }
         self.delay.clear();
         self.reverb.clear();
+        self.glue.clear();
         self.limiter.clear();
         self.click.env = 0.0;
         self.dc_l = DcBlock::new(self.sr);
@@ -1213,9 +1260,7 @@ impl Renderer {
             }
             let used = std::mem::take(&mut self.strip_used[s]);
             if !used && !self.strips[s].live {
-                if !self.strips[s].gain_l.settled()
-                    || self.strips[s].cutoff != self.strips[s].cutoff_target
-                {
+                if self.strips[s].unsettled() {
                     self.strips[s].idle(sr);
                 }
                 continue;
@@ -1254,9 +1299,7 @@ impl Renderer {
         for b in 0..NUM_BUSES {
             let used = std::mem::take(&mut self.bus_used[b]);
             if !used && !self.bus_strips[b].live {
-                if !self.bus_strips[b].gain_l.settled()
-                    || self.bus_strips[b].cutoff != self.bus_strips[b].cutoff_target
-                {
+                if self.bus_strips[b].unsettled() {
                     self.bus_strips[b].idle(sr);
                 }
                 continue;
@@ -1317,6 +1360,15 @@ impl Renderer {
             *ml = self.dc_l.process(*ml * g + c);
             *mr = self.dc_r.process(*mr * g + c);
         }
+        self.glue
+            .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
+        if self.out_gain != 1.0 {
+            let g = self.out_gain;
+            for (ml, mr) in self.mix_l[..n].iter_mut().zip(self.mix_r[..n].iter_mut()) {
+                *ml *= g;
+                *mr *= g;
+            }
+        }
         self.limiter
             .process(&mut self.mix_l[..n], &mut self.mix_r[..n]);
 
@@ -1340,6 +1392,15 @@ impl Renderer {
             });
         self.peak_l = pl;
         self.peak_r = pr;
+        if METER {
+            let mut power = self.rms_power;
+            for (&l, &r) in self.mix_l[..n].iter().zip(self.mix_r[..n].iter()) {
+                power += ((l * l + r * r) * 0.5 - power) * self.rms_coef;
+            }
+            self.rms_power = super::dsp::flush(power);
+            peaks.master_rms = self.rms_power.sqrt();
+            peaks.glue_reduction_db = peaks.glue_reduction_db.max(self.glue.gain_reduction_db);
+        }
     }
 
     /// Renders `out_l.len()` frames (any length) into the given buffers, overwriting them.
@@ -1467,6 +1528,112 @@ mod tests {
         };
         assert!(open_hat_sounding(0), "without a group the hats stack");
         assert!(!open_hat_sounding(1), "the closed hat chokes the open hat");
+    }
+
+    /// Energy below ~150 Hz (mono sum), via a steep-enough SVF low-pass.
+    fn low_band_energy(l: &[f32], r: &[f32]) -> f32 {
+        let c = SvfCoefs::new(150.0, 0.707, SR);
+        let mut f = Svf::default();
+        l.iter()
+            .zip(r)
+            .map(|(a, b)| {
+                let y = f.low(&c, (a + b) * 0.5);
+                y * y
+            })
+            .sum()
+    }
+
+    fn render_song(p: &Project, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(p)));
+        r.play(0.0, false);
+        run(&mut r, frames)
+    }
+
+    #[test]
+    fn channel_eq_is_neutral_flat_and_boosts_lows() {
+        let flat = one_note_project(Instrument::Bass, 36, 0.0, 8.0);
+        assert!(flat.tracks[0].eq.is_flat());
+        let (fl, fr) = render_song(&flat, 48_000);
+        // A song saved before the EQ existed renders bit-identically.
+        let mut json = serde_json::to_value(&flat).unwrap();
+        assert!(
+            json["tracks"][0].get("eq").is_none(),
+            "flat EQ is not saved"
+        );
+        json["tracks"][0].as_object_mut().unwrap().remove("eq");
+        let legacy: Project = serde_json::from_value(json).unwrap();
+        assert_eq!(render_song(&legacy, 48_000), (fl.clone(), fr.clone()));
+
+        let mut boosted = flat.clone();
+        boosted.tracks[0].eq.low_db = 9.0;
+        boosted.validate().unwrap();
+        let (bl, br) = render_song(&boosted, 48_000);
+        let (e_flat, e_boost) = (low_band_energy(&fl, &fr), low_band_energy(&bl, &br));
+        assert!(e_flat > 0.0);
+        assert!(
+            e_boost > e_flat * 2.0,
+            "low shelf raises bass energy ({e_flat} -> {e_boost})"
+        );
+        assert!(bl.iter().chain(&br).all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn master_glue_is_neutral_off_and_compresses_on() {
+        let mut p = one_note_project(Instrument::Pad, 48, 0.0, 16.0);
+        p.master_volume = 1.0;
+        p.tracks[0].volume = 1.0;
+        for pitch in [55, 60, 63, 67, 72] {
+            p.tracks[0].patterns[0]
+                .notes
+                .push(Note::new(pitch, 0.0, 16.0, 1.0));
+        }
+        p.validate().unwrap();
+        let (dl, dr) = render_song(&p, 96_000);
+        let mut json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("glue").is_none(), "glue 0 is not saved");
+        json.as_object_mut().unwrap().remove("glue");
+        let legacy: Project = serde_json::from_value(json).unwrap();
+        assert_eq!(render_song(&legacy, 96_000), (dl.clone(), dr.clone()));
+        p.glue = 1.0;
+        p.validate().unwrap();
+        let (gl, gr) = render_song(&p, 96_000);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let (dry, glued) = (rms(&dl[48_000..]), rms(&gl[48_000..]));
+        assert!(dry > 0.01);
+        assert!(
+            glued < dry * 0.95,
+            "glue turns the pad down ({dry} -> {glued})"
+        );
+        assert!(gl
+            .iter()
+            .chain(&gr)
+            .all(|x| x.is_finite() && x.abs() <= 0.892));
+    }
+
+    #[test]
+    fn metered_render_reports_master_rms() {
+        let p = one_note_project(Instrument::Pad, 60, 0.0, 16.0);
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (mut l, mut rr) = (vec![0.0; 256], vec![0.0; 256]);
+        let mut tail = Vec::new();
+        let mut peaks = BlockPeaks::default();
+        for _ in 0..(SR as usize / 256) {
+            peaks = BlockPeaks::default();
+            r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+            tail.extend(l.iter().zip(&rr).map(|(a, b)| (a * a + b * b) * 0.5));
+        }
+        let window = &tail[tail.len() - (0.3 * SR) as usize..];
+        let expect = (window.iter().sum::<f32>() / window.len() as f32).sqrt();
+        assert!(expect > 0.005, "pad is sounding");
+        assert!(
+            (peaks.master_rms / expect - 1.0).abs() < 0.25,
+            "meter {} vs measured {expect}",
+            peaks.master_rms
+        );
+        assert_eq!(peaks.glue_reduction_db, 0.0, "glue is off");
     }
 
     #[test]

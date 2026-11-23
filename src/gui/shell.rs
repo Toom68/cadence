@@ -531,6 +531,19 @@ impl CadenceApp {
         if menu_item(ui, pal, wav, &keys(ui, &SC_EXPORT_WAV), idle, None).clicked() {
             self.export_wav_dialog();
         }
+        let normalize = format!(
+            "Normalize WAV Export ({:.0} LUFS)",
+            crate::audio::DEFAULT_TARGET_LUFS
+        );
+        if menu_item(ui, pal, &normalize, "", true, Some(self.export_normalize))
+            .on_hover_text(
+                "Bring exported WAVs to a streaming-ready loudness (ITU-R BS.1770). \
+                 Peaks stay under -1 dBFS; takes a few extra render passes.",
+            )
+            .clicked()
+        {
+            self.export_normalize = !self.export_normalize;
+        }
         let stems = if idle { "Export Stems…" } else { busy };
         if menu_item(ui, pal, stems, "", idle, None).clicked() {
             self.export_stems_dialog();
