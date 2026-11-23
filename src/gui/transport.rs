@@ -45,6 +45,12 @@ pub(super) struct TransportState {
     /// computer-keyboard row land in the selected track's pattern. Session
     /// state only — never saved into the `.cadence` file.
     pub recording: bool,
+    /// Count in one metronome bar when playback starts with record armed.
+    /// An app preference (eframe storage), not song data.
+    pub count_in: bool,
+    /// Count-in steps the engine is still clicking through; the playhead
+    /// waits and nothing is recorded until it reaches 0.
+    pub count_in_left: f64,
     /// Notes recorded since the last time record was armed, for the status
     /// line ("Recorded N notes").
     pub recorded_notes: usize,
@@ -64,6 +70,14 @@ pub(super) struct TransportState {
     cache: BarCache,
     /// Edit buffer behind the song-name field.
     name_buf: String,
+}
+
+/// eframe storage key of the count-in preference.
+pub(super) const COUNT_IN_KEY: &str = "transport.count_in";
+
+/// The saved count-in preference; off when unset or unreadable.
+pub(super) fn count_in_from_storage(storage: Option<&dyn eframe::Storage>) -> bool {
+    storage.and_then(|s| s.get_string(COUNT_IN_KEY)).as_deref() == Some("1")
 }
 
 /// How long the master meter keeps its clip warning lit.
@@ -148,17 +162,30 @@ impl CadenceApp {
             return;
         };
         let from = self.play_start(self.transport.position);
-        match engine.play(
+        let count_in = if self.transport.recording && self.transport.count_in {
+            ops::STEPS_PER_BAR as f64
+        } else {
+            0.0
+        };
+        match engine.play_with_count_in(
             &self.project,
             from,
             self.transport.looping,
             self.transport.loop_region,
+            count_in,
         ) {
             Ok(()) => {
                 self.engine_dirty = false;
                 self.transport.playing = true;
                 self.transport.position = from;
+                self.transport.count_in_left = count_in;
                 self.transport.started_at = Some(Instant::now());
+                if count_in > 0.0 {
+                    self.set_status(
+                        StatusKind::Info,
+                        "Count-in: recording starts after one bar.",
+                    );
+                }
             }
             Err(err) => self.set_status(
                 StatusKind::Error,
@@ -172,6 +199,7 @@ impl CadenceApp {
             engine.pause();
         }
         self.transport.playing = false;
+        self.transport.count_in_left = 0.0;
     }
 
     /// Stops playback. Pressing Stop while stopped returns to the song start.
@@ -184,6 +212,7 @@ impl CadenceApp {
         let t = &mut self.transport;
         let was_playing = t.playing;
         t.playing = false;
+        t.count_in_left = 0.0;
         t.position = if was_playing || t.position != t.start_marker {
             t.start_marker
         } else {
@@ -231,6 +260,20 @@ impl CadenceApp {
                 self.transport.started_at = Some(Instant::now());
             }
         }
+    }
+
+    /// Toggles the one-bar count-in that precedes recording started with
+    /// Play while record is armed.
+    pub(super) fn toggle_count_in(&mut self) {
+        self.transport.count_in = !self.transport.count_in;
+        self.set_status(
+            StatusKind::Info,
+            if self.transport.count_in {
+                "Count-in on: Play with record armed clicks one bar first."
+            } else {
+                "Count-in off."
+            },
+        );
     }
 
     pub(super) fn toggle_metronome(&mut self) {
@@ -285,6 +328,11 @@ impl CadenceApp {
             self.finish_record_take();
         }
         let t = &mut self.transport;
+        t.count_in_left = if t.playing && st.playing {
+            st.count_in
+        } else {
+            0.0
+        };
         if t.playing {
             if st.playing {
                 t.position = st.step;
@@ -482,16 +530,23 @@ impl CadenceApp {
             #[cfg(test)]
             probe(ui, record.rect);
             act.record = record.clicked();
+            act.count_in |= count_in_menu(&record, t.count_in);
             ui.add_space(gap);
             act.looping = button(ui, Icon::Loop, t.looping, pal.accent, &cache.loop_tip);
             ui.add_space(gap);
-            act.metronome = button(
+            let metronome = theme::icon_button(
                 ui,
+                pal,
                 Icon::Metronome,
+                plan.btn,
                 t.metronome,
                 pal.link,
                 tip(|t| &t.metronome),
             );
+            #[cfg(test)]
+            probe(ui, metronome.rect);
+            act.metronome = metronome.clicked();
+            act.count_in |= count_in_menu(&metronome, t.count_in);
             bar_sep(ui, pal, plan);
 
             // --- position
@@ -829,6 +884,9 @@ impl CadenceApp {
         if act.metronome {
             self.toggle_metronome();
         }
+        if act.count_in {
+            self.toggle_count_in();
+        }
         if act.toggle_time {
             self.transport.time_first = !self.transport.time_first;
         }
@@ -1019,6 +1077,7 @@ struct BarAction {
     record: bool,
     looping: bool,
     metronome: bool,
+    count_in: bool,
     toggle_time: bool,
     undo: bool,
     redo: bool,
@@ -1046,17 +1105,36 @@ impl Tips {
             to_start: theme::shortcut_tip(ctx, "Return to start", &SC_HOME),
             stop: "Stop — press again to return to the start".to_owned(),
             record: format!(
-                "Record ({}) — perform into the selected track's pattern from the Keyboard tab or the Z X C… keys",
+                "Record ({}) — perform into the selected track's pattern from the Keyboard tab or the Z X C… keys. Right-click for a one-bar count-in.",
                 ctx.format_shortcut(&SC_RECORD)
             ),
             recording: format!(
                 "Recording ({}) — notes you play land in the selected track's pattern: live while playing, step by step while stopped. Click to stop.",
                 ctx.format_shortcut(&SC_RECORD)
             ),
-            metronome: "Metronome click".to_owned(),
+            metronome: "Metronome click — right-click for a one-bar count-in before recording"
+                .to_owned(),
             tap: "Tap tempo — click along with the music; three taps set the tempo".to_owned(),
         }
     }
+}
+
+/// Right-click menu of the record and metronome buttons: the count-in
+/// checkbox. True when it was toggled this frame.
+fn count_in_menu(resp: &Response, on: bool) -> bool {
+    let mut toggled = false;
+    resp.context_menu(|ui| {
+        let mut value = on;
+        if ui
+            .checkbox(&mut value, "Count in one bar before recording")
+            .on_hover_text("Play with record armed clicks one bar, then starts the playhead")
+            .clicked()
+        {
+            toggled = true;
+            ui.close();
+        }
+    });
+    toggled
 }
 
 /// A `width` × [`BLOCK_H`] slot whose content is stacked from the top; the
@@ -1420,6 +1498,53 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn record_and_metronome_right_click_menus_toggle_the_count_in() {
+        let (ctx, mut app) = run_bar(1360.0, |_| {});
+        // Bar items in order: mark, name, ⏮, play, stop, record, loop, metronome.
+        let items = probed(&ctx);
+        let mut time = 1.0;
+        let mut frame = |app: &mut CadenceApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1360.0, 860.0))),
+                focused: true,
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            time += 1.0 / 60.0;
+            let _ = ctx.run(input, |ctx| app.frame(ctx));
+        };
+        let click = |pos: egui::Pos2, button| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        for (expected, item) in [(true, items[5]), (false, items[7])] {
+            let at = item.center();
+            frame(&mut app, click(at, egui::PointerButton::Secondary));
+            frame(&mut app, vec![]);
+            frame(
+                &mut app,
+                click(at + vec2(40.0, 14.0), egui::PointerButton::Primary),
+            );
+            frame(&mut app, vec![]);
+            assert_eq!(app.transport.count_in, expected, "{item:?}");
         }
     }
 

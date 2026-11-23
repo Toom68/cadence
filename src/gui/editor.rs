@@ -3062,7 +3062,7 @@ impl CadenceApp {
     /// [`Self::record_note_on`] at an explicit `velocity` (drum pads scale
     /// it by where they are hit).
     fn record_note_on_with(&mut self, pitch: u8, velocity: f32) -> Option<u64> {
-        if !self.transport.recording {
+        if !self.transport.recording || self.transport.count_in_left > 0.0 {
             return None;
         }
         let track_id = self.sel.track?;

@@ -3751,6 +3751,42 @@ fn one_recording_take_is_one_undo_step() {
     assert_eq!(ui.pattern(idx, 0).notes.len(), 3);
 }
 
+#[test]
+fn count_in_preference_toggles_and_round_trips_through_storage() {
+    let storage = MemStorage::default();
+    assert!(!super::transport::count_in_from_storage(Some(&storage)));
+    assert!(!super::transport::count_in_from_storage(None));
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    assert!(!ui.app.transport.count_in, "off by default");
+    ui.app.toggle_count_in();
+    assert!(ui.app.transport.count_in);
+    let mut storage = MemStorage::default();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert!(super::transport::count_in_from_storage(Some(&storage)));
+    ui.app.toggle_count_in();
+    eframe::App::save(&mut ui.app, &mut storage);
+    assert!(!super::transport::count_in_from_storage(Some(&storage)));
+}
+
+#[test]
+fn notes_played_during_the_count_in_are_not_recorded() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    let idx = plant_record_track(&mut ui);
+    ui.app.toggle_record();
+    ui.app.transport.playing = true;
+    ui.app.transport.count_in_left = 8.0;
+    assert!(ui.app.record_note_on(60).is_none());
+    assert!(ui.pattern(idx, 0).notes.is_empty());
+    assert!(ui.app.editor.record_pending.is_empty());
+    ui.app.transport.count_in_left = 0.0;
+    assert!(
+        ui.app.record_note_on(60).is_some(),
+        "recording after the bar"
+    );
+}
+
 /// Regression probe for the library/quick-add click fix: a click interact
 /// *inside* `dnd_drag_source` can never fire (egui drops click hits under a
 /// drag-only top widget), but a click interact registered *after* the drag

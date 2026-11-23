@@ -243,6 +243,7 @@ impl CadenceApp {
         };
         let mut app = Self::build(Project::demo(), engine, true);
         app.theme = theme;
+        app.transport.count_in = transport::count_in_from_storage(cc.storage);
         app.audio_device_pref = device_pref;
         if let Some(err) = audio_error {
             app.set_status(
@@ -1787,10 +1788,14 @@ impl eframe::App for CadenceApp {
         self.frame(ctx);
     }
 
-    /// Persists only the UI theme — song state is saved through `.cadence`
-    /// files, never through eframe storage.
+    /// Persists only UI preferences (theme, count-in) — song state is saved
+    /// through `.cadence` files, never through eframe storage.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(theme::STORAGE_KEY, self.theme.id().to_owned());
+        storage.set_string(
+            transport::COUNT_IN_KEY,
+            if self.transport.count_in { "1" } else { "0" }.to_owned(),
+        );
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
