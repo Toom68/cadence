@@ -1222,10 +1222,7 @@ impl CadenceApp {
     /// Drops the loop region (the song loops whole again), live in the
     /// engine too.
     fn clear_loop_region(&mut self) {
-        self.transport.loop_region = None;
-        if let Some(engine) = &self.engine {
-            engine.set_loop_region(None);
-        }
+        self.set_loop_region(None);
     }
 
     /// Height of a track's whole arranger row: the clip lane plus the
@@ -2670,6 +2667,123 @@ impl CadenceApp {
         {
             self.set_song_end(step);
         }
+        self.time_menu(ui, step);
+    }
+
+    /// Insert/delete-time entries of the structure menu: whole bars at the
+    /// bar line nearest `step` (insert) or from the bar holding it (delete),
+    /// plus loop-region variants while a loop region is set. Everything
+    /// after the edit point shifts — see [`ops::insert_time`] and
+    /// [`ops::delete_time`].
+    fn time_menu(&mut self, ui: &mut Ui, step: f64) {
+        let bar = ops::STEPS_PER_BAR as f64;
+        let ins = snap_round(step, bar).max(0.0);
+        let del = snap_floor(step, bar).max(0.0);
+        let counts = |n: u32| {
+            if n == 1 {
+                "1 bar".to_string()
+            } else {
+                format!("{n} bars")
+            }
+        };
+        ui.separator();
+        ui.menu_button(format!("Insert bars at bar {}", bar_number(ins)), |ui| {
+            for n in [1, 2, 4, 8] {
+                if ui
+                    .button(counts(n))
+                    .on_hover_text(
+                        "Everything from here on moves later; clips crossing this bar line are cut",
+                    )
+                    .clicked()
+                {
+                    self.insert_time_at(ins, f64::from(n) * bar, false);
+                }
+            }
+        });
+        ui.menu_button(format!("Delete bars from bar {}", bar_number(del)), |ui| {
+            for n in [1, 2, 4, 8] {
+                if ui
+                    .button(counts(n))
+                    .on_hover_text(
+                        "Removes these bars and closes the gap; clips crossing the edges are cut",
+                    )
+                    .clicked()
+                {
+                    self.delete_time_range(del, del + f64::from(n) * bar);
+                }
+            }
+        });
+        if let Some((a, b)) = self.transport.loop_region {
+            if ui
+                .button("Insert silence for loop")
+                .on_hover_text("Inserts the loop's length of empty time at its start; the loop then plays the new gap")
+                .clicked()
+            {
+                self.insert_time_at(a, b - a, true);
+            }
+            if ui
+                .button("Delete loop region and close gap")
+                .on_hover_text("Removes the looped time; everything after it moves earlier")
+                .clicked()
+            {
+                self.delete_time_range(a, b);
+            }
+        }
+    }
+
+    /// Sets (or clears) the loop region, live in the engine too.
+    pub(super) fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
+        self.transport.loop_region = region;
+        if let Some(engine) = &self.engine {
+            engine.set_loop_region(region);
+        }
+    }
+
+    /// Inserts `len` empty steps at `at` as one undo step; the loop region
+    /// shifts/grows with the song, or — `keep_loop`, for "insert silence for
+    /// loop" — stays put to play the new gap.
+    pub(super) fn insert_time_at(&mut self, at: f64, len: f64, keep_loop: bool) -> bool {
+        let mut ok = false;
+        self.edit("Insert time", None, |p| ok = ops::insert_time(p, at, len));
+        if !ok {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "No room to insert time: songs are limited to {} bars (or a clip couldn't be cut).",
+                    ops::MAX_BARS
+                ),
+            );
+            return false;
+        }
+        if !keep_loop {
+            if let Some(r) = self.transport.loop_region {
+                self.set_loop_region(Some(ops::region_after_insert(r, at, len)));
+            }
+        }
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
+    }
+
+    /// Deletes the steps `[a, b)` and closes the gap as one undo step; the
+    /// loop region maps through the deletion (dropped when nothing of it
+    /// survives).
+    pub(super) fn delete_time_range(&mut self, a: f64, b: f64) -> bool {
+        let mut ok = false;
+        self.edit("Delete time", None, |p| ok = ops::delete_time(p, a, b));
+        if !ok {
+            self.set_status(
+                StatusKind::Warning,
+                "Could not delete that time (a clip crossing its edge couldn't be cut).",
+            );
+            return false;
+        }
+        if let Some(r) = self.transport.loop_region {
+            self.set_loop_region(ops::region_after_delete(r, a, b));
+        }
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
     }
 
     /// Adds a section marker named `name` at `step` (grid-snapped) through
@@ -5906,6 +6020,52 @@ mod tests {
         assert_eq!(app.sel.track, Some(ids[1]));
         let now: Vec<u64> = app.project.tracks.iter().map(|t| t.id).collect();
         assert_eq!(now, ids);
+    }
+
+    #[test]
+    fn time_edits_shift_the_song_and_the_loop_region_and_undo_in_one_step() {
+        let mut app = CadenceApp::headless(Project::demo());
+        let before = app.project.clone();
+        let tid = app.project.tracks[0].id;
+        let starts = |app: &CadenceApp| -> Vec<f64> {
+            ops::track(&app.project, tid)
+                .unwrap()
+                .clips
+                .iter()
+                .map(|c| c.start)
+                .collect()
+        };
+        let original = starts(&app);
+        app.transport.loop_region = Some((32.0, 64.0));
+        // Two bars at bar 1: everything moves, the loop follows.
+        assert!(app.insert_time_at(0.0, 32.0, false));
+        let moved: Vec<f64> = original.iter().map(|s| s + 32.0).collect();
+        assert_eq!(starts(&app), moved);
+        assert_eq!(app.project.bars, before.bars + 2);
+        assert_eq!(app.transport.loop_region, Some((64.0, 96.0)));
+        app.project.validate().unwrap();
+        app.undo();
+        assert_eq!(app.project, before, "one undo step");
+        // "Insert silence for loop" keeps the loop on the new gap.
+        app.transport.loop_region = Some((32.0, 64.0));
+        assert!(app.insert_time_at(32.0, 32.0, true));
+        assert_eq!(app.transport.loop_region, Some((32.0, 64.0)));
+        let in_gap = app
+            .project
+            .tracks
+            .iter()
+            .any(|t| t.clips.iter().any(|c| c.start >= 32.0 && c.start < 64.0));
+        assert!(!in_gap, "the gap is empty");
+        // Deleting the loop region closes the gap and drops the region.
+        assert!(app.delete_time_range(32.0, 64.0));
+        assert_eq!(app.transport.loop_region, None);
+        assert_eq!(app.project.bars, before.bars);
+        assert_eq!(starts(&app), original, "back where it started");
+        app.project.validate().unwrap();
+        // Refused edits leave the song alone and explain why.
+        let now = app.project.clone();
+        assert!(!app.insert_time_at(16.0, ops::MAX_SONG_STEPS, false));
+        assert_eq!(app.project, now);
     }
 
     /// The demo song with every optional toolbar item showing: a loop

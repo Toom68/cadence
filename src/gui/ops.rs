@@ -2077,6 +2077,363 @@ pub fn move_track_to(project: &mut Project, track_id: u64, slot: usize) -> bool 
     true
 }
 
+// ----- inserting and deleting time --------------------------------------------
+
+/// Cuts an imported-WAV clip at `at_step` into adjacent pieces that play
+/// exactly what it played: a cut on a repetition boundary just splits the
+/// loop count, a cut inside a repetition also trims the cut repetition into
+/// a shorter clip (the right part starting later in the source via
+/// `offset`). So a looped clip may become up to four clips. The first piece
+/// keeps `clip_id` and the fade-in, the last one the fade-out. `false`,
+/// leaving the project untouched, when the cut is not strictly inside the
+/// clip, the pieces would be shorter than [`MIN_AUDIO_CLIP_STEPS`], reach
+/// past the source limit or exceed [`MAX_AUDIO_CLIPS_PER_TRACK`].
+pub fn split_audio_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f64) -> bool {
+    let sps = project.seconds_per_step();
+    let Some(t) = track_mut(project, track_id) else {
+        return false;
+    };
+    let Some(ci) = t.audio_clips.iter().position(|c| c.id == clip_id) else {
+        return false;
+    };
+    let clip = t.audio_clips[ci].clone();
+    let len = clip.length;
+    let loops = clip.loop_count();
+    let span = clip.span();
+    let s = at_step - clip.start;
+    if !s.is_finite()
+        || !len.is_finite()
+        || len <= 0.0
+        || s <= SPLIT_EDGE_TOL
+        || span - s <= SPLIT_EDGE_TOL
+        || at_step >= MAX_PATTERN_STEPS as f64
+    {
+        return false;
+    }
+    let piece = |start: f64, length: f64, offset: f64, loops: u32| AudioClip {
+        id: next_id(),
+        start,
+        length,
+        offset,
+        loops,
+        fade_in: 0.0,
+        fade_out: 0.0,
+        ..clip.clone()
+    };
+    let reps = s / len;
+    let m = reps.round() as u32;
+    let mut pieces: Vec<AudioClip> = Vec::new();
+    if m >= 1 && m < loops && (reps - f64::from(m)).abs() * len <= SPLIT_EDGE_TOL {
+        pieces.push(piece(clip.start, len, clip.offset, m));
+        pieces.push(piece(
+            clip.start + len * f64::from(m),
+            len,
+            clip.offset,
+            loops - m,
+        ));
+    } else {
+        let m = reps.floor() as u32;
+        let r = s - len * f64::from(m);
+        let offset = clip.offset + r * sps;
+        if r < MIN_AUDIO_CLIP_STEPS
+            || len - r < MIN_AUDIO_CLIP_STEPS
+            || !offset.is_finite()
+            || offset > crate::model::MAX_AUDIO_SECONDS
+        {
+            return false;
+        }
+        if m >= 1 {
+            pieces.push(piece(clip.start, len, clip.offset, m));
+        }
+        pieces.push(piece(clip.start + len * f64::from(m), r, clip.offset, 1));
+        pieces.push(piece(at_step, len - r, offset, 1));
+        if loops - m > 1 {
+            pieces.push(piece(
+                clip.start + len * f64::from(m + 1),
+                len,
+                clip.offset,
+                loops - m - 1,
+            ));
+        }
+    }
+    if t.audio_clips.len() + pieces.len() - 1 > MAX_AUDIO_CLIPS_PER_TRACK {
+        return false;
+    }
+    pieces[0].id = clip.id;
+    let first = pieces[0].span();
+    pieces[0].fade_in = clean_fade(clip.fade_in, first);
+    if let Some(last) = pieces.last_mut() {
+        last.fade_out = clean_fade(clip.fade_out, last.span());
+    }
+    t.audio_clips.splice(ci..=ci, pieces);
+    true
+}
+
+/// [`split_clip`] or [`split_audio_clip`], whichever kind `clip_id` is.
+pub fn split_any_clip(project: &mut Project, track_id: u64, clip_id: u64, at_step: f64) -> bool {
+    let audio = track(project, track_id).is_some_and(|t| is_audio_clip(t, clip_id));
+    if audio {
+        split_audio_clip(project, track_id, clip_id, at_step)
+    } else {
+        split_clip(project, track_id, clip_id, at_step)
+    }
+}
+
+/// Cuts every clip (both kinds, every track) that straddles `at` so no clip
+/// crosses it. `false` when a cut is refused by a limit.
+fn split_all_at(project: &mut Project, at: f64) -> bool {
+    for ti in 0..project.tracks.len() {
+        let t = &project.tracks[ti];
+        let tid = t.id;
+        let cut: Vec<u64> = t
+            .clips
+            .iter()
+            .filter(|c| {
+                c.start < at - SPLIT_EDGE_TOL && c.start + clip_len(t, c) > at + SPLIT_EDGE_TOL
+            })
+            .map(|c| c.id)
+            .chain(
+                t.audio_clips
+                    .iter()
+                    .filter(|c| {
+                        c.start < at - SPLIT_EDGE_TOL && c.start + c.span() > at + SPLIT_EDGE_TOL
+                    })
+                    .map(|c| c.id),
+            )
+            .collect();
+        for id in cut {
+            if !split_any_clip(project, tid, id, at) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Song length in bars for a song ending at step `end` (rounded up, kept in
+/// `MIN_BARS..=MAX_BARS`).
+fn bars_for_end(end: f64) -> u32 {
+    (((end - 1e-9) / STEPS_PER_BAR as f64).ceil().max(0.0) as u32).clamp(MIN_BARS, MAX_BARS)
+}
+
+/// A lane's points after inserting `len` empty steps at `at`: later points
+/// move right, and when the curve runs across `at` its value there is held
+/// through the gap (a point on each side) so the gap doesn't ramp.
+fn automation_after_insert(points: &[AutomationPoint], at: f64, len: f64) -> Vec<AutomationPoint> {
+    let split = points.partition_point(|p| p.step < at);
+    let mut out: Vec<AutomationPoint> = points[..split].to_vec();
+    let right = &points[split..];
+    let hold = (!out.is_empty() && !right.is_empty())
+        .then(|| crate::model::automation_value(points, at))
+        .flatten();
+    let extra = usize::from(hold.is_some()) * 2;
+    let hold = hold.filter(|_| points.len() + extra <= MAX_AUTOMATION_POINTS);
+    if let Some(v) = hold {
+        out.push(AutomationPoint { step: at, value: v });
+        if right.first().is_none_or(|p| p.step > at) {
+            out.push(AutomationPoint {
+                step: at + len,
+                value: v,
+            });
+        }
+    }
+    out.extend(right.iter().map(|p| AutomationPoint {
+        step: p.step + len,
+        value: p.value,
+    }));
+    out.retain(|p| p.step <= MAX_PATTERN_STEPS as f64);
+    out
+}
+
+/// A lane's points after deleting `[a, b)`: points inside go, later points
+/// move left by the gap, and where the curve crossed an edge its values at
+/// `a` and `b` stay as a jump at the seam.
+fn automation_after_delete(points: &[AutomationPoint], a: f64, b: f64) -> Vec<AutomationPoint> {
+    let before = points.partition_point(|p| p.step < a);
+    let after = points.partition_point(|p| p.step < b);
+    let inside = after > before;
+    let has_before = before > 0;
+    let has_after = after < points.len();
+    let va = crate::model::automation_value(points, a);
+    let vb = crate::model::automation_value(points, b);
+    let mut out: Vec<AutomationPoint> = points[..before].to_vec();
+    let mut seam = Vec::new();
+    if has_before && (inside || has_after) {
+        if let Some(v) = va {
+            seam.push(AutomationPoint { step: a, value: v });
+        }
+    }
+    if has_after && (has_before || inside) && points[after].step > b {
+        if let Some(v) = vb {
+            if seam.last().is_none_or(|p| p.value != v) {
+                seam.push(AutomationPoint { step: a, value: v });
+            }
+        }
+    }
+    let kept = before + (points.len() - after);
+    if kept + seam.len() <= MAX_AUTOMATION_POINTS {
+        out.extend(seam);
+    }
+    out.extend(points[after..].iter().map(|p| AutomationPoint {
+        step: (p.step - (b - a)).max(0.0),
+        value: p.value,
+    }));
+    out
+}
+
+/// Applies `f` to both automation lanes of every track, dropping blocks
+/// left empty.
+fn map_automation(project: &mut Project, f: impl Fn(&[AutomationPoint]) -> Vec<AutomationPoint>) {
+    for t in &mut project.tracks {
+        if let Some(auto) = t.automation.as_mut() {
+            for lane in AutomationLane::ALL {
+                let pts = f(auto.lane(lane));
+                *auto.lane_mut(lane) = pts;
+            }
+            if auto.is_empty() {
+                t.automation = None;
+            }
+        }
+    }
+}
+
+/// Inserts `len` empty steps at song step `at`: every pattern clip, audio
+/// clip, section marker, chord event and automation point at or after `at`
+/// moves right by `len`, clips straddling `at` are cut there first (see
+/// [`split_any_clip`]) so their tails move too, and the song end grows when
+/// `at` lies before it. All or nothing: `false`, project untouched, when a
+/// cut is refused or moved clips would run past [`MAX_SONG_STEPS`]. Markers,
+/// chords and points pushed past the song limit are dropped.
+pub fn insert_time(project: &mut Project, at: f64, len: f64) -> bool {
+    if !(at.is_finite() && len.is_finite() && at >= 0.0 && len > 0.0 && at < MAX_SONG_STEPS) {
+        return false;
+    }
+    let mut work = project.clone();
+    if !split_all_at(&mut work, at) {
+        return false;
+    }
+    let from = at - SPLIT_EDGE_TOL;
+    for t in &mut work.tracks {
+        let ends: Vec<f64> = t
+            .clips
+            .iter()
+            .filter(|c| c.start >= from)
+            .map(|c| c.start + clip_len(t, c))
+            .chain(
+                t.audio_clips
+                    .iter()
+                    .filter(|c| c.start >= from)
+                    .map(|c| c.start + c.span()),
+            )
+            .collect();
+        if ends.iter().any(|e| e + len > MAX_SONG_STEPS + 1e-9) {
+            return false;
+        }
+        for c in t.clips.iter_mut().filter(|c| c.start >= from) {
+            c.start += len;
+        }
+        for c in t.audio_clips.iter_mut().filter(|c| c.start >= from) {
+            c.start += len;
+        }
+    }
+    map_automation(&mut work, |pts| automation_after_insert(pts, at, len));
+    let max = MAX_PATTERN_STEPS as f64;
+    for m in work.markers.iter_mut().filter(|m| m.step >= at) {
+        m.step += len;
+    }
+    work.markers.retain(|m| m.step <= max);
+    for ev in work.chord_events.iter_mut().filter(|e| e.step >= at) {
+        ev.step += len;
+    }
+    work.chord_events.retain(|e| e.step <= max);
+    let end = work.total_steps();
+    if at < end {
+        work.bars = bars_for_end(end + len);
+    }
+    fit_bars_to_content(&mut work);
+    *project = work;
+    true
+}
+
+/// Deletes the song steps `[a, b)` and closes the gap: clips inside go,
+/// clips straddling an edge are cut there first (their outside parts stay),
+/// everything after `b` — clips, markers, chord events, automation points,
+/// the song end — moves left by `b - a`; markers and chords inside the
+/// range are removed. All or nothing: `false`, project untouched, when the
+/// range is empty or a cut is refused.
+pub fn delete_time(project: &mut Project, a: f64, b: f64) -> bool {
+    if !(a.is_finite() && b.is_finite() && a >= 0.0 && b > a) {
+        return false;
+    }
+    let len = b - a;
+    let mut work = project.clone();
+    if !split_all_at(&mut work, a) || !split_all_at(&mut work, b) {
+        return false;
+    }
+    let (lo, hi) = (a - SPLIT_EDGE_TOL, b - SPLIT_EDGE_TOL);
+    for t in &mut work.tracks {
+        t.clips.retain(|c| !(c.start >= lo && c.start < hi));
+        t.audio_clips.retain(|c| !(c.start >= lo && c.start < hi));
+        for c in t.clips.iter_mut().filter(|c| c.start >= hi) {
+            c.start = (c.start - len).max(0.0);
+        }
+        for c in t.audio_clips.iter_mut().filter(|c| c.start >= hi) {
+            c.start = (c.start - len).max(0.0);
+        }
+    }
+    map_automation(&mut work, |pts| automation_after_delete(pts, a, b));
+    work.markers.retain(|m| !(m.step >= a && m.step < b));
+    for m in work.markers.iter_mut().filter(|m| m.step >= b) {
+        m.step -= len;
+    }
+    work.chord_events.retain(|e| !(e.step >= a && e.step < b));
+    for ev in work.chord_events.iter_mut().filter(|e| e.step >= b) {
+        ev.step -= len;
+    }
+    let end = work.total_steps();
+    let new_end = if end >= b {
+        end - len
+    } else if end > a {
+        a
+    } else {
+        end
+    };
+    work.bars = bars_for_end(new_end);
+    fit_bars_to_content(&mut work);
+    *project = work;
+    true
+}
+
+/// The loop region after [`insert_time`]: a region at or after `at` moves
+/// right, one straddling it grows by the inserted length.
+pub fn region_after_insert(region: (f64, f64), at: f64, len: f64) -> (f64, f64) {
+    let (a, b) = region;
+    if at <= a {
+        (a + len, b + len)
+    } else if at < b {
+        (a, b + len)
+    } else {
+        (a, b)
+    }
+}
+
+/// The loop region after [`delete_time`] of `[x, y)`: each edge maps
+/// through the deletion (inside collapses onto `x`). `None` when nothing of
+/// the region survives.
+pub fn region_after_delete(region: (f64, f64), x: f64, y: f64) -> Option<(f64, f64)> {
+    let map = |s: f64| {
+        if s <= x {
+            s
+        } else if s < y {
+            x
+        } else {
+            s - (y - x)
+        }
+    };
+    let (a, b) = (map(region.0), map(region.1));
+    (b - a > SPLIT_EDGE_TOL).then_some((a, b))
+}
+
 /// Gives a clip its own copy of its pattern so edits don't affect other clips.
 pub fn make_clip_unique(project: &mut Project, track_id: u64, clip_id: u64) -> Option<u64> {
     let t = track_mut(project, track_id)?;
@@ -5543,6 +5900,220 @@ mod tests {
         assert!(move_track_to(&mut p, ids[4], 99), "clamped to the end");
         assert_eq!(p.tracks.last().unwrap().id, ids[4]);
         assert!(!move_track_to(&mut p, 12345, 0));
+    }
+
+    // ----- insert / delete time -------------------------------------------------
+
+    use crate::model::automation_value;
+
+    /// One drum track with a clip on bar 1 and a two-bar looped clip from bar
+    /// 3, an audio lane with a clip on bar 3, markers, chords and a volume
+    /// automation ramp across bar 2.
+    fn timeline_project() -> (Project, u64, u64) {
+        let mut p = lanes_project();
+        p.tracks.truncate(1);
+        let tid = p.tracks[0].id;
+        let pid = p.tracks[0].patterns[0].id;
+        let looped = add_clip(&mut p, tid, pid, 32.0).unwrap();
+        set_clip_loops(&mut p, tid, looped, 2);
+        let aid = add_audio_track(&mut p).unwrap();
+        add_audio_clip(&mut p, aid, "abc.wav", "Loop", 32.0, 16.0).unwrap();
+        add_marker(&mut p, 0.0, Some("Intro".into()));
+        add_marker(&mut p, 32.0, Some("Verse".into()));
+        add_chord_event(&mut p, 32.0, 0, ChordQuality::Major);
+        add_automation_point(&mut p, tid, AutomationLane::Volume, 0.0, 0.2);
+        add_automation_point(&mut p, tid, AutomationLane::Volume, 48.0, 1.0);
+        p.bars = 6;
+        (p, tid, aid)
+    }
+
+    fn auto_steps(p: &Project, tid: u64) -> Vec<(f64, f32)> {
+        track(p, tid)
+            .and_then(|t| t.automation.as_ref())
+            .map(|a| a.volume.iter().map(|pt| (pt.step, pt.value)).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn insert_time_shifts_everything_after_the_point() {
+        let (mut p, tid, aid) = timeline_project();
+        let before_value = automation_value(&auto_volume(&p, tid), 16.0);
+        assert!(insert_time(&mut p, 16.0, 32.0));
+        p.validate().unwrap();
+        let t = track(&p, tid).unwrap();
+        let starts: Vec<f64> = t.clips.iter().map(|c| c.start).collect();
+        assert_eq!(
+            starts,
+            vec![0.0, 64.0],
+            "bar-1 clip stays, later clip moves"
+        );
+        assert_eq!(track(&p, aid).unwrap().audio_clips[0].start, 64.0);
+        let marks: Vec<f64> = p.markers.iter().map(|m| m.step).collect();
+        assert_eq!(marks, vec![0.0, 64.0]);
+        assert_eq!(p.chord_events[0].step, 64.0);
+        assert_eq!(p.bars, 8, "song end grows by the inserted bars");
+        // The ramp holds its value across the gap, then continues.
+        let pts = auto_steps(&p, tid);
+        assert_eq!(pts.first().unwrap().0, 0.0);
+        assert_eq!(pts.last().unwrap(), &(80.0, 1.0));
+        let held = automation_value(&auto_volume(&p, tid), 32.0);
+        assert_eq!(held, before_value);
+    }
+
+    fn auto_volume(p: &Project, tid: u64) -> Vec<AutomationPoint> {
+        track(p, tid)
+            .and_then(|t| t.automation.as_ref())
+            .map(|a| a.volume.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn insert_time_cuts_straddling_clips_and_keeps_the_sound() {
+        let (mut p, tid, aid) = timeline_project();
+        let events = |p: &Project| {
+            p.events(false)
+                .iter()
+                .map(|e| (e.step, e.pitch))
+                .collect::<Vec<_>>()
+        };
+        let before = events(&p);
+        // Inside the looped clip's repetition boundary (step 48) and the
+        // audio clip's body (step 40).
+        assert!(insert_time(&mut p, 48.0, 16.0));
+        p.validate().unwrap();
+        let t = track(&p, tid).unwrap();
+        assert_eq!(t.clips.len(), 3, "the looped clip was cut at the point");
+        let after = events(&p);
+        let shifted: Vec<(f64, u8)> = before
+            .iter()
+            .map(|&(s, pitch)| (if s >= 48.0 { s + 16.0 } else { s }, pitch))
+            .collect();
+        assert_eq!(after, shifted);
+        assert!(insert_time(&mut p, 40.0, 16.0));
+        let a = &track(&p, aid).unwrap().audio_clips;
+        assert_eq!(a.len(), 2);
+        assert_eq!((a[0].start, a[0].length), (32.0, 8.0));
+        assert_eq!((a[1].start, a[1].length), (56.0, 8.0));
+        assert!(a[1].offset > 0.0, "the tail starts later in the file");
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn insert_time_refuses_when_clips_would_leave_the_song() {
+        let (mut p, _, _) = timeline_project();
+        let before = p.clone();
+        assert!(!insert_time(&mut p, 16.0, MAX_SONG_STEPS));
+        assert_eq!(p, before);
+        assert!(!insert_time(&mut p, 16.0, 0.0));
+        assert!(!insert_time(&mut p, f64::NAN, 16.0));
+    }
+
+    #[test]
+    fn delete_time_removes_the_range_and_closes_the_gap() {
+        let (mut p, tid, aid) = timeline_project();
+        add_marker(&mut p, 20.0, Some("Gone".into()));
+        add_chord_event(&mut p, 16.0, 5, ChordQuality::Minor);
+        // Delete bar 2 and the first half of the looped clip: [16, 48).
+        assert!(delete_time(&mut p, 16.0, 48.0));
+        p.validate().unwrap();
+        let t = track(&p, tid).unwrap();
+        let starts: Vec<f64> = t.clips.iter().map(|c| c.start).collect();
+        assert_eq!(starts, vec![0.0, 16.0], "the loop's second half closes up");
+        assert_eq!(t.clips[1].loops, 1);
+        let a = &track(&p, aid).unwrap().audio_clips;
+        assert_eq!(a.len(), 0, "the audio clip lay inside");
+        let marks: Vec<(&str, f64)> = p
+            .markers
+            .iter()
+            .map(|m| (m.name.as_str(), m.step))
+            .collect();
+        assert_eq!(marks, vec![("Intro", 0.0)], "markers inside the range go");
+        assert!(p.chord_events.is_empty(), "both chords were inside");
+        assert_eq!(p.bars, 4);
+        // The automation seam keeps the values found at both edges.
+        let pts = auto_steps(&p, tid);
+        assert_eq!(pts.last().unwrap(), &(16.0, 1.0));
+        assert!(pts.iter().any(|&(s, v)| s == 16.0 && v < 1.0));
+        // Later content moves left by the gap.
+        let (mut q, tid, _) = timeline_project();
+        assert!(delete_time(&mut q, 0.0, 16.0));
+        let starts: Vec<f64> = track(&q, tid)
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| c.start)
+            .collect();
+        assert_eq!(starts, vec![16.0]);
+        assert_eq!(
+            q.markers[0].step, 16.0,
+            "Verse moved left; Intro was inside"
+        );
+        assert_eq!(q.chord_events[0].step, 16.0);
+        q.validate().unwrap();
+    }
+
+    #[test]
+    fn delete_time_cuts_clips_crossing_both_edges() {
+        let (mut p, tid, _) = timeline_project();
+        // Cut [40, 56) out of the two-bar looped clip at 32..64.
+        assert!(delete_time(&mut p, 40.0, 56.0));
+        p.validate().unwrap();
+        let t = track(&p, tid).unwrap();
+        let spans: Vec<(f64, f64)> = t
+            .clips
+            .iter()
+            .map(|c| (c.start, c.start + clip_len(t, c)))
+            .collect();
+        assert_eq!(spans, vec![(0.0, 16.0), (32.0, 40.0), (40.0, 48.0)]);
+    }
+
+    #[test]
+    fn loop_region_maps_through_time_edits() {
+        assert_eq!(region_after_insert((16.0, 32.0), 0.0, 16.0), (32.0, 48.0));
+        assert_eq!(region_after_insert((16.0, 32.0), 20.0, 16.0), (16.0, 48.0));
+        assert_eq!(region_after_insert((16.0, 32.0), 32.0, 16.0), (16.0, 32.0));
+        assert_eq!(
+            region_after_delete((32.0, 64.0), 0.0, 16.0),
+            Some((16.0, 48.0))
+        );
+        assert_eq!(
+            region_after_delete((16.0, 64.0), 32.0, 48.0),
+            Some((16.0, 48.0))
+        );
+        assert_eq!(region_after_delete((16.0, 32.0), 16.0, 32.0), None);
+        assert_eq!(
+            region_after_delete((16.0, 32.0), 0.0, 24.0),
+            Some((0.0, 8.0))
+        );
+    }
+
+    #[test]
+    fn split_audio_clip_tiles_the_original_span() {
+        let mut p = lanes_project();
+        let aid = p.tracks[3].id;
+        let cid = p.tracks[3].audio_clips[0].id;
+        set_audio_clip_loops(&mut p, aid, cid, 3);
+        set_audio_clip_fades(&mut p, aid, cid, 2.0, 3.0);
+        // 16..40 in 8-step repetitions; cut inside the second one.
+        assert!(split_audio_clip(&mut p, aid, cid, 28.0));
+        p.validate().unwrap();
+        let a = &p.tracks[3].audio_clips;
+        let spans: Vec<(f64, f64)> = a.iter().map(|c| (c.start, c.start + c.span())).collect();
+        assert_eq!(
+            spans,
+            vec![(16.0, 24.0), (24.0, 28.0), (28.0, 32.0), (32.0, 40.0)]
+        );
+        assert_eq!(a[0].id, cid);
+        assert_eq!((a[0].fade_in, a[3].fade_out), (2.0, 3.0));
+        assert!(a[1..3]
+            .iter()
+            .all(|c| c.fade_in == 0.0 && c.fade_out == 0.0));
+        // On a repetition boundary only the loop count splits.
+        let last = a[3].id;
+        assert!(!split_audio_clip(&mut p, aid, last, 32.0), "edge");
+        set_audio_clip_loops(&mut p, aid, last, 2);
+        assert!(split_audio_clip(&mut p, aid, last, 40.0));
+        assert_eq!(p.tracks[3].audio_clips.len(), 5);
     }
 
     // ----- split_clip --------------------------------------------------------
