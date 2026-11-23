@@ -1,35 +1,65 @@
 //! SoundFont (`.sf2`) instrument support.
 //!
-//! General MIDI sounds are provided by user-installed SoundFont files — real
-//! sampled instruments, unlike the built-in synthesizers and JSON packs. Drop
-//! `.sf2` files into the user font directory ([`user_fonts_dir`]); every file
-//! becomes one "font" that can play any of the 128 General MIDI programs
-//! ([`GM_PROGRAM_NAMES`]).
+//! General MIDI sounds come from SoundFont files — real sampled instruments,
+//! unlike the built-in synthesizers and JSON packs. Two kinds of fonts are
+//! loaded:
+//!
+//! - **Bundled** fonts ship with the app ([`bundled_fonts_dirs`]): release
+//!   packages put the General MIDI font [`BUILTIN_FONT_NAME`] in a
+//!   `soundfonts/` folder next to the executable (Windows) or in
+//!   `Cadence.app/Contents/Resources/soundfonts/` (macOS). They are read-only,
+//!   listed first and labelled "(built-in)" ([`FontLibrary::display_name`]).
+//! - **User** fonts are `.sf2` files dropped into the user font directory
+//!   ([`user_fonts_dir`]).
+//!
+//! Every file becomes one "font" that can play any of the 128 General MIDI
+//! programs ([`GM_PROGRAM_NAMES`]).
 //!
 //! Songs reference a font by *name* ([`crate::model::FontRef`]): the file stem
-//! (e.g. `GeneralUser` for `GeneralUser.sf2`) plus a GM program number. The
-//! audio engine resolves names to parsed fonts through [`font_key`], a stable
-//! 64-bit hash of the normalized name, so the model never has to carry file
-//! handles or paths.
+//! (e.g. `GeneralUser` for `GeneralUser.sf2`, or `Cadence GM` for the bundled
+//! font) plus a GM program number. Because the bundled file name is fixed, a
+//! song using the built-in font plays on any machine with Cadence installed.
+//! The audio engine resolves names to parsed fonts through [`font_key`], a
+//! stable 64-bit hash of the normalized name, so the model never has to carry
+//! file handles or paths.
 //!
-//! Loading mirrors [`crate::packs`]: [`load_library`] scans
-//! [`user_fonts_dir`] for `*.sf2` files (size-capped, sorted, non-fatal per
-//! file) and returns a [`FontLibrary`] the caller shares with the audio
+//! Loading mirrors [`crate::packs`]: [`load_library`] scans the bundled dirs
+//! and [`user_fonts_dir`] for `*.sf2` files (size-capped, sorted, non-fatal
+//! per file) and returns a [`FontLibrary`] the caller shares with the audio
 //! engine via `AudioEngine::set_fonts` / `Renderer::set_fonts`. Parsing is
-//! done on the caller's thread — never on the audio thread.
+//! done on the caller's thread — never on the audio thread. Parsed bundled
+//! fonts are cached for the life of the process, so re-scanning the user
+//! folder doesn't re-read the ~30 MB built-in font.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use rustysynth::SoundFont;
 
 /// Environment variable overriding the user font directory directly.
 /// Intended for tests, portable installs and diagnostics.
 pub const FONTS_DIR_ENV: &str = "CADENCE_FONTS_DIR";
+
+/// Environment variable naming the directory of fonts that ship with the app,
+/// replacing the discovery next to the executable ([`bundled_fonts_dirs`]).
+/// Developers point it at a downloaded font; tests point it at an empty or
+/// temporary folder so the result never depends on what is installed.
+pub const BUNDLED_FONTS_DIR_ENV: &str = "CADENCE_SOUNDFONT_DIR";
+
+/// Name (file stem) of the General MIDI SoundFont shipped with Cadence —
+/// `Cadence GM.sf2` in the bundled `soundfonts/` folder. Songs store this name,
+/// so it must never change; the font behind it (currently GeneralUser GS, see
+/// `packaging/soundfont/README.md`) may.
+pub const BUILTIN_FONT_NAME: &str = "Cadence GM";
+
+/// Folder name holding bundled fonts, next to the executable (Windows,
+/// portable zip, Linux) or in the macOS bundle's `Contents/Resources`.
+pub const BUNDLED_FONTS_SUBDIR: &str = "soundfonts";
 
 /// Largest `.sf2` file Cadence will read. SoundFonts embed all their samples,
 /// so they run from a few hundred KB to ~100 MB; 256 MB is generous headroom.
@@ -267,6 +297,63 @@ fn resolve_fonts_dir(env: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("cadence-studio").join("fonts"))
 }
 
+/// Directories searched for fonts that ship with Cadence, in priority order
+/// (the first file with a given name wins; later copies are skipped
+/// silently).
+///
+/// - `$CADENCE_SOUNDFONT_DIR`, when set, is the only bundled directory.
+/// - Otherwise `<exe dir>/soundfonts` (Windows installer, portable zip,
+///   Linux) and, for an executable in `Cadence.app/Contents/MacOS`,
+///   `Contents/Resources/soundfonts`.
+/// - Developer builds (debug, or a binary under this crate's directory, as
+///   `cargo run --release` produces) also look in the repo-local cache
+///   `.cache/soundfonts` that `scripts/fetch-soundfont.sh` fills.
+///
+/// Missing directories are fine: they just contribute no fonts.
+pub fn bundled_fonts_dirs() -> Vec<PathBuf> {
+    let exe = std::env::current_exe().ok().map(|exe| {
+        // Resolve symlinks (e.g. a `cadence` link on PATH) so the bundle
+        // layout is found. Windows canonical paths are verbatim (`\\?\`)
+        // and would defeat the dev-cache prefix check, so keep them as is.
+        if cfg!(windows) {
+            exe
+        } else {
+            exe.canonicalize().unwrap_or(exe)
+        }
+    });
+    resolve_bundled_dirs(
+        &|key| std::env::var_os(key),
+        exe.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        cfg!(debug_assertions),
+    )
+}
+
+fn resolve_bundled_dirs(
+    env: &dyn Fn(&str) -> Option<OsString>,
+    exe: Option<&Path>,
+    repo: &Path,
+    debug_build: bool,
+) -> Vec<PathBuf> {
+    if let Some(dir) = env(BUNDLED_FONTS_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        return vec![PathBuf::from(dir)];
+    }
+    let mut dirs = Vec::new();
+    if let Some(exe_dir) = exe.and_then(Path::parent) {
+        dirs.push(exe_dir.join(BUNDLED_FONTS_SUBDIR));
+        if exe_dir.ends_with("Contents/MacOS") {
+            if let Some(contents) = exe_dir.parent() {
+                dirs.push(contents.join("Resources").join(BUNDLED_FONTS_SUBDIR));
+            }
+        }
+    }
+    let in_repo = exe.is_some_and(|exe| exe.starts_with(repo));
+    if debug_build || in_repo {
+        dirs.push(repo.join(".cache").join(BUNDLED_FONTS_SUBDIR));
+    }
+    dirs
+}
+
 /// Opens the user font directory in the platform file manager, creating it
 /// first so `.sf2` files can be dropped straight in. Best-effort: returns the
 /// opened directory or a displayable error when no opener could be spawned.
@@ -317,15 +404,21 @@ pub struct FontInfo {
 
 /// Every SoundFont currently known to the app plus non-fatal load problems.
 ///
-/// `fonts` is sorted by name for deterministic display; `by_key` maps
+/// `fonts` lists the bundled fonts first (search-path order), then the user
+/// fonts sorted by name, for deterministic display; `by_key` maps
 /// [`font_key`] to the parsed font for the audio engine. Files that fail to
 /// parse or exceed [`MAX_FONT_BYTES`] are skipped and reported in `errors`.
 #[derive(Clone, Debug, Default)]
 pub struct FontLibrary {
     pub fonts: Vec<FontInfo>,
     pub by_key: HashMap<u64, Arc<SoundFont>>,
-    /// Directory the library was loaded from (for display/diagnostics).
+    /// User font directory the library was loaded from (for display and
+    /// diagnostics; bundled fonts live in [`Self::bundled_dirs`]).
     pub dir: PathBuf,
+    /// Bundled font directories that were searched.
+    pub bundled_dirs: Vec<PathBuf>,
+    /// [`font_key`]s of the fonts that ship with the app (read-only).
+    pub builtin: HashSet<u64>,
     pub errors: Vec<String>,
 }
 
@@ -344,21 +437,113 @@ impl FontLibrary {
     pub fn get(&self, key: u64) -> Option<&Arc<SoundFont>> {
         self.by_key.get(&key)
     }
+
+    /// Whether the font called `name` ships with the app (as opposed to a
+    /// user-installed `.sf2`).
+    pub fn is_builtin(&self, name: &str) -> bool {
+        self.builtin.contains(&font_key(name))
+    }
+
+    /// The label UIs show for font `name`: bundled fonts get a
+    /// " (built-in)" suffix (e.g. "Cadence GM (built-in)"); songs keep
+    /// storing the bare name.
+    pub fn display_name(&self, name: &str) -> String {
+        if self.is_builtin(name) {
+            format!("{} (built-in)", name.trim())
+        } else {
+            name.to_owned()
+        }
+    }
+
+    /// Whether any font ships with the app in this install.
+    pub fn has_builtin(&self) -> bool {
+        !self.builtin.is_empty()
+    }
+
+    fn insert(&mut self, name: String, font: Arc<SoundFont>, builtin: bool) {
+        let key = font_key(&name);
+        let presets = font.get_presets().len();
+        self.fonts.push(FontInfo { name, key, presets });
+        self.by_key.insert(key, font);
+        if builtin {
+            self.builtin.insert(key);
+        }
+    }
 }
 
-/// Loads every `*.sf2` in [`user_fonts_dir`]. Never fails as a whole;
-/// per-file problems land in [`FontLibrary::errors`].
+/// Loads the bundled fonts ([`bundled_fonts_dirs`]) and every `*.sf2` in
+/// [`user_fonts_dir`]. Never fails as a whole; per-file problems land in
+/// [`FontLibrary::errors`].
 pub fn load_library() -> FontLibrary {
-    load_library_from(&user_fonts_dir())
+    load_library_with(&bundled_fonts_dirs(), &user_fonts_dir())
 }
 
-/// Like [`load_library`] but reads fonts from `dir` instead of
-/// [`user_fonts_dir`]. A missing directory yields an empty library.
+/// Like [`load_library`] but reads only the user fonts in `dir` (no bundled
+/// fonts). A missing directory yields an empty library.
 pub fn load_library_from(dir: &Path) -> FontLibrary {
+    load_library_with(&[], dir)
+}
+
+/// Loads the bundled fonts from `bundled` (searched in order; the first file
+/// with a given name wins) followed by the user fonts in `user`. A user font
+/// whose name a bundled font already uses is skipped and reported, so a song
+/// referencing the built-in font always gets the copy that ships with the
+/// app. Missing directories yield no fonts and no errors.
+pub fn load_library_with(bundled: &[PathBuf], user: &Path) -> FontLibrary {
     let mut library = FontLibrary {
-        dir: dir.to_path_buf(),
+        dir: user.to_path_buf(),
+        bundled_dirs: bundled.to_vec(),
         ..FontLibrary::default()
     };
+    for dir in bundled {
+        for path in font_files(dir) {
+            let Some(name) = font_name(&path) else {
+                continue;
+            };
+            if library.by_key.contains_key(&font_key(&name)) {
+                // An earlier bundled dir already provides it (e.g. the dev
+                // cache next to a packaged copy): not a problem.
+                continue;
+            }
+            match load_bundled_font(&path) {
+                Ok(font) => library.insert(name, font, true),
+                Err(err) => library
+                    .errors
+                    .push(format!("{} (built-in): {err}", path.display())),
+            }
+        }
+    }
+    let first_user = library.fonts.len();
+    for path in font_files(user) {
+        let origin = path.display().to_string();
+        let Some(name) = font_name(&path) else {
+            library
+                .errors
+                .push(format!("{origin}: file name has no usable stem"));
+            continue;
+        };
+        let key = font_key(&name);
+        if library.by_key.contains_key(&key) {
+            let why = if library.builtin.contains(&key) {
+                "a built-in font already uses this name; rename the file to use it"
+            } else {
+                "duplicate font name; keeping the first file"
+            };
+            library.errors.push(format!("{origin}: \"{name}\": {why}"));
+            continue;
+        }
+        match load_font_file(&path) {
+            Ok(font) => library.insert(name, font, false),
+            Err(err) => library.errors.push(format!("{origin}: {err}")),
+        }
+    }
+    library.fonts[first_user..].sort_by(|a, b| a.name.cmp(&b.name));
+    library
+}
+
+/// The `*.sf2` files directly inside `dir`, sorted; empty when `dir` is
+/// missing or unreadable.
+fn font_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -366,40 +551,47 @@ pub fn load_library_from(dir: &Path) -> FontLibrary {
             let is_font = path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case(FONT_FILE_EXT));
-            if is_font {
+            if is_font && path.is_file() {
                 files.push(path);
             }
         }
     }
     files.sort();
-    for path in files {
-        let origin = path.display().to_string();
-        match load_font_file(&path) {
-            Ok((name, font)) => {
-                let key = font_key(&name);
-                if library.by_key.contains_key(&key) {
-                    library.errors.push(format!(
-                        "{origin}: duplicate font name \"{name}\"; keeping the first file"
-                    ));
-                    continue;
-                }
-                let presets = font.get_presets().len();
-                library.fonts.push(FontInfo { name, key, presets });
-                library.by_key.insert(key, font);
-            }
-            Err(err) => library.errors.push(format!("{origin}: {err}")),
-        }
-    }
-    library.fonts.sort_by(|a, b| a.name.cmp(&b.name));
-    // `by_key` was filled in file order; `fonts` is display order. Rebuild the
-    // info list in the same sorted order is unnecessary — FontInfo carries its
-    // own key, so lookups stay correct.
-    library
+    files
 }
 
-/// Parses one `.sf2` file. The returned name is the file stem — predictable
-/// and stable, so songs keep working if the font's internal name changes.
-fn load_font_file(path: &Path) -> Result<(String, Arc<SoundFont>), String> {
+/// A font's name: its file stem — predictable and stable, so songs keep
+/// working if the font's internal name changes.
+fn font_name(path: &Path) -> Option<String> {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.trim().is_empty())
+}
+
+/// Parsed bundled fonts, keyed by path and invalidated by size/mtime. The
+/// bundled folder is read-only, so this saves re-parsing the built-in font
+/// every time the user folder changes.
+type BundledCache = HashMap<PathBuf, (u64, Option<SystemTime>, Arc<SoundFont>)>;
+
+fn load_bundled_font(path: &Path) -> Result<Arc<SoundFont>, String> {
+    static CACHE: OnceLock<Mutex<BundledCache>> = OnceLock::new();
+    let meta = std::fs::metadata(path).map_err(|e| format!("could not read file info: {e}"))?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((len, modified, font)) = cache.lock().ok().and_then(|c| c.get(path).cloned()) {
+        if (len, modified) == stamp {
+            return Ok(font);
+        }
+    }
+    let font = load_font_file(path)?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(path.to_path_buf(), (stamp.0, stamp.1, font.clone()));
+    }
+    Ok(font)
+}
+
+/// Parses one `.sf2` file (size-capped).
+fn load_font_file(path: &Path) -> Result<Arc<SoundFont>, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("could not read file info: {e}"))?;
     if meta.len() > MAX_FONT_BYTES {
         return Err(format!(
@@ -411,12 +603,7 @@ fn load_font_file(path: &Path) -> Result<(String, Arc<SoundFont>), String> {
     let file = File::open(path).map_err(|e| format!("could not open: {e}"))?;
     let font = SoundFont::new(&mut BufReader::new(file))
         .map_err(|e| format!("not a readable SoundFont: {e}"))?;
-    let name = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.trim().is_empty())
-        .ok_or_else(|| "file name has no usable stem".to_string())?;
-    Ok((name, Arc::new(font)))
+    Ok(Arc::new(font))
 }
 
 #[cfg(test)]
@@ -506,6 +693,73 @@ mod tests {
         // Default branch always ends in "fonts".
         let none = |_key: &str| None;
         assert!(resolve_fonts_dir(&none).ends_with("fonts"));
+    }
+
+    #[test]
+    fn bundled_dirs_resolution() {
+        let repo = Path::new("/src/cadence");
+        let none = |_key: &str| None;
+        // The env override replaces discovery entirely.
+        let env = |key: &str| match key {
+            BUNDLED_FONTS_DIR_ENV => Some(OsString::from("/tmp/sf-override")),
+            _ => None,
+        };
+        let exe = Path::new("/Applications/Cadence.app/Contents/MacOS/cadence");
+        assert_eq!(
+            resolve_bundled_dirs(&env, Some(exe), repo, true),
+            vec![PathBuf::from("/tmp/sf-override")]
+        );
+        // An empty override is ignored.
+        let empty = |key: &str| (key == BUNDLED_FONTS_DIR_ENV).then(OsString::new);
+        assert_eq!(
+            resolve_bundled_dirs(&empty, Some(exe), repo, false),
+            resolve_bundled_dirs(&none, Some(exe), repo, false)
+        );
+        // macOS bundle: next to the binary, then Contents/Resources.
+        assert_eq!(
+            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            vec![
+                PathBuf::from("/Applications/Cadence.app/Contents/MacOS/soundfonts"),
+                PathBuf::from("/Applications/Cadence.app/Contents/Resources/soundfonts"),
+            ]
+        );
+        // Windows install / portable zip / Linux: next to the binary only.
+        let exe = Path::new("/opt/cadence/cadence");
+        assert_eq!(
+            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            vec![PathBuf::from("/opt/cadence/soundfonts")]
+        );
+        // Debug builds also read the repo-local dev cache...
+        assert_eq!(
+            resolve_bundled_dirs(&none, Some(exe), repo, true).last(),
+            Some(&PathBuf::from("/src/cadence/.cache/soundfonts"))
+        );
+        // ...as do release binaries built inside the repo (`cargo run --release`).
+        let exe = Path::new("/src/cadence/target/release/cadence");
+        assert_eq!(
+            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            vec![
+                PathBuf::from("/src/cadence/target/release/soundfonts"),
+                PathBuf::from("/src/cadence/.cache/soundfonts"),
+            ]
+        );
+        // No executable path: only the dev cache, and only in debug builds.
+        assert!(resolve_bundled_dirs(&none, None, repo, false).is_empty());
+        assert_eq!(resolve_bundled_dirs(&none, None, repo, true).len(), 1);
+    }
+
+    #[test]
+    fn display_name_marks_builtin_fonts() {
+        let mut library = FontLibrary::empty();
+        assert_eq!(library.display_name(BUILTIN_FONT_NAME), BUILTIN_FONT_NAME);
+        library.builtin.insert(font_key(BUILTIN_FONT_NAME));
+        assert!(library.has_builtin());
+        assert!(library.is_builtin(BUILTIN_FONT_NAME));
+        assert_eq!(
+            library.display_name(BUILTIN_FONT_NAME),
+            "Cadence GM (built-in)"
+        );
+        assert_eq!(library.display_name("GeneralUser"), "GeneralUser");
     }
 
     #[test]

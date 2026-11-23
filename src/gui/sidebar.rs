@@ -441,6 +441,19 @@ impl QuickPicks {
 /// real-instrument sound each, in catalog order.
 const QUICK_FONT_PROGRAMS: [u8; 3] = [0, 24, 40];
 
+/// Hover text for a font row: the built-in font says where it comes from.
+fn font_tooltip(fonts: &crate::font::FontLibrary, info: &FontInfo) -> String {
+    if fonts.is_builtin(&info.name) {
+        format!(
+            "Built-in General MIDI SoundFont (GeneralUser GS by S. Christian Collins) · \
+             ships with Cadence, so songs using it play anywhere · {} presets",
+            info.presets
+        )
+    } else {
+        format!("SoundFont · {} presets", info.presets)
+    }
+}
+
 /// Display name of the GM family containing `program` (0..=127); out-of-range
 /// values clamp into the last family like [`crate::font::gm_program_name`].
 pub(super) fn gm_family(program: u8) -> &'static str {
@@ -958,7 +971,11 @@ impl CadenceApp {
                 Icon::Folder,
                 "Open SoundFonts folder",
                 CONTROL_M,
-                "Drop .sf2 files into this folder; they appear in the Sound menu and here within a couple of seconds",
+                if self.fonts.has_builtin() {
+                    "Cadence GM is built in. Drop more .sf2 files into this folder; they appear in the Sound menu and here within a couple of seconds"
+                } else {
+                    "Drop .sf2 files into this folder; they appear in the Sound menu and here within a couple of seconds"
+                },
             )
             .clicked()
             {
@@ -990,14 +1007,17 @@ impl CadenceApp {
                 let mut pick = None;
                 theme::combo(
                     "library-font",
-                    selected.clone(),
+                    self.fonts.display_name(&selected),
                     ui.available_width().max(90.0),
                 )
                 .show_ui(ui, |ui| {
                     for info in fonts {
                         if ui
-                            .selectable_label(info.name == selected, &info.name)
-                            .on_hover_text(format!("SoundFont · {} presets", info.presets))
+                            .selectable_label(
+                                info.name == selected,
+                                self.fonts.display_name(&info.name),
+                            )
+                            .on_hover_text(font_tooltip(&self.fonts, info))
                             .clicked()
                         {
                             pick = Some(info.name.clone());
@@ -1103,7 +1123,9 @@ impl CadenceApp {
             ui.label(
                 RichText::new(
                     "SoundFonts (.sf2) play real sampled General MIDI \
-                     instruments — pianos, guitars, strings and more.",
+                     instruments — pianos, guitars, strings and more. \
+                     The built-in Cadence GM font is missing from this \
+                     copy of Cadence; reinstall it, or add any .sf2.",
                 )
                 .small()
                 .color(pal.text_dim),
@@ -1786,8 +1808,13 @@ impl CadenceApp {
     /// plus a warning when a font file failed to load.
     fn soundfonts_row(&mut self, ui: &mut Ui, pal: Palette) {
         let dir = crate::font::user_fonts_dir();
+        let builtin = if self.fonts.has_builtin() {
+            "Cadence GM (General MIDI) is built in. Add more SoundFonts: d"
+        } else {
+            "D"
+        };
         let tip = format!(
-            "Drop .sf2 files into this folder; they appear in the Sound menu.\n{}",
+            "{builtin}rop .sf2 files into this folder; they appear in the Sound menu.\n{}",
             dir.display()
         );
         let open = ui
@@ -2290,7 +2317,8 @@ impl CadenceApp {
             theme::hint(
                 ui,
                 pal,
-                "No SoundFonts installed yet. Use “Open folder” under Sound to add some.",
+                "No SoundFonts found: the built-in Cadence GM font is missing from this \
+                 copy. Use “Open folder” under Sound to add an .sf2.",
             );
         }
         // The clear action doubles as the "no font" row at the top of a
@@ -2309,8 +2337,8 @@ impl CadenceApp {
         for info in &self.fonts.fonts {
             let on = track.font.as_ref().is_some_and(|f| f.name == info.name);
             if ui
-                .selectable_label(on, &info.name)
-                .on_hover_text(format!("SoundFont · {} presets", info.presets))
+                .selectable_label(on, self.fonts.display_name(&info.name))
+                .on_hover_text(font_tooltip(&self.fonts, info))
                 .clicked()
             {
                 // Re-picking the active font keeps its program; a
@@ -3278,7 +3306,8 @@ fn quick_add_font_hint_row(ui: &mut Ui, pal: Palette) -> bool {
     });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(
-            "SoundFonts (.sf2) play real sampled instruments. Opens the SoundFonts folder.",
+            "SoundFonts (.sf2) play real sampled instruments. The built-in Cadence GM \
+             font is missing from this copy; this opens the SoundFonts folder.",
         )
         .clicked()
 }
