@@ -850,6 +850,20 @@ impl CadenceApp {
         if menu_item(ui, pal, "Metronome", "", true, Some(metronome)).clicked() {
             self.toggle_metronome();
         }
+        let count_in = self.transport.count_in;
+        if menu_item(
+            ui,
+            pal,
+            "Count-in Before Recording",
+            "",
+            true,
+            Some(count_in),
+        )
+        .on_hover_text("With Record on, Play clicks one bar before the song starts")
+        .clicked()
+        {
+            self.toggle_count_in();
+        }
     }
 
     fn view_menu(&mut self, ui: &mut Ui) {
@@ -1901,6 +1915,50 @@ mod tests {
             self.app.select_track(id);
             self.app.editor.chord_open = chord_open;
             self.frames(4);
+        }
+    }
+
+    #[test]
+    fn transport_menu_toggles_the_count_in() {
+        let mut app = CadenceApp::headless(crate::model::Project::demo());
+        let ctx = Context::default();
+        let label = "Count-in Before Recording";
+        let run = |app: &mut CadenceApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 600.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.set_width(260.0);
+                    app.transport_menu(ui);
+                });
+            })
+        };
+        run(&mut app, Vec::new());
+        let output = run(&mut app, Vec::new());
+        let row = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect()),
+                _ => None,
+            })
+            .expect("the Transport menu lists the count-in");
+        let before = app.transport.count_in;
+        for expected in [!before, before] {
+            let at = row.center();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(&mut app, vec![egui::Event::PointerMoved(at), button(true)]);
+            run(&mut app, vec![button(false)]);
+            assert_eq!(app.transport.count_in, expected);
         }
     }
 
