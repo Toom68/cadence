@@ -540,6 +540,9 @@ pub(super) struct ArrangerView {
     drag: Option<ArrangerDrag>,
     marquee: Option<ArrangerMarquee>,
     last_seek: Option<f64>,
+    /// The press landed on the playhead's head (in the loop lane): the drag
+    /// moves the playhead instead of drawing a loop region.
+    head_drag: bool,
     /// Anchor step of an in-progress loop-region drag on the ruler's top
     /// lane (`None` = no lane gesture active).
     region_press: Option<f64>,
@@ -574,6 +577,7 @@ impl Default for ArrangerView {
             drag: None,
             marquee: None,
             last_seek: None,
+            head_drag: false,
             region_press: None,
             context: None,
             marker_rename: None,
@@ -615,6 +619,7 @@ impl ArrangerView {
         self.drag = None;
         self.marquee = None;
         self.last_seek = None;
+        self.head_drag = false;
         self.region_press = None;
         self.pan = false;
     }
@@ -2600,13 +2605,27 @@ impl CadenceApp {
     ) {
         let lane = Rect::from_min_max(ruler.min, pos2(ruler.right(), ruler.top() + LOOP_LANE_H));
         let chords = chord_lane_rect(ruler);
-        if resp.hovered() {
-            let in_lane = resp.hover_pos().is_some_and(|p| lane.contains(p));
-            ui.ctx().set_cursor_icon(if in_lane {
-                CursorIcon::Crosshair
-            } else {
-                CursorIcon::PointingHand
-            });
+        let head = playhead_head_rect(lane, tl.x(self.transport.position));
+        if resp.is_pointer_button_down_on()
+            && ui.input(|i| i.pointer.primary_pressed())
+            && ui
+                .input(|i| i.pointer.press_origin())
+                .is_some_and(|o| head.contains(o))
+        {
+            self.arranger.head_drag = true;
+        }
+        if self.arranger.head_drag {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if resp.hovered() {
+            let pos = resp.hover_pos();
+            ui.ctx()
+                .set_cursor_icon(if pos.is_some_and(|p| head.contains(p)) {
+                    CursorIcon::Grab
+                } else if pos.is_some_and(|p| lane.contains(p)) {
+                    CursorIcon::Crosshair
+                } else {
+                    CursorIcon::PointingHand
+                });
         }
         // Clicks targeting a flag chip run before the in-progress-drag
         // branch: the second press of a double-click is itself a press and
@@ -2749,6 +2768,7 @@ impl CadenceApp {
             // always — a drag crossing a strip border keeps whichever
             // behavior it started with.
             match ui.input(|i| i.pointer.press_origin()) {
+                _ if self.arranger.head_drag => self.ruler_seek(ui, resp, tl),
                 Some(origin) if lane.contains(origin) => {
                     self.focus = Focus::Arranger;
                     self.loop_lane_drag(origin, resp, lane, tl, song_steps);
@@ -2774,21 +2794,7 @@ impl CadenceApp {
                         group: format!("marker-move-{id}"),
                     });
                 }
-                _ => {
-                    if let Some(pos) = resp.interact_pointer_pos() {
-                        let exact = ui.input(|i| i.modifiers.shift);
-                        let raw = tl.step(pos.x).max(0.0);
-                        let step = if exact {
-                            raw.floor()
-                        } else {
-                            snap_round(raw, 4.0)
-                        };
-                        if self.arranger.last_seek != Some(step) {
-                            self.arranger.last_seek = Some(step);
-                            self.seek(step);
-                        }
-                    }
-                }
+                _ => self.ruler_seek(ui, resp, tl),
             }
         }
         // A plain click on the chord strip's empty area writes the key's
@@ -2831,7 +2837,9 @@ impl CadenceApp {
                 || self.transport.loop_region.is_some_and(|(a, b)| {
                     loop_clear_rect(loop_band_rect(lane, tl, a, b)).contains(pos)
                 });
-            let tip = if lane.contains(pos) {
+            let tip = if head.contains(pos) {
+                "Drag the playhead (Shift: exact)"
+            } else if lane.contains(pos) {
                 "Loop strip: drag to set the loop region"
             } else if chords.contains(pos) {
                 "Chords: click to add the key's chord · click a chord to change it (Shift: root) · drag to move · right-click for more"
@@ -2841,6 +2849,25 @@ impl CadenceApp {
             if !over_own_tip {
                 let _ = resp.clone().on_hover_text(tip);
             }
+        }
+    }
+
+    /// Moves the playhead to the pointer: snapped to the beat, or to the
+    /// exact step with Shift. Repeats of the same step are skipped so a
+    /// held drag doesn't restart playback every frame.
+    fn ruler_seek(&mut self, ui: &Ui, resp: &egui::Response, tl: Timeline) {
+        let Some(pos) = resp.interact_pointer_pos() else {
+            return;
+        };
+        let raw = tl.step(pos.x).max(0.0);
+        let step = if ui.input(|i| i.modifiers.shift) {
+            raw.floor()
+        } else {
+            snap_round(raw, 4.0)
+        };
+        if self.arranger.last_seek != Some(step) {
+            self.arranger.last_seek = Some(step);
+            self.seek(step);
         }
     }
 
@@ -4102,6 +4129,15 @@ pub(super) fn bar_number_end(step: f64) -> i64 {
 }
 
 /// The painted band rect for a loop region inside the ruler's top lane.
+/// Grab area of the playhead's head in the loop lane at x `x`: the painted
+/// pentagon plus a little slack so it is easy to catch.
+fn playhead_head_rect(lane: Rect, x: f32) -> Rect {
+    Rect::from_min_max(
+        pos2(x - 8.0, lane.top()),
+        pos2(x + 8.0, lane.bottom() + 4.0),
+    )
+}
+
 fn loop_band_rect(lane: Rect, tl: Timeline, a: f64, b: f64) -> Rect {
     Rect::from_min_max(
         pos2(tl.x(a).max(lane.left()), lane.top() + 1.0),
@@ -5412,6 +5448,42 @@ mod tests {
                 modifiers,
             },
         ]
+    }
+
+    /// The playhead's head sits in the loop lane; grabbing it drags the
+    /// playhead instead of drawing a loop region.
+    #[test]
+    fn dragging_the_playhead_head_seeks_instead_of_drawing_a_loop() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        app.transport.position = 16.0;
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let grid = app.arranger.grid;
+        let tl = app.arranger.timeline(grid);
+        let head = pos2(tl.x(16.0), grid.top() - RULER_H + LOOP_LANE_H * 0.5);
+        let target = tl.x(40.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let mut events = vec![vec![egui::Event::PointerMoved(head), button(head, true)]];
+        for i in 1..=6 {
+            let x = head.x + (target - head.x) * i as f32 / 6.0;
+            events.push(vec![egui::Event::PointerMoved(pos2(x, head.y))]);
+        }
+        let end = pos2(target, head.y);
+        events.push(vec![button(end, false)]);
+        for e in events {
+            run_frames(&ctx, &mut app, size, 1, e, Modifiers::NONE);
+        }
+        assert_eq!(app.transport.loop_region, None, "no loop region was drawn");
+        assert_eq!(
+            app.transport.position, 40.0,
+            "the playhead followed the drag"
+        );
     }
 
     /// The demo song with every optional toolbar item showing: a loop
