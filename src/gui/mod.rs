@@ -10,6 +10,8 @@ mod dialogs;
 mod editor;
 mod files;
 mod history;
+#[cfg(test)]
+mod midi_tests;
 mod mixer;
 mod ops;
 mod shell;
@@ -26,6 +28,7 @@ use std::time::{Duration, Instant};
 use egui::{Context, Event, Key, KeyboardShortcut, Modifiers, SurrenderFocusOn, ViewportCommand};
 
 use crate::audio::AudioEngine;
+use crate::midi_in::{MidiInputEvent, MidiInputHandle, MidiInputPref, NoteTracker};
 use crate::model::{AudioClip, Clip, Instrument, Project, Track};
 
 pub use history::History;
@@ -165,6 +168,14 @@ pub struct CadenceApp {
     audio_auto_retry: bool,
     /// Earliest automatic [`AudioEngine::new`] retry while `engine` is None.
     next_audio_retry: Instant,
+    /// Hardware MIDI input thread; `None` in headless sessions, which never
+    /// open a MIDI client.
+    midi_in: Option<MidiInputHandle>,
+    /// Which MIDI inputs to listen to; persisted to the data dir like the
+    /// output device.
+    midi_pref: MidiInputPref,
+    /// Held controller notes and the sustain pedal.
+    midi_notes: NoteTracker,
     transport: TransportState,
     sel: Selection,
     clipboard: Clipboard,
@@ -256,6 +267,12 @@ impl CadenceApp {
             .and_then(|s| s.get_string(files::NORMALIZE_STORAGE_KEY))
             .is_some_and(|v| v == "1");
         app.audio_device_pref = device_pref;
+        app.midi_pref = crate::midi_in::load_pref();
+        let repaint = cc.egui_ctx.clone();
+        app.midi_in = Some(MidiInputHandle::spawn(
+            app.midi_pref.clone(),
+            std::sync::Arc::new(move || repaint.request_repaint()),
+        ));
         if let Some(err) = audio_error {
             app.set_status(
                 StatusKind::Warning,
@@ -313,6 +330,9 @@ impl CadenceApp {
             audio_device_pref: None,
             audio_auto_retry: false,
             next_audio_retry: Instant::now(),
+            midi_in: None,
+            midi_pref: MidiInputPref::default(),
+            midi_notes: NoteTracker::new(),
             transport: TransportState::default(),
             sel: Selection::default(),
             clipboard: Clipboard::default(),
@@ -1327,6 +1347,7 @@ impl CadenceApp {
             });
         }
         self.poll_engine();
+        self.poll_midi_input();
         // Auto-reconnect when launched with no output device at all: the
         // "no device" error fails fast, so retrying on a timer can plug in
         // headphones later without ever stalling the UI.
@@ -1672,6 +1693,81 @@ impl CadenceApp {
                 self.audio_error = Some(err);
             }
         }
+    }
+
+    /// Applies everything the MIDI input thread reported since last frame.
+    /// The device picker rescans faster while Preferences is open.
+    fn poll_midi_input(&mut self) {
+        let preferences = matches!(self.dialog, Dialog::Preferences);
+        let Some(handle) = self.midi_in.as_mut() else {
+            return;
+        };
+        handle.set_fast_scan(preferences);
+        for event in handle.drain() {
+            self.midi_input_event(event);
+        }
+    }
+
+    /// One MIDI input report: notes play (and record) on the selected
+    /// track; connection changes become status messages. A disconnect ends
+    /// every held controller note so none waits for a lost release.
+    fn midi_input_event(&mut self, event: MidiInputEvent) {
+        match event {
+            MidiInputEvent::Message(message) => {
+                for action in self.midi_notes.handle(message) {
+                    self.midi_note(action);
+                }
+            }
+            MidiInputEvent::Connected { name, initial } => {
+                if !initial {
+                    self.set_status(StatusKind::Success, format!("MIDI input connected: {name}"));
+                }
+            }
+            MidiInputEvent::Disconnected { name } => {
+                self.release_midi_notes();
+                self.set_status(
+                    StatusKind::Warning,
+                    format!("MIDI input disconnected: {name}. It reconnects when plugged back in."),
+                );
+            }
+            MidiInputEvent::Failed { name, error } => self.set_status(
+                StatusKind::Warning,
+                format!("Could not open MIDI input \"{name}\": {error}"),
+            ),
+            MidiInputEvent::Unavailable(err) => self.set_status(
+                StatusKind::Warning,
+                format!("MIDI input unavailable: {err}"),
+            ),
+        }
+    }
+
+    /// Ends every held or pedal-sustained controller note.
+    fn release_midi_notes(&mut self) {
+        for action in self.midi_notes.release_all() {
+            self.midi_note(action);
+        }
+    }
+
+    /// Picks which MIDI inputs to listen to: remembered across launches and
+    /// applied to the input thread, which connects within a moment.
+    fn set_midi_input(&mut self, pref: MidiInputPref) {
+        if pref == self.midi_pref {
+            return;
+        }
+        self.release_midi_notes();
+        self.midi_pref = pref.clone();
+        if self.io_enabled {
+            crate::midi_in::save_pref(&pref);
+        }
+        if let Some(handle) = &self.midi_in {
+            handle.set_pref(pref.clone());
+        }
+        let text = match &pref {
+            MidiInputPref::None => "MIDI input off.".to_owned(),
+            MidiInputPref::All => "MIDI input: all devices.".to_owned(),
+            MidiInputPref::Device(name) => format!("MIDI input: \"{name}\"."),
+        };
+        self.set_status(StatusKind::Info, text);
     }
 
     /// Picks the output device (`None` = host default): remembered across

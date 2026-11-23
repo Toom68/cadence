@@ -351,6 +351,17 @@ struct PendingNote {
     draw_on_click: bool,
 }
 
+/// Where a live note came from. Held notes are keyed by `(source, pitch)`
+/// so a computer key and a MIDI controller playing the same pitch can't
+/// end each other's notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) enum NoteSource {
+    /// Computer keyboard, on-screen piano and drum pads.
+    Computer,
+    /// A hardware MIDI controller (`crate::midi_in`).
+    Midi,
+}
+
 /// One held recorded note (MIDI recording): enough to finalize its duration
 /// on release and, in step recording, advance the playhead.
 #[derive(Debug, Clone, Copy)]
@@ -534,9 +545,10 @@ pub(super) struct EditorView {
     kb_pointer: Option<u8>,
     kb_down: bool,
     kb_last_preview: Option<u8>,
-    /// Held recorded notes by pitch (MIDI recording): press inserts,
-    /// release finalizes the duration / advances the step-record playhead.
-    pub record_pending: HashMap<u8, PendingRecord>,
+    /// Held recorded notes by source and pitch (MIDI recording): press
+    /// inserts, release finalizes the duration / advances the step-record
+    /// playhead.
+    pub record_pending: HashMap<(NoteSource, u8), PendingRecord>,
     /// Pitch each held computer key started, so its release ends that note
     /// even after the octave or Shift changed in between.
     kb_held: HashMap<Key, u8>,
@@ -2906,7 +2918,7 @@ impl CadenceApp {
             if self.transport.recording {
                 // A pad tap is a full note: insert and release at once (one
                 // Snap cell long; step recording then advances the playhead).
-                self.record_note_on_with(pitch, vel);
+                self.record_note_on_with(NoteSource::Computer, pitch, vel);
                 self.record_note_off(pitch);
             }
         }
@@ -3013,6 +3025,37 @@ impl CadenceApp {
         }
     }
 
+    // ----- MIDI controller input ---------------------------------------------
+
+    /// Plays one hardware-controller action on the selected track. `Start`
+    /// auditions the pitch at the controller's velocity through the same
+    /// preview path as the computer keyboard — on any tab, transport running
+    /// or stopped — and, with record armed, starts a recorded note exactly
+    /// like a computer key (same quantize, take and step-record rules).
+    /// `End` finishes the note that controller pitch started; it never
+    /// touches a computer-key note on the same pitch.
+    pub(super) fn midi_note(&mut self, action: crate::midi_in::NoteAction) {
+        match action {
+            crate::midi_in::NoteAction::Start { pitch, velocity } => {
+                let Some((track_id, audio)) = self
+                    .sel
+                    .track
+                    .and_then(|id| ops::track(&self.project, id))
+                    .map(|t| (t.id, t.audio))
+                else {
+                    return;
+                };
+                if !audio {
+                    self.preview(track_id, pitch, velocity);
+                }
+                self.record_note_on_with(NoteSource::Midi, pitch, velocity);
+            }
+            crate::midi_in::NoteAction::End { pitch } => {
+                self.record_note_off_from(NoteSource::Midi, pitch);
+            }
+        }
+    }
+
     // ----- MIDI recording -----------------------------------------------------
 
     /// The snap grid recording quantizes to: the editor Snap, at least one
@@ -3056,12 +3099,17 @@ impl CadenceApp {
     /// note lands at the playhead, which advances one Snap cell on release.
     /// The whole take is one undo step. Returns the new note's id.
     pub(super) fn record_note_on(&mut self, pitch: u8) -> Option<u64> {
-        self.record_note_on_with(pitch, self.editor.velocity)
+        self.record_note_on_with(NoteSource::Computer, pitch, self.editor.velocity)
     }
 
-    /// [`Self::record_note_on`] at an explicit `velocity` (drum pads scale
-    /// it by where they are hit).
-    fn record_note_on_with(&mut self, pitch: u8, velocity: f32) -> Option<u64> {
+    /// [`Self::record_note_on`] from `source` at an explicit `velocity`
+    /// (drum pads scale it by where they are hit, MIDI controllers send it).
+    pub(super) fn record_note_on_with(
+        &mut self,
+        source: NoteSource,
+        pitch: u8,
+        velocity: f32,
+    ) -> Option<u64> {
         if !self.transport.recording || self.transport.count_in_left > 0.0 {
             return None;
         }
@@ -3101,8 +3149,8 @@ impl CadenceApp {
             StatusKind::Success,
             format!("Recorded {n} note{}", sidebar::plural(n)),
         );
-        self.editor.record_pending.insert(
-            pitch,
+        let replaced = self.editor.record_pending.insert(
+            (source, pitch),
             PendingRecord {
                 track_id,
                 pattern_id: pid,
@@ -3111,6 +3159,11 @@ impl CadenceApp {
                 step_record: !self.transport.playing,
             },
         );
+        // A pitch struck again before its release (two keys or devices on
+        // one source) still gets a real length instead of the one-cell stub.
+        if let Some(held) = replaced {
+            self.finish_recorded_note(held);
+        }
         Some(id)
     }
 
@@ -3119,7 +3172,12 @@ impl CadenceApp {
     /// one, so a tap still sounds), clamped inside the pattern. In step
     /// recording the playhead then advances one Snap cell.
     pub(super) fn record_note_off(&mut self, pitch: u8) {
-        if let Some(held) = self.editor.record_pending.remove(&pitch) {
+        self.record_note_off_from(NoteSource::Computer, pitch);
+    }
+
+    /// [`Self::record_note_off`] for the note `source` started at `pitch`.
+    pub(super) fn record_note_off_from(&mut self, source: NoteSource, pitch: u8) {
+        if let Some(held) = self.editor.record_pending.remove(&(source, pitch)) {
             self.finish_recorded_note(held);
             if held.step_record {
                 let snap = self.record_snap();
