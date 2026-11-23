@@ -1124,42 +1124,53 @@ impl CadenceApp {
     // ----- audio store cleanup ---------------------------------------------------
 
     /// Confirms File ▸ Clean Up Unused Audio…. Destructive, so Enter does
-    /// not confirm; Escape, a backdrop click or Cancel keep every file.
+    /// not confirm and the button names exactly what goes; Escape, a
+    /// backdrop click or Cancel keep every file.
     fn clean_audio_dialog(&mut self, ctx: &Context, plan: &persistence::UnusedAudio) -> bool {
         let pal = self.palette();
         let mut remove = false;
         let mut cancel = false;
         let n = plan.files.len();
-        let size = super::files::format_bytes(plan.bytes);
         let resp = show_dialog(ctx, "cadence-clean-audio", pal, W_COMPACT, |ui| {
             header(
                 ui,
                 pal,
                 "AUDIO STORE",
                 &format!(
-                    "Remove {n} unused audio file{}?",
+                    "Delete {n} imported audio file{}?",
                     if n == 1 { "" } else { "s" }
                 ),
             );
             ui.add_space(theme::GAP_S);
-            ui.label(RichText::new(format!("This frees {size} of disk space.")).color(pal.text));
+            ui.label(
+                RichText::new(format!(
+                    "Checked and not using them: the open song (and its undo history), the \
+                     crash-recovery autosave, and the songs in File ▸ Open Recent — only the \
+                     last {} songs you opened or saved.",
+                    persistence::MAX_RECENT_FILES
+                ))
+                .color(pal.text_dim),
+            );
             ui.add_space(theme::GAP_S);
             ui.label(
                 RichText::new(
-                    "These imported WAVs are not used by the open song (or its undo history), \
-                     the crash-recovery autosave, or any song in File ▸ Open Recent.",
+                    "Songs that are not in Open Recent are NOT checked. If one of them uses \
+                     these files, its imported audio is deleted and those clips play silent — \
+                     unless the song was saved with File ▸ Save Copy with Audio…, which keeps \
+                     its own copies. Deleted files can't be brought back.",
                 )
-                .color(pal.text_dim),
+                .color(pal.danger),
             );
             ui.add_space(theme::GAP_S);
             theme::hint(
                 ui,
                 pal,
-                "Other songs that still use them will play those clips silent. Open such songs \
-                 first, or keep a copy made with File ▸ Save Copy with Audio.",
+                "Not sure? Cancel, then open those songs once (so they join Open Recent) or \
+                 save them with Save Copy with Audio… first.",
             );
             button_row(ui, |ui| {
-                if theme::primary_button(ui, pal, "Remove Files").clicked() {
+                let label = clean_audio_confirm_label(n, plan.bytes);
+                if theme::primary_button(ui, pal, &label).clicked() {
                     remove = true;
                 }
                 if theme::secondary_button(ui, "Cancel").clicked() {
@@ -1324,6 +1335,16 @@ impl CadenceApp {
         }
         !closed && !resp.should_close()
     }
+}
+
+/// "Delete 3 files (5.0 MB)": the cleanup confirm button says exactly
+/// what it removes.
+fn clean_audio_confirm_label(n: usize, bytes: u64) -> String {
+    format!(
+        "Delete {n} file{} ({})",
+        if n == 1 { "" } else { "s" },
+        super::files::format_bytes(bytes)
+    )
 }
 
 // ----- scaffold ---------------------------------------------------------------
@@ -2392,7 +2413,14 @@ mod tests {
         }
         /// Area id, dialog, and whether its body is long enough to scroll.
         type Case = (&'static str, fn() -> Dialog, bool);
-        let dialogs: [Case; 7] = [
+        fn cleanup() -> Dialog {
+            Dialog::CleanAudio(persistence::UnusedAudio {
+                files: vec!["/store/0000000000000000.wav".into(); 40],
+                bytes: 40 << 20,
+            })
+        }
+        let dialogs: [Case; 8] = [
+            ("cadence-clean-audio", cleanup, false),
             ("cadence-clean-audio-blocked", cleanup_blocked, true),
             ("cadence-notices", || Dialog::Notices, true),
             (
@@ -2454,6 +2482,34 @@ mod tests {
             .events
             .push(egui::ViewportEvent::Close);
         input
+    }
+
+    /// The cleanup confirm names exactly what goes, and neither Enter nor
+    /// Escape deletes anything.
+    #[test]
+    fn audio_cleanup_confirm_is_explicit_and_ignores_enter() {
+        assert_eq!(clean_audio_confirm_label(1, 512), "Delete 1 file (1 KB)");
+        assert_eq!(
+            clean_audio_confirm_label(3, 5 << 20),
+            "Delete 3 files (5.0 MB)"
+        );
+        let store = tempfile::tempdir().unwrap();
+        let file = store.path().join("0000000000000000.wav");
+        std::fs::write(&file, b"x").unwrap();
+        let plan = || persistence::UnusedAudio {
+            files: vec![store.path().join("0000000000000000.wav")],
+            bytes: 1,
+        };
+        let mut app = headless();
+        let ctx = Context::default();
+        app.dialog = Dialog::CleanAudio(plan());
+        run_frame(&mut app, &ctx, RawInput::default());
+        run_frame(&mut app, &ctx, enter_input());
+        assert!(matches!(app.dialog, Dialog::CleanAudio(_)));
+        assert!(file.is_file());
+        run_frame(&mut app, &ctx, escape_input());
+        assert!(!app.dialog.is_open());
+        assert!(file.is_file());
     }
 
     fn enter_input() -> RawInput {
