@@ -42,6 +42,11 @@ const DRUM_MIN_ROW_H: f32 = 22.0;
 const RESIZE_ZONE: f32 = 7.0;
 const MIN_PPS: f32 = 8.0;
 const MAX_PPS: f32 = 64.0;
+/// The piano roll zooms out further than the drum grid so zoom-to-fit (0)
+/// can show long patterns whole.
+const ROLL_MIN_PPS: f32 = 1.0;
+/// Share of the grid width Shift+0 gives the selection; the rest is margin.
+const FIT_SELECTION_SHARE: f32 = 0.9;
 /// Header slot widths (the toolbar needs them before painting).
 const HEADER_NAME_MAX_W: f32 = 180.0;
 const HEADER_INST_MAX_W: f32 = 140.0;
@@ -115,6 +120,8 @@ const VEL_CHIPS: [(&str, f32, &str); 2] = [
         "Velocity +10% — selected notes, or every note when nothing is selected",
     ),
 ];
+const FIT_TIP: &str =
+    "Zoom to fit the pattern (0) — Shift+click or Shift+0 fits the selected notes";
 const HUMANIZE_TIP: &str = "Random velocity and timing jitter — selected notes, or every note \
                             when nothing is selected. Each click is a new take; undo to revert";
 
@@ -474,6 +481,7 @@ enum ToolAction {
     Fill,
     ScaleSnap,
     ScaleHighlight,
+    Fit,
 }
 
 /// Toolbar layouts of the last frame, for the headless layout tests:
@@ -670,7 +678,7 @@ impl EditorView {
 
     /// Zooms the piano roll horizontally about the visible centre.
     pub fn zoom(&mut self, factor: f32) {
-        self.roll_pps = (self.roll_pps * factor).clamp(MIN_PPS, MAX_PPS);
+        self.roll_pps = (self.roll_pps * factor).clamp(ROLL_MIN_PPS, MAX_PPS);
         self.drum_pps = (self.drum_pps * factor).clamp(MIN_PPS, MAX_PPS);
     }
 }
@@ -928,6 +936,10 @@ impl CadenceApp {
             })
         });
         for (digit, shift) in digits {
+            if digit == 0 {
+                self.roll_zoom_to_fit(shift);
+                continue;
+            }
             let Some(&(len, label)) = digit.checked_sub(1).and_then(|i| NOTE_LENGTHS.get(i)) else {
                 continue;
             };
@@ -938,6 +950,51 @@ impl CadenceApp {
                 self.set_status(StatusKind::Info, format!("Note length {label}."));
             }
         }
+    }
+
+    /// Zoom to fit (0 / the toolbar's Fit): the whole pattern across the
+    /// grid, or with `selection` (Shift+0) the selected notes' time span
+    /// with a little margin, centred on their pitches. An empty selection
+    /// fits the pattern.
+    pub(super) fn roll_zoom_to_fit(&mut self, selection: bool) {
+        let Some((tid, pid)) = self.editor_target() else {
+            return;
+        };
+        let grid = self.editor.rects.grid;
+        let Some(pat) = self.pat_ref(tid, pid) else {
+            return;
+        };
+        if !grid.is_positive() {
+            return;
+        }
+        let length = pat.length.max(1) as f32;
+        let picked: Vec<Note> = pat
+            .notes
+            .iter()
+            .filter(|n| selection && self.sel.notes.contains(&n.id))
+            .cloned()
+            .collect();
+        let ed = &mut self.editor;
+        if picked.is_empty() {
+            ed.roll_pps = (grid.width() / length).clamp(ROLL_MIN_PPS, MAX_PPS);
+            ed.roll_scroll_x = 0.0;
+            return;
+        }
+        let start = picked.iter().map(|n| n.start).fold(f64::INFINITY, f64::min);
+        let end = picked
+            .iter()
+            .map(|n| n.end())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let span = (end - start).max(1.0) as f32;
+        ed.roll_pps = (grid.width() * FIT_SELECTION_SHARE / span).clamp(ROLL_MIN_PPS, MAX_PPS);
+        let used = span * ed.roll_pps;
+        ed.roll_scroll_x =
+            (start as f32 * ed.roll_pps - (grid.width() - used).max(0.0) * 0.5).max(0.0);
+        let lo = picked.iter().map(|n| n.pitch).min().unwrap_or(60);
+        let hi = picked.iter().map(|n| n.pitch).max().unwrap_or(60);
+        // Rows count down from the top pitch; centre the pitch range.
+        let mid_row = f32::from(LAST_PITCH) - (f32::from(lo) + f32::from(hi)) * 0.5 + 0.5;
+        ed.roll_scroll_y = (mid_row * ed.roll_row_h - grid.height() * 0.5).max(0.0);
     }
 
     /// Gives every selected note `len` steps (clamped at the pattern end).
@@ -1649,7 +1706,7 @@ impl CadenceApp {
                     (h.x - grid.left()).clamp(0.0, grid.width())
                 });
                 let step = (anchor + ed.roll_scroll_x) / ed.roll_pps;
-                ed.roll_pps = (ed.roll_pps * zoom).clamp(MIN_PPS, MAX_PPS);
+                ed.roll_pps = (ed.roll_pps * zoom).clamp(ROLL_MIN_PPS, MAX_PPS);
                 ed.roll_scroll_x = (step * ed.roll_pps - anchor).max(0.0);
             }
             if scroll != Vec2::ZERO {
@@ -1726,6 +1783,12 @@ impl CadenceApp {
                     .on_hover_text("Grid for drawing, moving and resizing notes");
             });
             velocity_item(tb, pal, &mut ed.velocity);
+            if tb
+                .icon_button(theme::Icon::Fit, "Zoom to fit", FIT_TIP)
+                .clicked()
+            {
+                act = Some(ToolAction::Fit);
+            }
             tb.separator();
             if tb
                 .toggle(
@@ -1781,6 +1844,10 @@ impl CadenceApp {
                 }
             }
             Some(ToolAction::ScaleHighlight) => self.toggle_scale_highlight(),
+            Some(ToolAction::Fit) => {
+                let shift = ui.input(|i| i.modifiers.shift);
+                self.roll_zoom_to_fit(shift);
+            }
             Some(a) => self.apply_note_tool(tid, pid, a),
             None => {}
         }
@@ -1807,7 +1874,7 @@ impl CadenceApp {
                     }
                 });
             }
-            ToolAction::ScaleSnap | ToolAction::ScaleHighlight => {}
+            ToolAction::ScaleSnap | ToolAction::ScaleHighlight | ToolAction::Fit => {}
         }
     }
 
@@ -2248,11 +2315,13 @@ impl CadenceApp {
         let s0 = roll.step(roll.grid.left()).max(0.0).floor() as i64;
         let s1 = roll.step(roll.grid.right()).ceil() as i64;
         let step_lines = roll.pps >= 14.0;
+        // Zoomed far out (fit on a long pattern) only bar lines stay.
+        let beat_lines = roll.pps * 4.0 >= 6.0;
         for s in s0.max(0)..=s1.min(pat.length as i64) {
             let x = roll.x(s as f64);
             if s % 16 == 0 {
                 p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_bar));
-            } else if s % 4 == 0 {
+            } else if s % 4 == 0 && beat_lines {
                 p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_beat));
             } else if step_lines {
                 p.vline(x, roll.grid.y_range(), Stroke::new(0.5_f32, pal.grid_faint));

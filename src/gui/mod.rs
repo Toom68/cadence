@@ -76,6 +76,10 @@ pub(crate) const SC_BAR_BACK: KeyboardShortcut = sc(Modifiers::SHIFT, Key::Arrow
 pub(crate) const SC_BAR_FORWARD: KeyboardShortcut = sc(Modifiers::SHIFT, Key::ArrowRight);
 pub(crate) const SC_SHORTEN: KeyboardShortcut = sc(Modifiers::ALT, Key::ArrowLeft);
 pub(crate) const SC_LENGTHEN: KeyboardShortcut = sc(Modifiers::ALT, Key::ArrowRight);
+/// Piano-roll zoom to fit: the pattern / the selected notes (read from the
+/// physical 0 key by `roll_digit_keys`, listed in Help through these).
+pub(crate) const SC_FIT: KeyboardShortcut = sc(Modifiers::NONE, Key::Num0);
+pub(crate) const SC_FIT_SELECTION: KeyboardShortcut = sc(Modifiers::SHIFT, Key::Num0);
 /// MIDI record toggle — the performance keys (Z X C V B N M, S D G H J) all
 /// sit in the rows below R, so plain R is free.
 pub(crate) const SC_RECORD: KeyboardShortcut = sc(Modifiers::NONE, Key::R);

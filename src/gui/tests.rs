@@ -904,6 +904,67 @@ fn digit_keys_pick_the_draw_length_and_set_selected_lengths() {
 }
 
 #[test]
+fn zero_zooms_the_roll_to_fit_the_pattern_or_selection() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    ui.click(ui.app.roll_cell_center(60, 2.0).unwrap());
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.length = 128;
+        pat.notes.push(Note::new(67, 40.0, 4.0, 0.8));
+    }
+    ui.step();
+    let (grid, _, _) = ui.app.editor_test_rects();
+
+    ui.key(Key::Num0);
+    ui.step();
+    let (x0, x1) = (ui.app.roll_x(0.0).unwrap(), ui.app.roll_x(128.0).unwrap());
+    assert!(
+        (x0 - grid.left()).abs() < 0.5,
+        "pattern start at the left edge"
+    );
+    assert!(
+        (x1 - grid.right()).abs() < 1.0,
+        "pattern end at the right edge: {x1} vs {}",
+        grid.right()
+    );
+
+    // Shift+0 fits the selected notes (steps 2–44, pitches 60–67), from
+    // anywhere in the roll.
+    ui.app.set_roll_scroll(0.0, 0.0);
+    ui.step();
+    ui.app.sel.notes = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.key_mod(Key::Num0, Modifiers::SHIFT);
+    ui.step();
+    let (a, b) = (ui.app.roll_x(2.0).unwrap(), ui.app.roll_x(44.0).unwrap());
+    assert!(
+        a > grid.left() && b < grid.right(),
+        "selection inside: {a}..{b}"
+    );
+    assert!(
+        b - a > grid.width() * 0.8,
+        "selection fills most of the width"
+    );
+    for pitch in [60, 67] {
+        assert!(
+            ui.app.roll_cell_center(pitch, 2.0).is_some()
+                || ui.app.roll_cell_center(pitch, 40.0).is_some(),
+            "pitch {pitch} on screen"
+        );
+    }
+    // With nothing selected Shift+0 fits the pattern.
+    ui.app.sel.notes.clear();
+    ui.key_mod(Key::Num0, Modifiers::SHIFT);
+    ui.step();
+    assert!((ui.app.roll_x(128.0).unwrap() - grid.right()).abs() < 1.0);
+}
+
+#[test]
 fn arranger_clip_drag_moves_within_bounds() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();

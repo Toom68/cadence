@@ -1409,6 +1409,11 @@ const SHORTCUT_SECTIONS: &[Section] = &[
                 "Shorten / lengthen by the Snap",
                 Either(&super::SC_SHORTEN, &super::SC_LENGTHEN),
             ),
+            ("Zoom to fit the pattern", Shortcut(&super::SC_FIT)),
+            (
+                "Zoom to fit the selection",
+                Shortcut(&super::SC_FIT_SELECTION),
+            ),
         ],
     },
     Section {
@@ -2345,6 +2350,8 @@ mod tests {
             g::SC_BAR_FORWARD,
             g::SC_SHORTEN,
             g::SC_LENGTHEN,
+            g::SC_FIT,
+            g::SC_FIT_SELECTION,
         ] {
             assert!(listed.contains(&sc), "{sc:?} is missing from Help");
         }
