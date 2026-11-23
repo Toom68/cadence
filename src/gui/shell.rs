@@ -494,6 +494,15 @@ impl CadenceApp {
         if menu_item(ui, pal, "Save As…", &keys(ui, &SC_SAVE_AS), true, None).clicked() {
             self.save_as();
         }
+        if menu_item(ui, pal, "Save Copy with Audio…", "", true, None)
+            .on_hover_text(
+                "Save a copy of the song plus a \"<name> Audio\" folder with every WAV it \
+                 uses, so it plays on another computer",
+            )
+            .clicked()
+        {
+            self.save_copy_with_audio_dialog();
+        }
         menu_sep(ui, pal);
         if menu_item(ui, pal, "Import MIDI…", "", true, None).clicked() {
             self.request(PendingAction::ImportMidi);

@@ -161,9 +161,28 @@ impl CadenceApp {
         match persistence::load_project(&path) {
             Ok(project) => {
                 let shown = file_label(&path);
+                // Audio this computer lacks may have travelled with the song
+                // in its "<stem> Audio" folder: stage it before the
+                // missing-file scan in `replace_project`.
+                let found = if self.io_enabled {
+                    persistence::import_song_audio(&project, &path).staged.len()
+                } else {
+                    0
+                };
                 self.remember_recent(&path);
                 self.replace_project(project, Some(path), true);
-                self.set_status(StatusKind::Success, format!("Opened {shown}."));
+                if found > 0 {
+                    self.set_status(
+                        StatusKind::Success,
+                        format!(
+                            "Opened {shown} and copied {found} audio file{} that came with it \
+                             into this computer's audio store.",
+                            plural(found)
+                        ),
+                    );
+                } else {
+                    self.set_status(StatusKind::Success, format!("Opened {shown}."));
+                }
                 self.warn_missing_refs();
             }
             Err(err) => self.set_status(StatusKind::Error, err),
@@ -212,8 +231,9 @@ impl CadenceApp {
         if !self.missing_audio.is_empty() {
             let n = self.missing_audio.len();
             parts.push(format!(
-                "{} audio clip file{} missing from this PC's audio store — \
-                 those clips are silent; re-import the original WAVs",
+                "{} audio clip file{} missing from this computer's audio store — \
+                 those clips are silent; re-import the original WAVs, or open a copy \
+                 made with File ▸ Save Copy with Audio",
                 n,
                 super::sidebar::plural(n),
             ));
@@ -323,6 +343,65 @@ impl CadenceApp {
                 // The file name is enough here (the toast repeats it); the
                 // full path is in the transport's saved-state tooltip.
                 self.set_status(StatusKind::Success, format!("Saved {}.", file_label(&path)));
+                true
+            }
+            Err(err) => {
+                self.set_status(StatusKind::Error, err);
+                false
+            }
+        }
+    }
+
+    /// File ▸ Save Copy with Audio…: pick a `.cadence` path, then write the
+    /// song plus a sibling `<name> Audio/` folder with every WAV it uses, so
+    /// the copy plays on another computer. The open document (its path and
+    /// saved state) is unchanged.
+    pub(super) fn save_copy_with_audio_dialog(&mut self) {
+        if !self.dialogs_available() {
+            return;
+        }
+        let name = file_stem(&self.project.name);
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save a copy with its audio files")
+            .add_filter("Cadence song", &[persistence::PROJECT_EXTENSION])
+            .set_file_name(format!("{name}.{}", persistence::PROJECT_EXTENSION))
+            .save_file()
+        else {
+            return;
+        };
+        self.save_copy_with_audio_to(path);
+    }
+
+    /// Writes the portable copy (helper path usable without dialogs).
+    pub(super) fn save_copy_with_audio_to(&mut self, path: PathBuf) -> bool {
+        let path = persistence::with_project_extension(&path);
+        match persistence::save_project_with_audio(&self.project, &path) {
+            Ok(bundle) => {
+                let song = file_label(&path);
+                let folder = file_label(&bundle.folder);
+                let mut text = if bundle.files == 0 && bundle.missing.is_empty() {
+                    format!("Saved a copy as {song}. The song has no audio clips to bundle.")
+                } else {
+                    format!(
+                        "Saved a copy as {song} with {} audio file{} in “{folder}” — \
+                         keep the folder next to the song when you move it.",
+                        bundle.files,
+                        plural(bundle.files)
+                    )
+                };
+                let kind = if bundle.missing.is_empty() {
+                    StatusKind::Success
+                } else {
+                    let n = bundle.missing.len();
+                    text.push_str(&format!(
+                        " {n} clip file{} {} missing here and stay{} silent.",
+                        plural(n),
+                        if n == 1 { "is" } else { "are" },
+                        if n == 1 { "s" } else { "" }
+                    ));
+                    StatusKind::Warning
+                };
+                self.set_status(kind, text);
                 true
             }
             Err(err) => {
@@ -1499,6 +1578,24 @@ mod tests {
         // Headless: nothing was written next to the songs.
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
         assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn save_copy_with_audio_leaves_the_document_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = CadenceApp::headless(Project::demo());
+        app.edit("Rename", None, |p| p.name = "Portable".into());
+        let state = app.history.state();
+        assert!(app.save_copy_with_audio_to(dir.path().join("Copy")));
+        let copy = dir.path().join("Copy.cadence");
+        assert_eq!(persistence::load_project(&copy).unwrap().name, "Portable");
+        // The demo has no audio clips: no folder, and still untitled + dirty.
+        assert!(!dir.path().join("Copy Audio").exists());
+        assert_eq!(app.doc.path, None);
+        assert!(app.dirty());
+        assert_eq!(app.history.state(), state);
+        let status = app.status.clone().unwrap();
+        assert_eq!(status.kind, StatusKind::Success, "{}", status.text);
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
