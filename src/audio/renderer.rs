@@ -726,6 +726,7 @@ impl Renderer {
         self.dc_l = DcBlock::new(self.sr);
         self.dc_r = DcBlock::new(self.sr);
         self.panic_left = 0;
+        self.rms_power = 0.0;
     }
 
     /// Starts the transport at `start_step` (clamped into the song). Notes already sounding
@@ -1664,6 +1665,25 @@ mod tests {
             peaks.master_rms
         );
         assert_eq!(peaks.glue_reduction_db, 0.0, "glue is off");
+    }
+
+    #[test]
+    fn hard_reset_clears_the_rms_meter() {
+        let p = one_note_project(Instrument::Pad, 60, 0.0, 16.0);
+        let mut r = Renderer::new(SR);
+        r.load(Box::new(SongData::from_project(&p)));
+        r.play(0.0, false);
+        let (mut l, mut rr) = (vec![0.0; 256], vec![0.0; 256]);
+        let mut peaks = BlockPeaks::default();
+        for _ in 0..100 {
+            peaks = BlockPeaks::default();
+            r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+        }
+        assert!(peaks.master_rms > 0.005, "pad is sounding");
+        r.device_lost();
+        let mut peaks = BlockPeaks::default();
+        r.render_with_metering::<true>(&mut l, &mut rr, &mut peaks);
+        assert_eq!(peaks.master_rms, 0.0, "no stale RMS after a hard reset");
     }
 
     #[test]
