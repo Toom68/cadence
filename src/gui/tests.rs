@@ -1852,7 +1852,7 @@ fn kit_drum_grid_has_one_row_per_piece_and_paints_piece_pitches() {
 #[test]
 fn kit_preset_summary_and_audition_pitch() {
     let preset = test_kit_preset();
-    assert_eq!(preset_summary(&preset), "kit · 3 pieces");
+    assert_eq!(preset_summary(&preset), "Drum kit · 3 sounds");
     // Melodic presets keep the oscillator summary.
     assert!(preset_summary(&test_preset()).contains("sine"));
 
@@ -3273,7 +3273,7 @@ fn chord_strip_stamps_diatonic_chord_block_undoable() {
         ui.app
             .status
             .as_ref()
-            .is_some_and(|s| s.text.contains("Stamped")),
+            .is_some_and(|s| s.text.contains("Added")),
         "status reports the stamped chord: {:?}",
         ui.app.status
     );
@@ -3673,7 +3673,7 @@ fn record_skips_audio_lanes_and_uncovered_playheads() {
         "audio lanes hold no patterns"
     );
     let status = ui.app.status.as_ref().unwrap().text.clone();
-    assert!(status.contains("MIDI tracks"), "status: {status}");
+    assert!(status.contains("instrument track"), "status: {status}");
 
     // A pattern clip moved past the playhead cannot be extended backwards.
     let idx2 = plant_record_track(&mut ui);

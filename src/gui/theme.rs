@@ -2050,6 +2050,13 @@ pub fn text_button(ui: &mut Ui, pal: Palette, text: &str, height: f32, tooltip: 
     labelled_button(ui, pal, None, text, None, height, tooltip)
 }
 
+/// Width [`text_button`] takes for `text` at `height` (for layouts that
+/// decide what fits before drawing).
+pub fn text_button_width(ui: &Ui, text: &str, height: f32) -> f32 {
+    let galley = label_galley(ui, text, button_font(height));
+    button_width(height, false, Some(&*galley))
+}
+
 /// Text toggle. OFF is a normal button body with a legible label; ON fills
 /// with the accent.
 ///
@@ -2154,14 +2161,48 @@ pub fn paint_chip(
     painter.galley(rect.center() - galley.size() * 0.5, galley, colors.ink);
 }
 
-/// Primary call-to-action button (filled accent).
+/// Primary call-to-action button (filled accent, at least 88 px wide).
 pub fn primary_button(ui: &mut Ui, pal: Palette, text: &str) -> Response {
-    ui.add(
-        egui::Button::new(strong_text(text).color(ink_on(pal.accent)))
-            .fill(pal.accent)
-            .stroke(Stroke::NONE)
-            .min_size(vec2(88.0, CONTROL_L)),
-    )
+    let galley = label_galley(ui, text, strong_font(ui, TEXT_BODY));
+    let width = (galley.size().x + 2.0 * button_pad(CONTROL_L))
+        .ceil()
+        .max(88.0);
+    solid_button(ui, pal, text, pal.accent, vec2(width, CONTROL_L), "")
+}
+
+/// Button of exactly `size` filled with `color` (calls to action, the empty
+/// song's instrument tiles). Hover and press move the fill away from the
+/// ink, disabled shows the dimmed body; a label wider than the body is cut
+/// with an ellipsis.
+///
+/// `theme::solid_button(ui, pal, "+  Piano", color, vec2(128.0, CONTROL_L), "Add a piano track")`
+pub fn solid_button(
+    ui: &mut Ui,
+    pal: Palette,
+    text: &str,
+    color: Color32,
+    size: Vec2,
+    tooltip: &str,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    if ui.is_rect_visible(rect) {
+        let press = Press::of(&resp, enabled);
+        let colors = button_colors(pal, press, OnStyle::Solid(color), false);
+        let painter = unfaded_painter(ui);
+        paint_button_body(&painter, pal, rect, RADIUS_M, colors, press.focused);
+        let room = (rect.width() - 2.0 * GAP_S).max(4.0);
+        let galley = elide(
+            ui,
+            text,
+            strong_font(ui, TEXT_BODY),
+            Color32::PLACEHOLDER,
+            room,
+        );
+        painter.galley(rect.center() - galley.size() * 0.5, galley, colors.ink);
+    }
+    with_tooltip(resp, tooltip)
 }
 
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
@@ -4727,6 +4768,82 @@ mod tests {
             let combo = combo("combo", "Bar", 80.0).show_ui(ui, |_| {});
             assert_eq!(combo.response.rect.height(), CONTROL_M);
         });
+    }
+
+    /// Fill of the first rectangle painted inside `area`.
+    fn painted_fill(output: &egui::FullOutput, area: Rect) -> Option<Color32> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Rect(r) if area.contains_rect(r.rect) && r.rect.width() > 4.0 => {
+                    Some(r.fill)
+                }
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn solid_buttons_answer_hover_press_and_disabled() {
+        for choice in ThemeChoice::ALL {
+            let harness = Harness::themed(400.0, choice);
+            let pal = harness.pal();
+            let rect = Cell::new(Rect::NOTHING);
+            let enabled = Cell::new(true);
+            let clicks = Cell::new(0);
+            let add = |ui: &mut Ui| {
+                ui.add_enabled_ui(enabled.get(), |ui| {
+                    let resp = primary_button(ui, pal, "Save");
+                    rect.set(resp.rect);
+                    clicks.set(clicks.get() + usize::from(resp.clicked()));
+                });
+            };
+            let rest = harness.frame(Vec::new(), add);
+            let r = rect.get();
+            assert_eq!(r.height(), CONTROL_L);
+            assert!(r.width() >= 88.0);
+            let area = r.expand(1.0);
+            let rest = painted_fill(&rest, area).unwrap();
+            assert_eq!(rest, pal.accent);
+            let hover = harness.frame(vec![Event::PointerMoved(r.center())], add);
+            let hover = painted_fill(&hover, area).unwrap();
+            let down = harness.frame(vec![button_event(r.center(), true)], add);
+            let down = painted_fill(&down, area).unwrap();
+            assert!(rest != hover && hover != down && rest != down, "{choice:?}");
+            let ink = ink_on(pal.accent);
+            for fill in [rest, hover, down] {
+                assert!(contrast_ratio(ink, fill) >= 4.5, "{choice:?} {fill:?}");
+            }
+            harness.frame(release(r.center()), add);
+            assert_eq!(clicks.get(), 1);
+            enabled.set(false);
+            let off = harness.frame(vec![Event::PointerMoved(r.center())], add);
+            let off = painted_fill(&off, area).unwrap();
+            assert_ne!(off, pal.accent, "{choice:?}: disabled looks enabled");
+        }
+    }
+
+    #[test]
+    fn solid_button_keeps_its_size_and_cuts_long_labels() {
+        let harness = Harness::new(400.0);
+        let pal = harness.pal();
+        let size = vec2(128.0, CONTROL_L);
+        let mut rect = Rect::NOTHING;
+        let output = harness.frame(Vec::new(), |ui| {
+            let label = "+  A very long instrument name";
+            rect = solid_button(ui, pal, label, pal.link, size, "").rect;
+        });
+        assert_eq!(rect.size(), size);
+        let texts: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                Shape::Text(t) => Some(t.visual_bounding_rect()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 1);
+        assert!(rect.contains_rect(texts[0]), "{:?} in {rect:?}", texts[0]);
     }
 
     /// Bounding rects of the text shapes painted in a frame, by text.

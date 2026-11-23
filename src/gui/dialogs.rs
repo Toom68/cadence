@@ -9,6 +9,8 @@
 //! the exception — it only closes on an explicit Restore or Discard so the
 //! autosave on disk can never be lost to an accidental dismissal.
 
+use std::sync::{Arc, Mutex};
+
 use egui::{
     vec2, Align, Color32, Context, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers,
     RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui,
@@ -543,7 +545,7 @@ impl CadenceApp {
         else {
             self.set_status(
                 StatusKind::Warning,
-                "Select a melodic track with a pattern to arpeggiate.",
+                "To use the Arpeggiator, select a melodic track (not drums or audio) that has a pattern.",
             );
             return;
         };
@@ -557,7 +559,7 @@ impl CadenceApp {
         let Some((track_id, pattern_id)) = self.arp_target() else {
             self.set_status(
                 StatusKind::Error,
-                "Select a melodic track with a pattern to arpeggiate.",
+                "To use the Arpeggiator, select a melodic track (not drums or audio) that has a pattern.",
             );
             return None;
         };
@@ -924,7 +926,6 @@ impl CadenceApp {
         const NOTICES_CHROME: f32 = 140.0;
         let pal = self.palette();
         let mut closed = false;
-        const NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.txt");
         let resp = show_dialog(ctx, "cadence-notices", pal, W_HELP, |ui| {
             ui.label(
                 RichText::new("Third-Party Notices")
@@ -938,18 +939,32 @@ impl CadenceApp {
             );
             ui.add_space(theme::GAP_S);
             // Title, hint and the Close row stay put; only the text scrolls.
+            // The text is ~1.6 MB: it is wrapped into lines once per width
+            // and only the visible rows are laid out each frame.
+            let font = egui::FontId::monospace(
+                ui.style()
+                    .text_styles
+                    .get(&egui::TextStyle::Small)
+                    .map_or(theme::TEXT_SMALL, |f| f.size),
+            );
+            let (row_h, char_w) =
+                ui.fonts_mut(|f| (f.row_height(&font), f.glyph_width(&font, 'M')));
+            let width = ui.available_width() - ui.spacing().scroll.bar_width - 4.0;
+            let lines = notices_lines((width / char_w.max(1.0)).floor() as usize);
             ScrollArea::vertical()
                 .id_salt("notices-body")
                 .max_height((dialog_max_height(ctx) - NOTICES_CHROME).max(80.0))
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
+                .show_rows(ui, row_h, lines.len(), |ui, rows| {
                     ui.set_min_width(ui.available_width());
-                    ui.label(
-                        RichText::new(NOTICES)
-                            .small()
-                            .color(pal.text_dim)
-                            .monospace(),
-                    );
+                    for line in &lines[rows] {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(*line).font(font.clone()).color(pal.text_dim),
+                            )
+                            .truncate(),
+                        );
+                    }
                 });
             ui.add_space(theme::GAP_S);
             button_row(ui, |ui| {
@@ -1575,12 +1590,9 @@ const EDITOR_SECTIONS: &[Section] = &[
         rows: &[
             ("Open or close it", Mouse("Click Chords above the roll")),
             ("Hear a chord", Mouse("Hover a chord")),
+            ("Add it at the pointer or playhead", Mouse("Click a chord")),
             (
-                "Stamp it at the pointer or playhead",
-                Mouse("Click a chord"),
-            ),
-            (
-                "Stamp a progression, a chord per bar",
+                "Add a progression, one chord per bar",
                 Mouse("Click a preset"),
             ),
             (
@@ -1789,6 +1801,53 @@ fn keycap(ui: &mut Ui, pal: Palette, key: &str) {
     p.galley(rect.center() - galley.size() * 0.5, galley, pal.text);
 }
 
+/// The generated third-party notices (crates + bundled fonts), embedded at
+/// build time.
+const NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.txt");
+
+/// [`NOTICES`] wrapped to `columns`, computed once per column count (the
+/// last few widths stay cached).
+fn notices_lines(columns: usize) -> Arc<Vec<&'static str>> {
+    type Cache = Vec<(usize, Arc<Vec<&'static str>>)>;
+    static CACHE: Mutex<Cache> = Mutex::new(Vec::new());
+    let columns = columns.max(20);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, lines)) = cache.iter().find(|(cols, _)| *cols == columns) {
+        return Arc::clone(lines);
+    }
+    let lines = Arc::new(wrap_lines(NOTICES, columns));
+    if cache.len() >= 4 {
+        cache.remove(0);
+    }
+    cache.push((columns, Arc::clone(&lines)));
+    lines
+}
+
+/// Splits `text` into display lines of at most `columns` characters,
+/// breaking long lines after a space where there is one in reach.
+fn wrap_lines(text: &str, columns: usize) -> Vec<&str> {
+    let columns = columns.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut rest = line.trim_end();
+        loop {
+            // Byte offset just past the `columns`-th character.
+            let Some((cut, _)) = rest.char_indices().nth(columns) else {
+                out.push(rest);
+                break;
+            };
+            let head = &rest[..cut];
+            let split = match head.rfind(' ') {
+                Some(space) if space > 0 => space + 1,
+                _ => cut,
+            };
+            out.push(rest[..split].trim_end());
+            rest = &rest[split..];
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1981,6 +2040,66 @@ mod tests {
 
         run_frame(&mut app, &ctx, escape_input());
         assert!(matches!(app.dialog, Dialog::None));
+    }
+
+    #[test]
+    fn notices_wrap_into_short_lines_without_losing_text() {
+        let text = "short\r\n\r\nword word word word wordy\nabcdefghijkl\n";
+        let lines = wrap_lines(text, 10);
+        assert_eq!(
+            lines,
+            vec![
+                "short",
+                "",
+                "word word",
+                "word word",
+                "wordy",
+                "abcdefghij",
+                "kl"
+            ]
+        );
+        let lines = notices_lines(80);
+        assert!(lines.len() > 1000, "{} lines", lines.len());
+        assert!(lines.iter().all(|l| l.chars().count() <= 80));
+        let words = |s: &str| s.split_whitespace().map(str::len).sum::<usize>();
+        let wrapped: usize = lines.iter().map(|l| words(l)).sum();
+        // Hard cuts inside a long word split it in two; nothing is dropped.
+        assert_eq!(wrapped, words(NOTICES));
+        assert!(Arc::ptr_eq(&lines, &notices_lines(80)), "cached per width");
+    }
+
+    /// The notices dialog lays out only the rows on screen, not the whole
+    /// 1.6 MB text.
+    #[test]
+    fn notices_dialog_lays_out_only_visible_rows() {
+        let mut app = headless();
+        app.dialog = Dialog::Notices;
+        let ctx = Context::default();
+        let mut output = None;
+        for _ in 0..4 {
+            let input = RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1360.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            output = Some(ctx.run(input, |ctx| app.frame(ctx)));
+        }
+        let output = output.unwrap();
+        let notice_chars: usize = output
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().len()),
+                _ => None,
+            })
+            .sum();
+        assert!(matches!(app.dialog, Dialog::Notices));
+        assert!(
+            notice_chars < 40_000,
+            "{notice_chars} chars of text painted in one frame"
+        );
     }
 
     /// Every dialog fits the window and keeps its button row on screen,
