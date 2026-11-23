@@ -306,8 +306,10 @@ fn resolve_fonts_dir(env: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
 ///   Linux) and, for an executable in `Cadence.app/Contents/MacOS`,
 ///   `Contents/Resources/soundfonts`.
 /// - Developer builds (debug, or a binary under this crate's directory, as
-///   `cargo run --release` produces) also look in the repo-local cache
-///   `.cache/soundfonts` that `scripts/fetch-soundfont.sh` fills.
+///   `cargo run --release` produces) without either folder use the
+///   repo-local cache `.cache/soundfonts` that `scripts/fetch-soundfont.sh`
+///   fills. A packaged app never falls back to it, so its own copy is the
+///   one that gets tested.
 ///
 /// Missing directories are fine: they just contribute no fonts.
 pub fn bundled_fonts_dirs() -> Vec<PathBuf> {
@@ -326,6 +328,7 @@ pub fn bundled_fonts_dirs() -> Vec<PathBuf> {
         exe.as_deref(),
         Path::new(env!("CARGO_MANIFEST_DIR")),
         cfg!(debug_assertions),
+        &|dir| dir.is_dir(),
     )
 }
 
@@ -334,6 +337,7 @@ fn resolve_bundled_dirs(
     exe: Option<&Path>,
     repo: &Path,
     debug_build: bool,
+    is_dir: &dyn Fn(&Path) -> bool,
 ) -> Vec<PathBuf> {
     if let Some(dir) = env(BUNDLED_FONTS_DIR_ENV).filter(|dir| !dir.is_empty()) {
         return vec![PathBuf::from(dir)];
@@ -348,7 +352,7 @@ fn resolve_bundled_dirs(
         }
     }
     let in_repo = exe.is_some_and(|exe| exe.starts_with(repo));
-    if debug_build || in_repo {
+    if (debug_build || in_repo) && !dirs.iter().any(|dir| is_dir(dir)) {
         dirs.push(repo.join(".cache").join(BUNDLED_FONTS_SUBDIR));
     }
     dirs
@@ -699,53 +703,92 @@ mod tests {
     fn bundled_dirs_resolution() {
         let repo = Path::new("/src/cadence");
         let none = |_key: &str| None;
+        let nothing = |_dir: &Path| false;
+        let resolve = |env: &dyn Fn(&str) -> Option<OsString>, exe: Option<&str>, debug| {
+            resolve_bundled_dirs(env, exe.map(Path::new), repo, debug, &nothing)
+        };
         // The env override replaces discovery entirely.
         let env = |key: &str| match key {
             BUNDLED_FONTS_DIR_ENV => Some(OsString::from("/tmp/sf-override")),
             _ => None,
         };
-        let exe = Path::new("/Applications/Cadence.app/Contents/MacOS/cadence");
+        let mac = "/Applications/Cadence.app/Contents/MacOS/cadence";
         assert_eq!(
-            resolve_bundled_dirs(&env, Some(exe), repo, true),
+            resolve(&env, Some(mac), true),
             vec![PathBuf::from("/tmp/sf-override")]
         );
         // An empty override is ignored.
         let empty = |key: &str| (key == BUNDLED_FONTS_DIR_ENV).then(OsString::new);
         assert_eq!(
-            resolve_bundled_dirs(&empty, Some(exe), repo, false),
-            resolve_bundled_dirs(&none, Some(exe), repo, false)
+            resolve(&empty, Some(mac), false),
+            resolve(&none, Some(mac), false)
         );
         // macOS bundle: next to the binary, then Contents/Resources.
         assert_eq!(
-            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            resolve(&none, Some(mac), false),
             vec![
                 PathBuf::from("/Applications/Cadence.app/Contents/MacOS/soundfonts"),
                 PathBuf::from("/Applications/Cadence.app/Contents/Resources/soundfonts"),
             ]
         );
         // Windows install / portable zip / Linux: next to the binary only.
-        let exe = Path::new("/opt/cadence/cadence");
+        let installed = "/opt/cadence/cadence";
         assert_eq!(
-            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            resolve(&none, Some(installed), false),
             vec![PathBuf::from("/opt/cadence/soundfonts")]
         );
         // Debug builds also read the repo-local dev cache...
+        let dev_cache = PathBuf::from("/src/cadence/.cache/soundfonts");
         assert_eq!(
-            resolve_bundled_dirs(&none, Some(exe), repo, true).last(),
-            Some(&PathBuf::from("/src/cadence/.cache/soundfonts"))
+            resolve(&none, Some(installed), true).last(),
+            Some(&dev_cache)
         );
         // ...as do release binaries built inside the repo (`cargo run --release`).
-        let exe = Path::new("/src/cadence/target/release/cadence");
+        let cargo_run = "/src/cadence/target/release/cadence";
         assert_eq!(
-            resolve_bundled_dirs(&none, Some(exe), repo, false),
+            resolve(&none, Some(cargo_run), false),
             vec![
                 PathBuf::from("/src/cadence/target/release/soundfonts"),
-                PathBuf::from("/src/cadence/.cache/soundfonts"),
+                dev_cache.clone(),
             ]
         );
+        // A packaged app inside the repo (dist/Cadence.app) with its own
+        // soundfonts folder never falls back to the dev cache.
+        let dist = Path::new("/src/cadence/dist/Cadence.app/Contents/MacOS/cadence");
+        let resources =
+            PathBuf::from("/src/cadence/dist/Cadence.app/Contents/Resources/soundfonts");
+        let has_resources = |dir: &Path| dir == resources.as_path();
+        let dirs = resolve_bundled_dirs(&none, Some(dist), repo, true, &has_resources);
+        assert_eq!(dirs.last(), Some(&resources));
+        assert!(!dirs.contains(&dev_cache));
         // No executable path: only the dev cache, and only in debug builds.
-        assert!(resolve_bundled_dirs(&none, None, repo, false).is_empty());
-        assert_eq!(resolve_bundled_dirs(&none, None, repo, true).len(), 1);
+        assert!(resolve(&none, None, false).is_empty());
+        assert_eq!(resolve(&none, None, true), vec![dev_cache]);
+    }
+
+    #[test]
+    fn packaging_pin_installs_the_builtin_font_name() {
+        // The fetch scripts install the font under SOUNDFONT_FILE; its stem is
+        // the name songs store, so it must match BUILTIN_FONT_NAME.
+        let pin = include_str!("../packaging/soundfont/pin.txt");
+        let value = |key: &str| {
+            pin.lines()
+                .find_map(|line| line.trim().strip_prefix(key)?.strip_prefix('='))
+                .map(str::trim)
+                .unwrap_or_else(|| panic!("{key} missing from pin.txt"))
+        };
+        let file = Path::new(value("SOUNDFONT_FILE"));
+        assert_eq!(file.extension().and_then(|e| e.to_str()), Some("sf2"));
+        assert_eq!(font_name(file).as_deref(), Some(BUILTIN_FONT_NAME));
+        let sha = value("SOUNDFONT_SHA256");
+        assert_eq!(sha.len(), 64);
+        assert!(sha.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(value("SOUNDFONT_URL").starts_with("https://"));
+        let bytes: u64 = value("SOUNDFONT_BYTES").parse().unwrap();
+        assert!(
+            bytes <= MAX_FONT_BYTES,
+            "the loader must accept the shipped font"
+        );
     }
 
     #[test]

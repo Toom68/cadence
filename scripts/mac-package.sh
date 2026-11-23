@@ -4,6 +4,7 @@
 # Usage:  scripts/mac-package.sh            # native architecture
 #         UNIVERSAL=1 scripts/mac-package.sh # arm64 + x86_64 universal binary
 #         SKIP_DMG=1 scripts/mac-package.sh  # zip only
+#         REQUIRE_SOUNDFONT=1 scripts/mac-package.sh # fail without the GM font (CI)
 #
 # Output: dist/Cadence.app, dist/Cadence-<version>-macos-<arch>.zip and,
 # when hdiutil is available, dist/Cadence-<version>-macos-<arch>.dmg.
@@ -58,6 +59,27 @@ cp assets/fonts/DejaVu-LICENSE.txt "$APP/Contents/Resources/licenses/DejaVu-LICE
 # Buyer-facing files live inside the bundle's Resources (the zip contains
 # only Cadence.app). EULA.txt ships when the owner provides one at repo root.
 cp packaging/README.txt "$APP/Contents/Resources/README.txt"
+# The built-in General MIDI SoundFont ("Cadence GM.sf2" = GeneralUser GS, see
+# packaging/soundfont/README.md): downloaded once into .cache/soundfonts,
+# SHA-256 verified, never committed. Without network a dev build warns and
+# ships without it; REQUIRE_SOUNDFONT=1 (CI) makes that fatal, and a checksum
+# mismatch is always fatal.
+SOUNDFONT_DIR="$APP/Contents/Resources/soundfonts"
+SOUNDFONT_STAGED=0
+set +e
+scripts/fetch-soundfont.sh "$SOUNDFONT_DIR"
+fetch_status=$?
+set -e
+if [ "$fetch_status" -eq 0 ]; then
+  SOUNDFONT_STAGED=1
+  cp packaging/soundfont/GeneralUser-GS-LICENSE.txt "$APP/Contents/Resources/licenses/GeneralUser-GS-LICENSE.txt"
+elif [ "$fetch_status" -eq 3 ] || [ "${REQUIRE_SOUNDFONT:-0}" = "1" ]; then
+  echo "error: could not stage the General MIDI SoundFont (scripts/fetch-soundfont.sh exited $fetch_status)" >&2
+  exit 1
+else
+  rm -rf "$SOUNDFONT_DIR"
+  echo "warning: packaging WITHOUT the built-in General MIDI SoundFont (download failed); GM tracks will use fallback sounds" >&2
+fi
 cp THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 if [ -f EULA.txt ]; then
   cp EULA.txt "$APP/Contents/Resources/EULA.txt"
@@ -96,6 +118,22 @@ codesign --verify --deep --strict "$APP"
 
 # Smoke test: the bundled binary runs and reports its version.
 "$APP/Contents/MacOS/$BIN_NAME" --version
+# ...and finds its own copy of the GM SoundFont (an isolated data dir keeps the
+# packager's own fonts and packs out of it; the bundle never falls back to the
+# repo's dev cache once it has a soundfonts folder).
+if [ "$SOUNDFONT_STAGED" = "1" ]; then
+  SMOKE_DATA="$(mktemp -d)"
+  LISTING="$(env -u CADENCE_SOUNDFONT_DIR -u CADENCE_FONTS_DIR -u CADENCE_PACKS_DIR \
+    CADENCE_DATA_DIR="$SMOKE_DATA" "$APP/Contents/MacOS/$BIN_NAME" --list-instruments)"
+  rm -rf "$SMOKE_DATA"
+  case "$LISTING" in
+    *"Cadence GM (built-in)"*) echo "Built-in SoundFont: OK" ;;
+    *)
+      echo "error: the packaged app does not list the built-in SoundFont" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 BASE="Cadence-$VERSION-macos-$ARCH"
 rm -f "$DIST/$BASE.zip" "$DIST/$BASE.dmg"

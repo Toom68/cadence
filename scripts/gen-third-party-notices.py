@@ -5,7 +5,9 @@ Collects every crate in the locked dependency graph (cargo metadata), appends
 the license texts found in the local cargo registry sources (deduplicated —
 crates sharing an identical license text are grouped), then appends the
 licenses of the fonts bundled inside the binary (Inter, DejaVu, and egui's
-embedded fallback fonts whose license texts live in assets/fonts/egui-licenses/).
+embedded fallback fonts whose license texts live in assets/fonts/egui-licenses/)
+and of the General MIDI SoundFont the release packages ship
+(packaging/soundfont/).
 
 Run from the repo root:  python scripts/gen-third-party-notices.py
 Writes THIRD-PARTY-NOTICES.txt at the repo root. No network access needed —
@@ -441,6 +443,14 @@ BUNDLED_FONTS = [
      ROOT / "assets/fonts/egui-licenses/emoji-icon-font-mit-license.txt"),
 ]
 
+# SoundFonts the release packages ship next to the binary (fetched at
+# packaging time, see packaging/soundfont/README.md).
+BUNDLED_SOUNDFONTS = [
+    ("Cadence GM.sf2 — GeneralUser GS v2.0.3 by S. Christian Collins",
+     "GeneralUser GS License v2.0",
+     ROOT / "packaging/soundfont/GeneralUser-GS-LICENSE.txt"),
+]
+
 
 def cargo_metadata():
     proc = subprocess.run(
@@ -612,6 +622,29 @@ def main():
         lines.append("")
         if path.is_file():
             lines.append(read_limited(path).strip())
+        else:
+            lines.append(f"(license text file missing: {path})")
+        lines.append("")
+        lines.append("=" * 72)
+        lines.append("")
+
+    lines.append("-" * 72)
+    lines.append("BUNDLED SOUNDFONT")
+    lines.append("-" * 72)
+    lines.append("")
+    lines.append(
+        "The release packages include a General MIDI SoundFont in their"
+    )
+    lines.append(
+        "soundfonts folder (the built-in \"Cadence GM\" instrument font). Its"
+    )
+    lines.append("license text is reproduced below.")
+    lines.append("")
+    for label, lic, path in BUNDLED_SOUNDFONTS:
+        lines.append(f"### {label} — {lic}")
+        lines.append("")
+        if path.is_file():
+            lines.append(read_limited(path).replace("\r\n", "\n").strip())
         else:
             lines.append(f"(license text file missing: {path})")
         lines.append("")

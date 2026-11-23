@@ -1,0 +1,13 @@
+# The General MIDI SoundFont shipped with Cadence as "Cadence GM.sf2".
+# Read by scripts/fetch-soundfont.sh and scripts/fetch-soundfont.ps1 (and the
+# CI cache key). KEY=VALUE lines only; see README.md here before changing it.
+# GeneralUser GS v2.0.3 by S. Christian Collins, pinned to a commit of the
+# author's GitHub repository (which exists for automated packaging).
+SOUNDFONT_VERSION=GeneralUser GS 2.0.3
+SOUNDFONT_URL=https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2
+SOUNDFONT_SHA256=9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe
+SOUNDFONT_BYTES=32319396
+# Installed file name. Its stem is the font name songs store and must equal
+# font::BUILTIN_FONT_NAME (a unit test checks) — never change it.
+SOUNDFONT_FILE=Cadence GM.sf2
+SOUNDFONT_LICENSE=GeneralUser-GS-LICENSE.txt

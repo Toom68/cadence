@@ -2,7 +2,12 @@
 ;
 ; Built by scripts/windows-package.ps1 (it passes the defines below):
 ;   ISCC /DAppVersion=1.2.0 /DSourceDir=<staged app folder> /DOutputDir=dist
-;        /DRepoRoot=<repo> packaging\windows\cadence.iss
+;        /DRepoRoot=<repo> [/DRequireSoundFont=1] packaging\windows\cadence.iss
+;
+; The staged folder holds soundfonts\Cadence GM.sf2 (the built-in General
+; MIDI SoundFont, GeneralUser GS, see packaging/soundfont/README.md); [Files]
+; installs it with everything else. /DRequireSoundFont=1 (CI) refuses to
+; build an installer without it.
 ;
 ; Per-user install into %LOCALAPPDATA%\Programs\Cadence: no admin prompt,
 ; ever, so the in-app updater can run a newer setup silently. The AppId
@@ -20,6 +25,11 @@
 #endif
 #ifndef OutputDir
   #define OutputDir RepoRoot + "\dist"
+#endif
+#ifdef RequireSoundFont
+  #if !FileExists(SourceDir + "\soundfonts\Cadence GM.sf2")
+    #error The built-in SoundFont is missing from the staged app (soundfonts\Cadence GM.sf2); run scripts\windows-package.ps1
+  #endif
 #endif
 
 [Setup]
