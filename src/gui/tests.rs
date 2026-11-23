@@ -914,6 +914,13 @@ fn arrow_keys_nudge_notes() {
         73,
         "shift+arrow transposes by an octave"
     );
+    // Alt+↑/↓ (with or without Shift) mean nothing: no stray transpose.
+    let state = ui.app.history.state();
+    for mods in [Modifiers::ALT, Modifiers::ALT | Modifiers::SHIFT] {
+        ui.key_mod(Key::ArrowUp, mods);
+        ui.key_mod(Key::ArrowDown, mods);
+    }
+    assert_eq!(ui.app.history.state(), state, "alt+arrows edit nothing");
 
     // Shift+←/→ move by a bar (clamped inside the pattern), Alt+←/→ change
     // the length by the snap.

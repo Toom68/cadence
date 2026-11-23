@@ -1695,15 +1695,19 @@ impl CadenceApp {
         if self.focus == Focus::Arranger && key(Modifiers::NONE, Key::B) {
             self.split_clip_at_playhead(ctx);
         }
-        if key(Modifiers::SHIFT, Key::ArrowUp) {
-            self.nudge(0, 12);
-        } else if key(Modifiers::NONE, Key::ArrowUp) {
-            self.nudge(0, 1);
-        }
-        if key(Modifiers::SHIFT, Key::ArrowDown) {
-            self.nudge(0, -12);
-        } else if key(Modifiers::NONE, Key::ArrowDown) {
-            self.nudge(0, -1);
+        // ↑/↓ transpose (Shift: an octave). These patterns would also match
+        // with Alt held, and Alt+↑/↓ has no meaning — leave those alone.
+        if !ctx.input(|i| i.modifiers.alt) {
+            if key(Modifiers::SHIFT, Key::ArrowUp) {
+                self.nudge(0, 12);
+            } else if key(Modifiers::NONE, Key::ArrowUp) {
+                self.nudge(0, 1);
+            }
+            if key(Modifiers::SHIFT, Key::ArrowDown) {
+                self.nudge(0, -12);
+            } else if key(Modifiers::NONE, Key::ArrowDown) {
+                self.nudge(0, -1);
+            }
         }
         // Most specific first: a NONE pattern also matches Shift/Alt held.
         if pressed(&SC_SHORTEN) {
