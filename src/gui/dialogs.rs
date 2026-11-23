@@ -848,10 +848,10 @@ impl CadenceApp {
                 .show(ui, |ui| match page {
                     HelpPage::Shortcuts => {
                         ui.columns(2, |cols| {
-                            for section in &SHORTCUT_SECTIONS[..2] {
+                            for section in &SHORTCUT_SECTIONS[..3] {
                                 help_section(&mut cols[0], pal, ctx, section);
                             }
-                            for section in &SHORTCUT_SECTIONS[2..] {
+                            for section in &SHORTCUT_SECTIONS[3..] {
                                 help_section(&mut cols[1], pal, ctx, section);
                             }
                         });
@@ -1503,7 +1503,7 @@ pub(super) struct Section {
 
 use Keys::{Either, Menu, Mouse, Shortcut, Text};
 
-/// The Shortcuts page: the first two sections fill the left column.
+/// The Shortcuts page: the first three sections fill the left column.
 const SHORTCUT_SECTIONS: &[Section] = &[
     Section {
         title: "TRANSPORT",
@@ -1535,6 +1535,22 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "PIANO ROLL",
+        rows: &[
+            ("Note length 1/32 … 1 bar", Text("1 … 6")),
+            ("Give the selected notes that length", Text("Shift+1 … 6")),
+            (
+                "Shorten / lengthen by the Snap",
+                Either(&super::SC_SHORTEN, &super::SC_LENGTHEN),
+            ),
+            ("Zoom to fit the pattern", Shortcut(&super::SC_FIT)),
+            (
+                "Zoom to fit the selection",
+                Shortcut(&super::SC_FIT_SELECTION),
+            ),
+        ],
+    },
+    Section {
         title: "EDITING",
         rows: &[
             ("Undo", Shortcut(&super::SC_UNDO)),
@@ -1551,6 +1567,10 @@ const SHORTCUT_SECTIONS: &[Section] = &[
             ("Deselect, close a dialog", Text("Esc")),
             ("Nudge the selection", Text("← / → / ↑ / ↓")),
             ("Nudge by an octave", Text("Shift+↑ / Shift+↓")),
+            (
+                "Nudge by a bar",
+                Either(&super::SC_BAR_BACK, &super::SC_BAR_FORWARD),
+            ),
             ("Arpeggiator", Menu("Edit menu")),
         ],
     },
@@ -1697,16 +1717,26 @@ const EDITOR_SECTIONS: &[Section] = &[
         title: "PIANO ROLL",
         rows: &[
             ("Draw a note (Note length, Snap)", Mouse("Click empty grid")),
-            ("Box-select notes", Mouse("Drag empty grid")),
+            ("Draw a note as long as you drag", Mouse("Drag empty grid")),
+            (
+                "Box-select notes / add to the selection",
+                Mouse("{alt}+drag / {shift}+drag empty grid"),
+            ),
             (
                 "Select a note / add to the selection",
                 Mouse("Click / {shift}+click a note"),
             ),
             ("Move the selected notes", Mouse("Drag a note")),
+            ("Copy the selected notes", Mouse("{alt}+drag a note")),
             ("Change a note's length", Mouse("Drag its right edge")),
             ("Erase", Mouse("Right-click / right-drag")),
             ("Set velocity", Mouse("Drag in the velocity lane")),
+            ("See the other tracks' notes behind", Mouse("Click Ghosts")),
             ("Hear a pitch", Mouse("Click or drag the keys")),
+            (
+                "Select every note of a pitch",
+                Mouse("{cmd}+click its key / {cmd}+{shift}+click to add"),
+            ),
         ],
     },
     Section {
@@ -1737,6 +1767,10 @@ const EDITOR_SECTIONS: &[Section] = &[
                 Menu("Menus on the Chords row"),
             ),
             ("Tint the key's notes in the roll", Mouse("Click Scale")),
+            (
+                "Tint the chord lane's notes per chord",
+                Mouse("Click Chord tones"),
+            ),
         ],
     },
     Section {
@@ -2593,6 +2627,12 @@ mod tests {
             g::SC_MAX_EDITOR,
             g::SC_MAX_ARRANGER,
             g::SC_RECORD,
+            g::SC_BAR_BACK,
+            g::SC_BAR_FORWARD,
+            g::SC_SHORTEN,
+            g::SC_LENGTHEN,
+            g::SC_FIT,
+            g::SC_FIT_SELECTION,
         ] {
             assert!(listed.contains(&sc), "{sc:?} is missing from Help");
         }

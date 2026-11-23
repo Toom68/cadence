@@ -525,7 +525,7 @@ fn marquee_selects_notes_and_delete_removes_them() {
 }
 
 #[test]
-fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
+fn piano_alt_blank_marquee_no_note_no_dirty_and_click_draws() {
     let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
     ui.step();
     ui.app.add_track(Instrument::Piano);
@@ -544,12 +544,12 @@ fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
     let before_state = ui.app.history.state();
     let a = ui.app.roll_cell_center(64, 0.0).unwrap();
     let b = ui.app.roll_cell_center(59, 7.0).unwrap();
-    ui.drag(a, b);
+    ui.drag_mod(a, b, Modifiers::ALT);
     assert_eq!(ui.pattern(idx, 0).notes.len(), before_notes);
     assert_eq!(
         ui.app.sel.notes.len(),
         2,
-        "plain blank drag box-selects notes"
+        "alt+drag on blank grid box-selects notes"
     );
     assert_eq!(
         ui.app.history.state(),
@@ -562,6 +562,74 @@ fn piano_plain_blank_marquee_no_note_no_dirty_and_click_draws() {
     ui.step();
     assert_eq!(ui.pattern(idx, 0).notes.len(), before_notes + 1);
     assert!(ui.app.dirty(), "ordinary click still draws a note");
+}
+
+#[test]
+fn piano_drag_on_empty_grid_draws_the_note_length() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    let before = ui.app.history.state();
+
+    // Press on step 2 and drag to the middle of step 7: the note reaches
+    // past the pointer in whole snap cells (1/16) — six steps long.
+    let from = ui.app.roll_cell_center(60, 2.0).unwrap();
+    let to = ui.app.roll_cell_center(60, 7.0).unwrap();
+    ui.down(from);
+    ui.at(pos2(from.x + 12.0, from.y));
+    ui.step();
+    ui.at(to);
+    ui.step();
+    ui.up(to);
+    ui.step();
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 1, "one note drawn");
+    let n = &pat.notes[0];
+    assert_eq!((n.pitch, n.start, n.duration), (60, 2.0, 6.0));
+    assert!(ui.app.sel.notes.contains(&n.id), "drawn note is selected");
+    assert_eq!(ui.app.history.undo_label(), Some("Draw note"));
+    ui.app.undo();
+    assert!(
+        ui.pattern(idx, 0).notes.is_empty(),
+        "the whole drag is one undo step"
+    );
+    assert_eq!(ui.app.history.state(), before);
+
+    // Snap 1/8: lengths come in whole 1/8 cells; dragging left of the start
+    // keeps one cell.
+    ui.app.editor.snap = 2.0;
+    let from = ui.app.roll_cell_center(62, 4.0).unwrap();
+    let to = ui.app.roll_cell_center(62, 8.0).unwrap();
+    ui.drag(from, to);
+    let n = ui.pattern(idx, 0).notes[0].clone();
+    assert_eq!((n.start, n.duration), (4.0, 6.0), "ceil to 1/8 cells");
+    let from = ui.app.roll_cell_center(64, 10.0).unwrap();
+    let to = ui.app.roll_cell_center(64, 3.0).unwrap();
+    ui.drag(from, to);
+    let n = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.pitch == 64)
+        .unwrap()
+        .clone();
+    assert_eq!((n.start, n.duration), (10.0, 2.0), "at least one cell");
+
+    // A plain click still draws the toolbar's note length.
+    ui.app.editor.note_len = 4.0;
+    ui.click(ui.app.roll_cell_center(66, 0.0).unwrap());
+    let n = ui
+        .pattern(idx, 0)
+        .notes
+        .iter()
+        .find(|n| n.pitch == 66)
+        .unwrap()
+        .clone();
+    assert_eq!(n.duration, 4.0);
 }
 
 #[test]
@@ -608,6 +676,60 @@ fn piano_non_first_note_group_drag_preserves_intervals_and_clamps() {
         "common time delta clamps at the pattern end"
     );
     assert_eq!(second.start - first.start, 4.0);
+}
+
+#[test]
+fn piano_alt_drag_copies_the_selected_notes() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 63);
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.notes = vec![Note::new(60, 2.0, 2.0, 0.8), Note::new(64, 6.0, 2.0, 0.8)];
+    }
+    let originals: BTreeSet<u64> = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.app.sel.notes = originals.clone();
+    ui.app.focus = super::Focus::Editor;
+    ui.step();
+    let before = ui.app.history.state();
+
+    // Alt+click without moving copies nothing.
+    let grab = ui.app.roll_cell_center(64, 6.0).unwrap();
+    ui.press_mod(grab, PointerButton::Primary, Modifiers::ALT);
+    ui.release_mod(grab, PointerButton::Primary, Modifiers::ALT);
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2);
+    assert_eq!(ui.app.history.state(), before);
+
+    let to = ui.app.roll_cell_center(67, 10.0).unwrap();
+    ui.drag_mod(grab, to, Modifiers::ALT);
+    let pat = ui.pattern(idx, 0);
+    assert_eq!(pat.notes.len(), 4, "the selection was duplicated");
+    for n in pat.notes.iter().filter(|n| originals.contains(&n.id)) {
+        assert!(
+            (n.pitch, n.start) == (60, 2.0) || (n.pitch, n.start) == (64, 6.0),
+            "originals stay put: {n:?}"
+        );
+    }
+    let mut copies: Vec<(u8, f64)> = pat
+        .notes
+        .iter()
+        .filter(|n| !originals.contains(&n.id))
+        .map(|n| (n.pitch, n.start))
+        .collect();
+    copies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(copies, vec![(63, 6.0), (67, 10.0)], "copies moved together");
+    assert!(
+        ui.app.sel.notes.is_disjoint(&originals) && ui.app.sel.notes.len() == 2,
+        "the copies are selected"
+    );
+    assert_eq!(ui.app.history.undo_label(), Some("Copy notes"));
+    ui.app.undo();
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2, "one undo step");
+    assert_eq!(ui.app.history.state(), before);
 }
 
 #[test]
@@ -692,6 +814,198 @@ fn arrow_keys_nudge_notes() {
         73,
         "shift+arrow transposes by an octave"
     );
+
+    // Shift+←/→ move by a bar (clamped inside the pattern), Alt+←/→ change
+    // the length by the snap.
+    ui.app.project.tracks[idx].patterns[0].length = 48;
+    let note = |ui: &Ui| ui.pattern(idx, 0).notes[0].clone();
+    ui.key_mod(Key::ArrowRight, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 19.0, "shift+right moves a bar");
+    ui.key_mod(Key::ArrowLeft, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 3.0, "shift+left moves back a bar");
+    ui.key_mod(Key::ArrowLeft, Modifiers::SHIFT);
+    assert_eq!(note(&ui).start, 0.0, "clamped at the pattern start");
+    assert_eq!(note(&ui).duration, 2.0);
+    ui.key_mod(Key::ArrowRight, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 3.0, "alt+right lengthens by the snap");
+    assert_eq!(note(&ui).start, 0.0, "the start stays");
+    ui.app.editor.snap = 2.0;
+    ui.key_mod(Key::ArrowLeft, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 2.0, "alt+left shortens by the snap");
+    ui.key_mod(Key::ArrowLeft, Modifiers::ALT);
+    assert_eq!(note(&ui).duration, 2.0, "never below one snap cell");
+    assert_eq!(note(&ui).pitch, 73, "no transposition along the way");
+}
+
+#[test]
+fn digit_keys_pick_the_draw_length_and_set_selected_lengths() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    ui.click(ui.app.roll_cell_center(60, 2.0).unwrap());
+    ui.click(ui.app.roll_cell_center(62, 8.0).unwrap());
+    assert_eq!(ui.app.focus, super::Focus::Editor);
+
+    for (key, len) in [
+        (Key::Num1, 0.5),
+        (Key::Num2, 1.0),
+        (Key::Num3, 2.0),
+        (Key::Num4, 4.0),
+        (Key::Num5, 8.0),
+        (Key::Num6, 16.0),
+    ] {
+        ui.key(key);
+        assert_eq!(ui.app.editor.note_len, len, "{key:?} picks {len}");
+    }
+    ui.key(Key::Num3);
+    assert_eq!(ui.pattern(idx, 0).notes.len(), 2, "digits draw nothing");
+
+    // Shift+digit sets the selected notes' length — US layouts deliver
+    // Shift+1 as logical "!", so the physical key is what counts.
+    let durations = |ui: &Ui| -> Vec<f64> {
+        ui.pattern(idx, 0)
+            .notes
+            .iter()
+            .map(|n| n.duration)
+            .collect()
+    };
+    ui.app.sel.notes = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.key_mod(Key::Num4, Modifiers::SHIFT);
+    assert_eq!(durations(&ui), vec![4.0, 4.0]);
+    assert_eq!(ui.app.history.undo_label(), Some("Note length"));
+    assert_eq!(ui.app.editor.note_len, 2.0, "draw length unchanged");
+    ui.next.modifiers = Modifiers::SHIFT;
+    ui.event(Event::Key {
+        key: Key::Exclamationmark,
+        physical_key: Some(Key::Num1),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    assert_eq!(durations(&ui), vec![0.5, 0.5], "Shift+1 typed as \"!\"");
+    ui.key_mod(Key::Num4, Modifiers::SHIFT);
+    ui.app.sel.notes = [ui.pattern(idx, 0).notes[1].id].into();
+    ui.key_mod(Key::Num6, Modifiers::SHIFT);
+    assert_eq!(durations(&ui), vec![4.0, 8.0], "clamped at the pattern end");
+
+    // ⌘2 still switches tabs; digits do nothing once the arranger has focus.
+    ui.key_mod(Key::Num2, Modifiers::COMMAND);
+    assert_eq!(ui.app.tab, super::Tab::Mixer);
+    ui.key_mod(Key::Num1, Modifiers::COMMAND);
+    assert_eq!(ui.app.tab, super::Tab::Editor);
+    assert_eq!(ui.app.editor.note_len, 2.0);
+    ui.app.focus = super::Focus::Arranger;
+    ui.key(Key::Num5);
+    assert_eq!(ui.app.editor.note_len, 2.0, "arranger focus ignores digits");
+}
+
+#[test]
+fn zero_zooms_the_roll_to_fit_the_pattern_or_selection() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 60);
+    ui.click(ui.app.roll_cell_center(60, 2.0).unwrap());
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.length = 128;
+        pat.notes.push(Note::new(67, 40.0, 4.0, 0.8));
+    }
+    ui.step();
+    let (grid, _, _) = ui.app.editor_test_rects();
+
+    ui.key(Key::Num0);
+    ui.step();
+    let (x0, x1) = (ui.app.roll_x(0.0).unwrap(), ui.app.roll_x(128.0).unwrap());
+    assert!(
+        (x0 - grid.left()).abs() < 0.5,
+        "pattern start at the left edge"
+    );
+    assert!(
+        (x1 - grid.right()).abs() < 1.0,
+        "pattern end at the right edge: {x1} vs {}",
+        grid.right()
+    );
+
+    // Shift+0 fits the selected notes (steps 2–44, pitches 60–67), from
+    // anywhere in the roll.
+    ui.app.set_roll_scroll(0.0, 0.0);
+    ui.step();
+    ui.app.sel.notes = ui.pattern(idx, 0).notes.iter().map(|n| n.id).collect();
+    ui.key_mod(Key::Num0, Modifiers::SHIFT);
+    ui.step();
+    let (a, b) = (ui.app.roll_x(2.0).unwrap(), ui.app.roll_x(44.0).unwrap());
+    assert!(
+        a > grid.left() && b < grid.right(),
+        "selection inside: {a}..{b}"
+    );
+    assert!(
+        b - a > grid.width() * 0.8,
+        "selection fills most of the width"
+    );
+    for pitch in [60, 67] {
+        assert!(
+            ui.app.roll_cell_center(pitch, 2.0).is_some()
+                || ui.app.roll_cell_center(pitch, 40.0).is_some(),
+            "pitch {pitch} on screen"
+        );
+    }
+    // With nothing selected Shift+0 fits the pattern.
+    ui.app.sel.notes.clear();
+    ui.key_mod(Key::Num0, Modifiers::SHIFT);
+    ui.step();
+    assert!((ui.app.roll_x(128.0).unwrap() - grid.right()).abs() < 1.0);
+}
+
+#[test]
+fn cmd_click_on_a_roll_key_selects_that_pitch() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_track(Instrument::Piano);
+    ui.step();
+    let idx = ui.app.project.tracks.len() - 1;
+    let id = ui.app.project.tracks[idx].id;
+    show_pitch(&mut ui, id, 61);
+    {
+        let pat = &mut ui.app.project.tracks[idx].patterns[0];
+        pat.notes = vec![
+            Note::new(60, 0.0, 2.0, 0.8),
+            Note::new(61, 4.0, 2.0, 0.8),
+            Note::new(60, 8.0, 2.0, 0.8),
+        ];
+    }
+    ui.step();
+    let ids_of = |ui: &Ui, pitch: u8| -> BTreeSet<u64> {
+        ui.pattern(idx, 0)
+            .notes
+            .iter()
+            .filter(|n| n.pitch == pitch)
+            .map(|n| n.id)
+            .collect()
+    };
+    let before = ui.app.history.state();
+
+    // A plain click only auditions.
+    ui.click(ui.app.roll_key_center(60).unwrap());
+    assert!(ui.app.sel.notes.is_empty());
+    let c4 = ui.app.roll_key_center(60).unwrap();
+    click_with_mods(&mut ui, c4, Modifiers::COMMAND);
+    assert_eq!(ui.app.sel.notes, ids_of(&ui, 60), "every C4 selected");
+    assert_eq!(ui.app.focus, super::Focus::Editor);
+    // Cmd+click another key replaces; Cmd+Shift adds.
+    let black = ui.app.roll_key_center(61).unwrap();
+    click_with_mods(&mut ui, black, Modifiers::COMMAND);
+    assert_eq!(ui.app.sel.notes, ids_of(&ui, 61));
+    click_with_mods(&mut ui, c4, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(ui.app.sel.notes.len(), 3, "shift adds to the selection");
+    assert_eq!(ui.app.history.state(), before, "selection is not an edit");
 }
 
 #[test]

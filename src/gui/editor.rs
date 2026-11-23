@@ -42,6 +42,11 @@ const DRUM_MIN_ROW_H: f32 = 22.0;
 const RESIZE_ZONE: f32 = 7.0;
 const MIN_PPS: f32 = 8.0;
 const MAX_PPS: f32 = 64.0;
+/// The piano roll zooms out further than the drum grid so zoom-to-fit (0)
+/// can show long patterns whole.
+const ROLL_MIN_PPS: f32 = 1.0;
+/// Share of the grid width Shift+0 gives the selection; the rest is margin.
+const FIT_SELECTION_SHARE: f32 = 0.9;
 /// Header slot widths (the toolbar needs them before painting).
 const HEADER_NAME_MAX_W: f32 = 180.0;
 const HEADER_INST_MAX_W: f32 = 140.0;
@@ -71,7 +76,9 @@ pub(super) const CHORD_STRIP_EXTRA: f32 =
 /// Largest drum pad side on the Keyboard tab.
 const PAD_MAX: f32 = 168.0;
 /// Note-length and snap choices offered in the piano-roll toolbar.
-const NOTE_LENGTHS: [(f64, &str); 5] = [
+/// Keys 1–6 pick these in order (Shift+1–6 sets the selection's length).
+const NOTE_LENGTHS: [(f64, &str); 6] = [
+    (0.5, "1/32"),
     (1.0, "1/16"),
     (2.0, "1/8"),
     (4.0, "1/4"),
@@ -113,6 +120,8 @@ const VEL_CHIPS: [(&str, f32, &str); 2] = [
         "Velocity +10% — selected notes, or every note when nothing is selected",
     ),
 ];
+const FIT_TIP: &str =
+    "Zoom to fit the pattern (0) — Shift+click or Shift+0 fits the selected notes";
 const HUMANIZE_TIP: &str = "Random velocity and timing jitter — selected notes, or every note \
                             when nothing is selected. Each click is a new take; undo to revert";
 
@@ -194,6 +203,129 @@ pub(super) fn covering_pattern(track: &Track, pos: f64) -> Option<(u64, f64)> {
 /// up like beat-grid hits while they sound.
 pub(super) fn note_is_live(n: &Note, playing_at: Option<f64>) -> bool {
     playing_at.is_some_and(|t| t >= n.start && t < n.start + n.duration)
+}
+
+/// Most ghost notes the roll paints; a dense arrangement stays cheap.
+const MAX_GHOST_NOTES: usize = 4096;
+
+/// Another track's note as the piano roll shows it behind the pattern:
+/// pattern-relative `start`/`duration` (clipped to the pattern) and the
+/// owning track's colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GhostNote {
+    pitch: u8,
+    start: f64,
+    duration: f64,
+    color: [u8; 3],
+}
+
+/// The notes every other melodic track (not `tid`, not a drum grid) plays
+/// during `origin .. origin + len` of the song, mapped onto the pattern's
+/// own steps — the ghost layer. Clip loops repeat their pattern; notes
+/// crossing the window edges are clipped. At most [`MAX_GHOST_NOTES`].
+fn ghost_notes(project: &Project, tid: u64, origin: f64, len: f64) -> Vec<GhostNote> {
+    let mut out = Vec::new();
+    let end = origin + len;
+    for track in project
+        .tracks
+        .iter()
+        .filter(|t| t.id != tid && !t.shows_drum_grid())
+    {
+        for clip in &track.clips {
+            let Some(pat) = ops::pattern(track, clip.pattern_id) else {
+                continue;
+            };
+            let plen = pat.length.max(1) as f64;
+            if clip.start >= end || clip.start + clip.span(plen) <= origin {
+                continue;
+            }
+            // Only the repetitions that overlap the window.
+            let first = ((origin - clip.start) / plen).floor().max(0.0) as u32;
+            let last = (((end - clip.start) / plen).ceil().max(0.0) as u32).min(clip.loop_count());
+            for rep in first..last {
+                let rep_start = clip.start + f64::from(rep) * plen - origin;
+                for n in &pat.notes {
+                    let s = rep_start + n.start;
+                    let e = s + n.duration;
+                    if e <= 0.0 || s >= len {
+                        continue;
+                    }
+                    if out.len() >= MAX_GHOST_NOTES {
+                        return out;
+                    }
+                    let start = s.max(0.0);
+                    out.push(GhostNote {
+                        pitch: n.pitch,
+                        start,
+                        duration: e.min(len) - start,
+                        color: track.color,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One chord's stretch of the piano roll for the chord-tone tint: screen
+/// x range (clipped to the grid), its pitch classes and root.
+struct ChordBand {
+    x: egui::Rangef,
+    pcs: [bool; 12],
+    root: u8,
+}
+
+/// The chord-lane chords playing over the pattern placed at song step
+/// `origin` (`len` steps), as screen bands on `roll`.
+fn chord_bands(project: &Project, roll: &Roll, origin: f64, len: f64) -> Vec<ChordBand> {
+    ops::chord_spans(project, origin, origin + len)
+        .into_iter()
+        .filter_map(|(a, b, ev)| {
+            let x0 = roll.x(a - origin).max(roll.grid.left());
+            let x1 = roll.x(b - origin).min(roll.grid.right());
+            if x1 <= x0 {
+                return None;
+            }
+            let mut pcs = [false; 12];
+            for pc in ops::ChordSpec::new(ev.root, ev.quality).pitch_classes() {
+                pcs[pc as usize % 12] = true;
+            }
+            Some(ChordBand {
+                x: egui::Rangef::new(x0, x1),
+                pcs,
+                root: ev.root % 12,
+            })
+        })
+        .collect()
+}
+
+/// Length of a note drawn by dragging from `start` to the pointer at
+/// `pointer_step`: whole snap cells reaching past the pointer, at least one.
+fn draw_duration(start: f64, pointer_step: f64, snap: f64) -> f64 {
+    let cell = snap.max(ops::MIN_NOTE_DURATION);
+    let dur = ((pointer_step - start) / cell).ceil() * cell;
+    if dur.is_finite() {
+        dur.max(cell)
+    } else {
+        cell
+    }
+}
+
+/// `0`–`9` for the digit keys, `None` for any other key.
+fn digit_key(key: Key) -> Option<usize> {
+    const DIGITS: [Key; 10] = [
+        Key::Num0,
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ];
+    DIGITS.iter().position(|&k| k == key)
 }
 
 /// Recorded note start: the song step floored onto the snap grid.
@@ -326,6 +458,8 @@ struct NoteDrag {
     dstep: f64,
     dpitch: i32,
     mode: DragMode,
+    /// Alt+drag: the first move duplicates `originals` and drags the copies.
+    copy: bool,
     anchor: Note,
     grab_step_offset: f64,
     grab_pitch: u8,
@@ -347,7 +481,6 @@ struct NoteMarquee {
 
 #[derive(Debug, Clone, Copy)]
 struct PendingNote {
-    pos: Pos2,
     pitch: u8,
     start: f64,
     draw_on_click: bool,
@@ -466,6 +599,7 @@ enum ToolAction {
     Groove(ops::Groove),
     ScaleSnap,
     ScaleHighlight,
+    Fit,
 }
 
 /// Toolbar layouts of the last frame, for the headless layout tests:
@@ -519,7 +653,8 @@ pub(super) struct EditorView {
     layout: EditorLayout,
     last_track: Option<u64>,
     drag: Option<NoteDrag>,
-    draw: Option<u64>,
+    /// Note being drawn by dragging from empty grid: `(id, start step)`.
+    draw: Option<(u64, f64)>,
     pending_note: Option<PendingNote>,
     marquee: Option<NoteMarquee>,
     right_erase: bool,
@@ -547,6 +682,12 @@ pub(super) struct EditorView {
     pub chord_bass: ops::ChordBass,
     /// Tints piano-roll rows whose pitch class is in the song key's scale.
     pub scale_highlight: bool,
+    /// Shows the other melodic tracks' notes, read-only, as faint outlines
+    /// behind the pattern (where they play against its clip). View state.
+    pub ghost_notes: bool,
+    /// Tints the rows of the chord-lane chord playing at each point of the
+    /// pattern (root strongest). View state, off by default.
+    pub chord_tint: bool,
     /// Snaps drawn notes and vertical note drags onto the song key's scale
     /// tones. Session view state like `scale_highlight` — never serialized.
     /// Inert on the C-major default (treated as "no key chosen") and on drum
@@ -613,6 +754,8 @@ impl Default for EditorView {
             chord_inversion: 0,
             chord_bass: ops::ChordBass::default(),
             scale_highlight: false,
+            ghost_notes: false,
+            chord_tint: false,
             scale_snap: false,
             kb_pointer: None,
             kb_down: false,
@@ -662,7 +805,7 @@ impl EditorView {
 
     /// Zooms the piano roll horizontally about the visible centre.
     pub fn zoom(&mut self, factor: f32) {
-        self.roll_pps = (self.roll_pps * factor).clamp(MIN_PPS, MAX_PPS);
+        self.roll_pps = (self.roll_pps * factor).clamp(ROLL_MIN_PPS, MAX_PPS);
         self.drum_pps = (self.drum_pps * factor).clamp(MIN_PPS, MAX_PPS);
     }
 }
@@ -815,6 +958,22 @@ impl CadenceApp {
         roll.grid.contains(p).then_some(p)
     }
 
+    /// Centre of `pitch`'s key in the piano-roll key column (tests).
+    #[cfg(test)]
+    pub(crate) fn roll_key_center(&self, pitch: u8) -> Option<Pos2> {
+        let r = &self.editor.rects;
+        if r.grid == Rect::NOTHING {
+            return None;
+        }
+        let roll = self.roll_for_test();
+        // Left part of the column: black keys are only 62% wide.
+        let p = pos2(
+            roll.keys.left() + roll.keys.width() * 0.3,
+            roll.y(pitch) + roll.row_h * 0.5,
+        );
+        roll.keys.contains(p).then_some(p)
+    }
+
     /// Screen x of a pattern step on the piano roll (tests).
     #[cfg(test)]
     pub(crate) fn roll_x(&self, step: f64) -> Option<f32> {
@@ -872,6 +1031,134 @@ impl CadenceApp {
     pub(super) fn editor_target(&self) -> Option<(u64, u64)> {
         let track = self.selected_track()?;
         Some((track.id, self.current_pattern_id(track)?))
+    }
+
+    /// The `(track, pattern)` the piano-roll keys (1–6, 0) act on: the
+    /// pattern editor is showing with keyboard focus on it and the selected
+    /// track uses the piano roll rather than the drum grid.
+    fn roll_key_target(&self) -> Option<(u64, u64)> {
+        if self.focus != super::Focus::Editor || self.tab != super::Tab::Editor {
+            return None;
+        }
+        let (tid, pid) = self.editor_target()?;
+        (!self.track_ref(tid)?.shows_drum_grid()).then_some((tid, pid))
+    }
+
+    /// Piano-roll digit keys, called once text fields had their chance:
+    /// 1–6 pick the draw length (1/32 … 1 bar) and Shift+1–6 give the
+    /// selected notes that length. Digits are read from the physical key
+    /// so Shift+1 works on layouts where it types "!"; Cmd/Ctrl/Alt chords
+    /// (⌘1–3 switch tabs) are left alone.
+    pub(super) fn roll_digit_keys(&mut self, ctx: &Context) {
+        let Some((tid, pid)) = self.roll_key_target() else {
+            return;
+        };
+        let mut digits = Vec::new();
+        ctx.input_mut(|i| {
+            i.events.retain(|e| match e {
+                Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !(modifiers.command
+                    || modifiers.ctrl
+                    || modifiers.alt
+                    || modifiers.mac_cmd) =>
+                {
+                    match digit_key(physical_key.unwrap_or(*key)).or_else(|| digit_key(*key)) {
+                        Some(d) => {
+                            digits.push((d, modifiers.shift));
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                _ => true,
+            })
+        });
+        for (digit, shift) in digits {
+            if digit == 0 {
+                self.roll_zoom_to_fit(shift);
+                continue;
+            }
+            let Some(&(len, label)) = digit.checked_sub(1).and_then(|i| NOTE_LENGTHS.get(i)) else {
+                continue;
+            };
+            if shift {
+                self.set_selected_note_length(tid, pid, len, label);
+            } else {
+                self.editor.note_len = len;
+                self.set_status(StatusKind::Info, format!("Note length {label}."));
+            }
+        }
+    }
+
+    /// Zoom to fit (0 / the toolbar's Fit): the whole pattern across the
+    /// grid, or with `selection` (Shift+0) the selected notes' time span
+    /// with a little margin, centred on their pitches. An empty selection
+    /// fits the pattern.
+    pub(super) fn roll_zoom_to_fit(&mut self, selection: bool) {
+        let Some((tid, pid)) = self.editor_target() else {
+            return;
+        };
+        let grid = self.editor.rects.grid;
+        let Some(pat) = self.pat_ref(tid, pid) else {
+            return;
+        };
+        if !grid.is_positive() {
+            return;
+        }
+        let length = pat.length.max(1) as f32;
+        let picked: Vec<Note> = pat
+            .notes
+            .iter()
+            .filter(|n| selection && self.sel.notes.contains(&n.id))
+            .cloned()
+            .collect();
+        let ed = &mut self.editor;
+        if picked.is_empty() {
+            ed.roll_pps = (grid.width() / length).clamp(ROLL_MIN_PPS, MAX_PPS);
+            ed.roll_scroll_x = 0.0;
+            return;
+        }
+        let start = picked.iter().map(|n| n.start).fold(f64::INFINITY, f64::min);
+        let end = picked
+            .iter()
+            .map(|n| n.end())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let span = (end - start).max(1.0) as f32;
+        ed.roll_pps = (grid.width() * FIT_SELECTION_SHARE / span).clamp(ROLL_MIN_PPS, MAX_PPS);
+        let used = span * ed.roll_pps;
+        ed.roll_scroll_x =
+            (start as f32 * ed.roll_pps - (grid.width() - used).max(0.0) * 0.5).max(0.0);
+        let lo = picked.iter().map(|n| n.pitch).min().unwrap_or(60);
+        let hi = picked.iter().map(|n| n.pitch).max().unwrap_or(60);
+        // Rows count down from the top pitch; centre the pitch range.
+        let mid_row = f32::from(LAST_PITCH) - (f32::from(lo) + f32::from(hi)) * 0.5 + 0.5;
+        ed.roll_scroll_y = (mid_row * ed.roll_row_h - grid.height() * 0.5).max(0.0);
+    }
+
+    /// Gives every selected note `len` steps (clamped at the pattern end).
+    fn set_selected_note_length(&mut self, tid: u64, pid: u64, len: f64, label: &str) {
+        if self.sel.notes.is_empty() {
+            self.set_status(StatusKind::Info, "Select notes to change their length.");
+            return;
+        }
+        let ids = self.sel.notes.clone();
+        let mut count = 0;
+        self.edit("Note length", None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                count = ops::set_note_durations(pat, &ids, len);
+            }
+        });
+        if count > 0 {
+            self.set_status(
+                StatusKind::Info,
+                format!("{count} note{} set to {label}.", sidebar::plural(count)),
+            );
+        }
     }
 
     /// Whether the note ops (quantize, humanize, velocity scale) have
@@ -1507,7 +1794,9 @@ impl CadenceApp {
 
         self.roll_input(ui, tid, pid, &roll, &grid_resp);
         self.paint_roll(ui, tid, pid, &roll, grid_resp.hover_pos());
-        self.paint_keys(ui, tid, &roll);
+        if let Some((pitch, add)) = self.paint_keys(ui, tid, &roll) {
+            self.select_pitch(tid, pid, pitch, add);
+        }
         self.paint_roll_ruler(ui, tid, pid, &roll);
         self.paint_vel_lane(ui, tid, pid, &roll, vel_labels);
         let mut sx = self.editor.roll_scroll_x;
@@ -1568,7 +1857,7 @@ impl CadenceApp {
                     (h.x - grid.left()).clamp(0.0, grid.width())
                 });
                 let step = (anchor + ed.roll_scroll_x) / ed.roll_pps;
-                ed.roll_pps = (ed.roll_pps * zoom).clamp(MIN_PPS, MAX_PPS);
+                ed.roll_pps = (ed.roll_pps * zoom).clamp(ROLL_MIN_PPS, MAX_PPS);
                 ed.roll_scroll_x = (step * ed.roll_pps - anchor).max(0.0);
             }
             if scroll != Vec2::ZERO {
@@ -1645,6 +1934,12 @@ impl CadenceApp {
                     .on_hover_text("Grid for drawing, moving and resizing notes");
             });
             velocity_item(tb, pal, &mut ed.velocity);
+            if tb
+                .icon_button(theme::Icon::Fit, "Zoom to fit", FIT_TIP)
+                .clicked()
+            {
+                act = Some(ToolAction::Fit);
+            }
             tb.separator();
             if tb
                 .toggle(
@@ -1667,6 +1962,30 @@ impl CadenceApp {
                 .clicked()
             {
                 act = Some(ToolAction::ScaleHighlight);
+            }
+            if tb
+                .toggle(
+                    None,
+                    "Ghosts",
+                    ed.ghost_notes,
+                    "Show the other tracks' notes faintly behind this pattern, where they play \
+                     against its clip (read-only)",
+                )
+                .clicked()
+            {
+                ed.ghost_notes = !ed.ghost_notes;
+            }
+            if tb
+                .toggle(
+                    Some(theme::Icon::Chords),
+                    "Chord tones",
+                    ed.chord_tint,
+                    "Tint the rows of the chord-lane chord playing at each point of this \
+                     pattern (its root strongest), so melodies can aim for chord tones",
+                )
+                .clicked()
+            {
+                ed.chord_tint = !ed.chord_tint;
             }
             tb.separator();
             if let Some(a) = note_edit_items(tb, targets, &quantize_tip) {
@@ -1700,6 +2019,10 @@ impl CadenceApp {
                 }
             }
             Some(ToolAction::ScaleHighlight) => self.toggle_scale_highlight(),
+            Some(ToolAction::Fit) => {
+                let shift = ui.input(|i| i.modifiers.shift);
+                self.roll_zoom_to_fit(shift);
+            }
             Some(a) => self.apply_note_tool(tid, pid, a),
             None => {}
         }
@@ -1713,7 +2036,7 @@ impl CadenceApp {
             ToolAction::ScaleVelocity(gain) => self.scale_velocities(tid, pid, gain),
             ToolAction::DeleteNotes => self.delete_selection(),
             ToolAction::Groove(groove) => self.stamp_groove(tid, pid, groove),
-            ToolAction::ScaleSnap | ToolAction::ScaleHighlight => {}
+            ToolAction::ScaleSnap | ToolAction::ScaleHighlight | ToolAction::Fit => {}
         }
     }
 
@@ -1769,9 +2092,23 @@ impl CadenceApp {
     }
 
     fn finish_pending_note(&mut self, tid: u64, pid: u64, pat: &Pattern, pending: PendingNote) {
-        if !pending.draw_on_click {
-            return;
+        if pending.draw_on_click {
+            let len = self.editor.note_len;
+            self.place_pending_note(tid, pid, pat, pending, len);
         }
+    }
+
+    /// Draws the pending note with `len` steps and selects it — or, when a
+    /// note already covers that cell, selects that one instead. Returns the
+    /// id of a newly drawn note.
+    fn place_pending_note(
+        &mut self,
+        tid: u64,
+        pid: u64,
+        pat: &Pattern,
+        pending: PendingNote,
+        len: f64,
+    ) -> Option<u64> {
         // Snap-to-scale resolves against the pitch the note will land on, so
         // clicking a chromatic row under an existing scale-tone note selects
         // it instead of overdubbing a duplicate.
@@ -1784,10 +2121,10 @@ impl CadenceApp {
             Some(n) => {
                 self.sel.notes.clear();
                 self.sel.notes.insert(n.id);
+                None
             }
             None => {
                 let vel = self.editor.velocity;
-                let len = self.editor.note_len;
                 let mut new = None;
                 self.edit("Draw note", Some("draw-note"), |p| {
                     if let Some(pat) = ops::pattern_mut(p, tid, pid) {
@@ -1799,6 +2136,7 @@ impl CadenceApp {
                     self.sel.notes.insert(new);
                     self.preview(tid, pitch, vel);
                 }
+                new
             }
         }
     }
@@ -1837,6 +2175,7 @@ impl CadenceApp {
                 Some(hit) if hit.zone == HitZone::Resize => {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
                 }
+                Some(_) if alt => ui.ctx().set_cursor_icon(CursorIcon::Copy),
                 Some(_) => ui.ctx().set_cursor_icon(CursorIcon::Move),
                 None => {}
             }
@@ -1884,6 +2223,7 @@ impl CadenceApp {
                                 dstep: 0.0,
                                 dpitch: 0,
                                 mode,
+                                copy: alt && mode == DragMode::Move,
                                 anchor: note.clone(),
                                 grab_step_offset: roll.step(pos.x) - note.start,
                                 grab_pitch: roll.pitch_at(pos.y).unwrap_or(note.pitch),
@@ -1908,7 +2248,6 @@ impl CadenceApp {
                                 .min(pat.length as f64 - 0.5)
                                 .max(0.0);
                             self.editor.pending_note = Some(PendingNote {
-                                pos,
                                 pitch,
                                 start,
                                 draw_on_click: true,
@@ -1923,15 +2262,13 @@ impl CadenceApp {
                 .interact_pointer_pos()
                 .or_else(|| ui.input(|i| i.pointer.interact_pos()));
             if let Some(pos) = pos {
+                // Dragging from empty grid draws a note whose length
+                // follows the pointer (marquee needs Shift or Alt).
                 if let Some(pending) = self.editor.pending_note.take() {
-                    self.editor.marquee = Some(NoteMarquee {
-                        start: pending.pos,
-                        current: pos,
-                        base: BTreeSet::new(),
-                        additive: false,
-                    });
-                    self.sel.notes.clear();
-                    self.update_note_marquee_selection(pat, roll);
+                    let cell = self.editor.snap.max(ops::MIN_NOTE_DURATION);
+                    self.editor.draw = self
+                        .place_pending_note(tid, pid, pat, pending, cell)
+                        .map(|id| (id, pending.start));
                 }
                 if let Some(d) = self.editor.drag.clone() {
                     let snap = self.editor.snap;
@@ -1958,10 +2295,12 @@ impl CadenceApp {
                         drag.dstep = ds;
                         drag.dpitch = dp;
                         let label = match drag.mode {
+                            DragMode::Move if drag.copy => "Copy notes",
                             DragMode::Move => "Move notes",
                             DragMode::Resize => "Resize notes",
                         };
-                        let originals = drag.originals.clone();
+                        let copy = std::mem::take(&mut drag.copy);
+                        let mut originals = drag.originals.clone();
                         if drag.mode == DragMode::Move && dp_changed {
                             self.preview(
                                 tid,
@@ -1972,6 +2311,10 @@ impl CadenceApp {
                         }
                         self.edit(label, Some("note-drag"), |p| {
                             if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                                if copy {
+                                    // Same undo step as the move that follows.
+                                    originals = ops::clone_notes(pat, &originals);
+                                }
                                 match drag.mode {
                                     DragMode::Move => ops::move_notes(pat, &originals, ds, dp),
                                     DragMode::Resize => ops::resize_notes(
@@ -1983,25 +2326,21 @@ impl CadenceApp {
                                 }
                             }
                         });
+                        if copy {
+                            self.sel.notes = originals.iter().map(|n| n.id).collect();
+                            drag.originals = originals;
+                        }
                         self.editor.drag = Some(drag);
                     }
                 }
-                if let Some(id) = self.editor.draw {
-                    let snap = self.editor.snap.max(0.5);
-                    let start = pat
-                        .notes
-                        .iter()
-                        .find(|n| n.id == id)
-                        .map(|n| n.start)
-                        .unwrap_or(0.0);
-                    let dur = ((roll.step(pos.x) - start) / snap).ceil() * snap;
+                if let Some((id, start)) = self.editor.draw {
+                    let dur = draw_duration(start, roll.step(pos.x), self.editor.snap);
                     self.edit("Draw note", Some("draw-note"), |p| {
                         if let Some(pat) = ops::pattern_mut(p, tid, pid) {
                             if let Some(n) = pat.notes.iter_mut().find(|n| n.id == id) {
-                                n.duration = dur.clamp(
-                                    ops::MIN_NOTE_DURATION,
-                                    (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION),
-                                );
+                                let room =
+                                    (pat.length as f64 - n.start).max(ops::MIN_NOTE_DURATION);
+                                n.duration = dur.min(room);
                             }
                         }
                     });
@@ -2101,6 +2440,16 @@ impl CadenceApp {
             .scale_highlight
             .then(|| scale_pitch_classes(key));
         let rh = roll.row_h;
+        // Where the pattern sits in the song, for the ghost and chord layers.
+        let origin = if self.editor.ghost_notes || self.editor.chord_tint {
+            self.pattern_song_origin(track, pid)
+        } else {
+            None
+        };
+        let chord_bands = match origin.filter(|_| self.editor.chord_tint) {
+            Some(origin) => chord_bands(&self.project, roll, origin, pat.length as f64),
+            None => Vec::new(),
+        };
         // Row backgrounds: only the visible rows.
         let (first_row, last_row) = roll.visible_rows();
         for row in first_row..last_row {
@@ -2118,6 +2467,15 @@ impl CadenceApp {
             );
             if scale.is_some_and(|pcs| pcs[pitch as usize % 12]) {
                 p.rect_filled(r, 0.0, pal.accent.gamma_multiply(0.08));
+            }
+            let pc = pitch % 12;
+            for band in chord_bands.iter().filter(|b| b.pcs[pc as usize]) {
+                let strength = if pc == band.root { 0.20 } else { 0.11 };
+                p.rect_filled(
+                    Rect::from_x_y_ranges(band.x, r.y_range()),
+                    0.0,
+                    pal.link.gamma_multiply(strength),
+                );
             }
             // Octave boundary under every C, a hairline between other rows.
             if pitch.is_multiple_of(12) {
@@ -2138,11 +2496,13 @@ impl CadenceApp {
         let s0 = roll.step(roll.grid.left()).max(0.0).floor() as i64;
         let s1 = roll.step(roll.grid.right()).ceil() as i64;
         let step_lines = roll.pps >= 14.0;
+        // Zoomed far out (fit on a long pattern) only bar lines stay.
+        let beat_lines = roll.pps * 4.0 >= 6.0;
         for s in s0.max(0)..=s1.min(pat.length as i64) {
             let x = roll.x(s as f64);
             if s % 16 == 0 {
                 p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_bar));
-            } else if s % 4 == 0 {
+            } else if s % 4 == 0 && beat_lines {
                 p.vline(x, roll.grid.y_range(), Stroke::new(1.0_f32, pal.grid_beat));
             } else if step_lines {
                 p.vline(x, roll.grid.y_range(), Stroke::new(0.5_f32, pal.grid_faint));
@@ -2164,6 +2524,35 @@ impl CadenceApp {
         let color = theme::rgb(track.color);
         let visible_lo = roll.pitch_at(roll.grid.bottom() - 0.5).unwrap_or(0);
         let visible_hi = roll.pitch_at(roll.grid.top()).unwrap_or(LAST_PITCH);
+        // Ghost layer: other tracks' notes as faint outlines, computed once
+        // per frame and only while the toggle is on.
+        if self.editor.ghost_notes {
+            if let Some(origin) = origin {
+                for g in ghost_notes(&self.project, tid, origin, pat.length as f64) {
+                    if g.pitch < visible_lo || g.pitch > visible_hi {
+                        continue;
+                    }
+                    let r = roll.note_rect(&Note {
+                        id: 0,
+                        pitch: g.pitch,
+                        start: g.start,
+                        duration: g.duration,
+                        velocity: 0.0,
+                    });
+                    if r.right() < roll.grid.left() || r.left() > roll.grid.right() {
+                        continue;
+                    }
+                    let c = theme::rgb(g.color);
+                    p.rect_filled(r, 3.0, c.gamma_multiply(0.10));
+                    p.rect_stroke(
+                        r,
+                        3.0,
+                        Stroke::new(1.0_f32, c.gamma_multiply(0.55)),
+                        StrokeKind::Inside,
+                    );
+                }
+            }
+        }
         let label_font = theme::body_font(9.5);
         let playing_at = self
             .pattern_playhead(track, pid)
@@ -2300,6 +2689,22 @@ impl CadenceApp {
             .map(|(_, local)| local)
     }
 
+    /// Song step where pattern `pid` of `track` starts for the ghost and
+    /// chord layers: the repetition under the playhead when the playhead
+    /// sits in one of its clips, else its earliest clip. `None` when the
+    /// pattern isn't in the arrangement.
+    fn pattern_song_origin(&self, track: &Track, pid: u64) -> Option<f64> {
+        if let Some(local) = self.pattern_playhead(track, pid) {
+            return Some(self.transport.position - local);
+        }
+        track
+            .clips
+            .iter()
+            .filter(|c| c.pattern_id == pid)
+            .map(|c| c.start)
+            .min_by(f64::total_cmp)
+    }
+
     /// Pitches of `track` sounding under the playhead while the transport
     /// plays (Keyboard-tab glow). Empty when stopped.
     fn sounding_pitches(&self, track: &Track) -> BTreeSet<u8> {
@@ -2318,7 +2723,29 @@ impl CadenceApp {
         })
     }
 
-    fn paint_keys(&self, ui: &Ui, tid: u64, roll: &Roll) {
+    /// Cmd/Ctrl+click on the key column: selects every note of `pitch`
+    /// (`add` = Shift held, keeps the current selection too).
+    fn select_pitch(&mut self, tid: u64, pid: u64, pitch: u8, add: bool) {
+        let Some(pat) = self.pat_ref(tid, pid) else {
+            return;
+        };
+        let ids: Vec<u64> = pat
+            .notes
+            .iter()
+            .filter(|n| n.pitch == pitch)
+            .map(|n| n.id)
+            .collect();
+        if !add {
+            self.sel.notes.clear();
+        }
+        self.sel.notes.extend(ids);
+        self.focus = super::Focus::Editor;
+    }
+
+    /// Paints the piano-key column. Clicking or dragging a key auditions
+    /// it; a Cmd/Ctrl+click returns `(pitch, shift)` so the caller selects
+    /// that pitch's notes.
+    fn paint_keys(&self, ui: &Ui, tid: u64, roll: &Roll) -> Option<(u8, bool)> {
         let pal = self.palette();
         let p = ui.painter_at(roll.keys);
         let (white, black) = key_colors(pal);
@@ -2338,6 +2765,7 @@ impl CadenceApp {
         let label_font = theme::body_font(10.0);
         let (first_row, last_row) = roll.visible_rows();
         let mut preview_pitch = None;
+        let mut select = None;
         for row in first_row..last_row {
             let pitch = LAST_PITCH - row as u8;
             let black_key = is_black_key(pitch);
@@ -2380,6 +2808,12 @@ impl CadenceApp {
             if resp.clicked() || resp.dragged_by(PointerButton::Primary) {
                 preview_pitch = Some(pitch);
             }
+            if resp.clicked() {
+                let m = ui.input(|i| i.modifiers);
+                if m.command || m.ctrl {
+                    select = Some((pitch, m.shift));
+                }
+            }
         }
         p.vline(
             roll.keys.right(),
@@ -2389,6 +2823,7 @@ impl CadenceApp {
         if let Some(pitch) = preview_pitch {
             self.preview(tid, pitch, self.editor.velocity);
         }
+        select
     }
 
     fn paint_roll_ruler(&self, ui: &Ui, tid: u64, pid: u64, roll: &Roll) {
@@ -5118,6 +5553,169 @@ mod tests {
         (app, tid, pid)
     }
 
+    /// A track of `inst` whose only pattern (`len` steps, `notes`) plays
+    /// in one clip at `start` repeated `loops` times.
+    fn placed_track(
+        project: &mut Project,
+        inst: Instrument,
+        len: u32,
+        notes: &[(u8, f64, f64)],
+        start: f64,
+        loops: u32,
+    ) -> u64 {
+        let tid = ops::add_track(project, inst).unwrap();
+        let t = ops::track_mut(project, tid).unwrap();
+        let pat = &mut t.patterns[0];
+        pat.length = len;
+        pat.notes.clear();
+        for &(pitch, s, d) in notes {
+            ops::add_note(pat, pitch, s, d, 0.8);
+        }
+        t.clips[0].start = start;
+        t.clips[0].loops = loops;
+        tid
+    }
+
+    #[test]
+    fn ghost_notes_map_other_tracks_onto_the_pattern_window() {
+        let mut project = Project::empty();
+        project.tracks.clear();
+        let me = placed_track(
+            &mut project,
+            Instrument::Piano,
+            16,
+            &[(60, 0.0, 1.0)],
+            16.0,
+            1,
+        );
+        let bass = placed_track(
+            &mut project,
+            Instrument::Bass,
+            8,
+            &[(40, 0.0, 2.0), (43, 5.0, 3.0)],
+            12.0,
+            2,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Lead,
+            16,
+            &[(50, 4.0, 8.0)],
+            24.0,
+            1,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Drums,
+            16,
+            &[(36, 0.0, 1.0)],
+            16.0,
+            1,
+        );
+        let mut ghosts = ghost_notes(&project, me, 16.0, 16.0);
+        ghosts.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let got: Vec<(u8, f64, f64)> = ghosts
+            .iter()
+            .map(|g| (g.pitch, g.start, g.duration))
+            .collect();
+        // Bass rep 1 starts at song 12 (local -4), rep 2 at 20 (local 4);
+        // the lead's long note is clipped at the pattern end.
+        assert_eq!(
+            got,
+            vec![
+                (43, 1.0, 3.0),
+                (40, 4.0, 2.0),
+                (43, 9.0, 3.0),
+                (50, 12.0, 4.0)
+            ]
+        );
+        let bass_color = ops::track(&project, bass).unwrap().color;
+        assert_eq!(
+            ghosts[0].color, bass_color,
+            "ghosts keep their track colour"
+        );
+        assert!(
+            ghosts.iter().all(|g| g.pitch != 60 && g.pitch != 36),
+            "own notes and drum grids are left out"
+        );
+        assert!(ghost_notes(&project, me, 200.0, 16.0).is_empty());
+    }
+
+    #[test]
+    fn chord_bands_tint_each_chord_stretch_of_the_pattern() {
+        let mut project = Project::empty();
+        project.chord_events.clear();
+        ops::add_chord_event(&mut project, 0.0, 0, ChordQuality::Major).unwrap();
+        ops::add_chord_event(&mut project, 24.0, 9, ChordQuality::Minor).unwrap();
+        let grid = Rect::from_min_size(pos2(100.0, 0.0), vec2(1000.0, 400.0));
+        let roll = Roll {
+            grid,
+            keys: Rect::NOTHING,
+            ruler: Rect::NOTHING,
+            vel: Rect::NOTHING,
+            pps: 10.0,
+            row_h: ROW_H,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+        };
+        // The pattern plays from song step 16: C holds for its first eight
+        // steps, Am from step 8 (song 24) to its end.
+        let bands = chord_bands(&project, &roll, 16.0, 32.0);
+        assert_eq!(bands.len(), 2);
+        assert_eq!((bands[0].x.min, bands[0].x.max), (100.0, 180.0));
+        assert_eq!((bands[1].x.min, bands[1].x.max), (180.0, 420.0));
+        let pcs = |b: &ChordBand| (0..12).filter(|&i| b.pcs[i]).collect::<Vec<_>>();
+        assert_eq!((pcs(&bands[0]), bands[0].root), (vec![0, 4, 7], 0));
+        assert_eq!((pcs(&bands[1]), bands[1].root), (vec![0, 4, 9], 9));
+        // Scrolled past a chord: it clips to the grid.
+        let scrolled = Roll {
+            scroll_x: 100.0,
+            ..roll
+        };
+        let bands = chord_bands(&project, &scrolled, 16.0, 32.0);
+        assert_eq!(bands.len(), 1, "C scrolled off the left edge");
+        assert_eq!(bands[0].x.min, 100.0);
+    }
+
+    #[test]
+    fn ghost_layer_follows_the_toggle_and_the_pattern_clip() {
+        let mut project = Project::empty();
+        project.tracks.clear();
+        let me = placed_track(
+            &mut project,
+            Instrument::Piano,
+            16,
+            &[(60, 0.0, 1.0)],
+            32.0,
+            1,
+        );
+        placed_track(
+            &mut project,
+            Instrument::Bass,
+            64,
+            &[(40, 34.0, 2.0)],
+            0.0,
+            1,
+        );
+        let mut app = CadenceApp::headless(project);
+        app.select_track(me);
+        let track = ops::track(&app.project, me).unwrap();
+        let pid = track.patterns[0].id;
+        assert_eq!(app.pattern_song_origin(track, pid), Some(32.0));
+        // Inside the clip the playhead picks the repetition it is in.
+        app.transport.position = 40.0;
+        let track = ops::track(&app.project, me).unwrap();
+        assert_eq!(app.pattern_song_origin(track, pid), Some(32.0));
+        let mut f = Frames::new(app, 1360.0, 860.0);
+        f.app.editor.ghost_notes = true;
+        f.app.editor.chord_tint = true;
+        f.steps(3);
+        assert!(
+            f.app.editor.ghost_notes,
+            "paints with ghosts and chord tones on"
+        );
+    }
+
     fn pattern_of(app: &CadenceApp, tid: u64, pid: u64) -> &Pattern {
         ops::pattern(ops::track(&app.project, tid).unwrap(), pid).unwrap()
     }
@@ -5268,7 +5866,6 @@ mod tests {
     /// Pending-note fixture: a click-draw of `pitch` at step `start`.
     fn pending(pitch: u8, start: f64) -> PendingNote {
         PendingNote {
-            pos: pos2(0.0, 0.0),
             pitch,
             start,
             draw_on_click: true,

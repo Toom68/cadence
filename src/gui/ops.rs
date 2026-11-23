@@ -968,6 +968,24 @@ pub fn chord_event_at_step(project: &Project, step: f64) -> Option<u64> {
         .map(|ev| ev.id)
 }
 
+/// The chord-lane chords sounding during song steps `from .. to`, as
+/// `(start, end, chord)` spans clipped to the window. A chord holds from its
+/// step until the next chord (the lane draws it that way); before the
+/// first chord nothing plays; of two chords on one step the later wins.
+pub fn chord_spans(project: &Project, from: f64, to: f64) -> Vec<(f64, f64, &ChordEvent)> {
+    let mut events: Vec<&ChordEvent> = project.chord_events.iter().collect();
+    events.sort_by(|a, b| a.step.total_cmp(&b.step));
+    let mut out = Vec::new();
+    for (i, &ev) in events.iter().enumerate() {
+        let end = events.get(i + 1).map_or(f64::INFINITY, |next| next.step);
+        if end <= from || ev.step >= to || end <= ev.step {
+            continue;
+        }
+        out.push((ev.step.max(from), end.min(to), ev));
+    }
+    out
+}
+
 /// Adds a chord label at `step` (clamped to `0..=MAX_PATTERN_STEPS`); `root`
 /// is taken mod 12 like every pitch class. `None` result means the
 /// [`MAX_CHORD_EVENTS`] cap is reached. The list stays sorted by step then id.
@@ -3601,6 +3619,71 @@ pub fn move_notes(p: &mut Pattern, originals: &[Note], dstep: f64, dpitch: i32) 
     }
 }
 
+/// Sets the length of the notes `ids` selects to `duration` steps, clamped
+/// to the pattern end. Returns how many notes changed.
+pub fn set_note_durations(p: &mut Pattern, ids: &BTreeSet<u64>, duration: f64) -> usize {
+    let len = p.length as f64;
+    let mut changed = 0;
+    for n in p.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+        let d = duration.min(len - n.start).max(MIN_NOTE_DURATION);
+        if d != n.duration {
+            n.duration = d;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Changes the length of the notes `ids` selects by `ddur` steps. A note
+/// never gets shorter than `cell` (or its current length, when that is
+/// already shorter) and never runs past the pattern end. Returns how many
+/// notes changed.
+pub fn change_note_lengths(p: &mut Pattern, ids: &BTreeSet<u64>, ddur: f64, cell: f64) -> usize {
+    let len = p.length as f64;
+    let mut changed = 0;
+    for n in p.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+        let floor = cell.min(n.duration).max(MIN_NOTE_DURATION);
+        let d = (n.duration + ddur)
+            .max(floor)
+            .min(len - n.start)
+            .max(MIN_NOTE_DURATION);
+        if d != n.duration {
+            n.duration = d;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// The lowest pitch among the notes `ids` selects — the one keyboard
+/// transposes audition, so the preview doesn't depend on selection order.
+pub fn lowest_pitch(p: &Pattern, ids: &BTreeSet<u64>) -> Option<u8> {
+    p.notes
+        .iter()
+        .filter(|n| ids.contains(&n.id))
+        .map(|n| n.pitch)
+        .min()
+}
+
+/// Adds a copy of each of `originals` in place under a fresh id (stopping at
+/// [`MAX_NOTES_PER_PATTERN`]) and returns the copies — the snapshots an
+/// Alt+drag then moves with [`move_notes`].
+pub fn clone_notes(p: &mut Pattern, originals: &[Note]) -> Vec<Note> {
+    let mut out = Vec::with_capacity(originals.len());
+    for o in originals {
+        if p.notes.len() >= MAX_NOTES_PER_PATTERN {
+            break;
+        }
+        let copy = Note {
+            id: next_id(),
+            ..o.clone()
+        };
+        p.notes.push(copy.clone());
+        out.push(copy);
+    }
+    out
+}
+
 /// Changes the length of `originals` by `ddur` steps, at least `min` steps
 /// and never past the pattern end.
 pub fn resize_notes(p: &mut Pattern, originals: &[Note], ddur: f64, min: f64) {
@@ -3867,6 +3950,87 @@ mod tests {
         p.tracks.clear();
         let id = add_track(&mut p, inst).unwrap();
         (p, id)
+    }
+
+    fn pattern_with(notes: &[(u8, f64, f64)]) -> (Pattern, BTreeSet<u64>) {
+        let mut p = Pattern {
+            id: next_id(),
+            name: "P".into(),
+            length: 16,
+            notes: Vec::new(),
+        };
+        for &(pitch, start, dur) in notes {
+            add_note(&mut p, pitch, start, dur, 0.8).unwrap();
+        }
+        let ids = p.notes.iter().map(|n| n.id).collect();
+        (p, ids)
+    }
+
+    #[test]
+    fn note_length_ops_clamp_to_cells_and_pattern_end() {
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 12.0, 0.5), (67, 4.0, 1.0)]);
+        // Lengthen by a 1/16 cell, the last note stops at the pattern end.
+        assert_eq!(change_note_lengths(&mut p, &ids, 1.0, 1.0), 3);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![3.0, 1.5, 2.0]);
+        assert_eq!(change_note_lengths(&mut p, &ids, 8.0, 1.0), 3);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![11.0, 4.0, 10.0]);
+        // Shortening stops at one cell, or the note's own length if shorter.
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 4.0, 0.5)]);
+        change_note_lengths(&mut p, &ids, -4.0, 1.0);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![1.0, 0.5]);
+
+        assert_eq!(set_note_durations(&mut p, &ids, 16.0), 2);
+        let durs: Vec<f64> = p.notes.iter().map(|n| n.duration).collect();
+        assert_eq!(durs, vec![16.0, 12.0]);
+        assert_eq!(set_note_durations(&mut p, &ids, 16.0), 0, "no-op");
+        assert_eq!(lowest_pitch(&p, &ids), Some(60));
+        let high: BTreeSet<u64> = [p.notes[1].id].into();
+        assert_eq!(lowest_pitch(&p, &high), Some(64));
+        assert_eq!(lowest_pitch(&p, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn chord_spans_hold_each_chord_until_the_next() {
+        let mut p = Project::empty();
+        p.chord_events.clear();
+        for (root, step) in [(0, 16.0), (7, 32.0), (9, 40.0)] {
+            add_chord_event(&mut p, step, root, ChordQuality::Major).unwrap();
+        }
+        let spans: Vec<(f64, f64, u8)> = chord_spans(&p, 8.0, 48.0)
+            .into_iter()
+            .map(|(a, b, ev)| (a, b, ev.root))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![(16.0, 32.0, 0), (32.0, 40.0, 7), (40.0, 48.0, 9)]
+        );
+        let spans: Vec<(f64, f64, u8)> = chord_spans(&p, 20.0, 36.0)
+            .into_iter()
+            .map(|(a, b, ev)| (a, b, ev.root))
+            .collect();
+        assert_eq!(spans, vec![(20.0, 32.0, 0), (32.0, 36.0, 7)]);
+        assert!(
+            chord_spans(&p, 0.0, 16.0).is_empty(),
+            "nothing before the first chord"
+        );
+    }
+
+    #[test]
+    fn clone_notes_adds_fresh_copies_in_place() {
+        let (mut p, ids) = pattern_with(&[(60, 0.0, 2.0), (64, 4.0, 1.0)]);
+        let originals = p.notes.clone();
+        let copies = clone_notes(&mut p, &originals);
+        assert_eq!(p.notes.len(), 4);
+        for (c, o) in copies.iter().zip(&originals) {
+            assert!(!ids.contains(&c.id));
+            assert_eq!(
+                (c.pitch, c.start, c.duration),
+                (o.pitch, o.start, o.duration)
+            );
+        }
     }
 
     #[test]
