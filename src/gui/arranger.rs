@@ -391,6 +391,11 @@ enum ContextTarget {
     Ruler {
         step: f64,
     },
+    /// Right-click on a section-marker flag: the marker's menu (rename,
+    /// loop/select/duplicate its section, delete).
+    Marker {
+        id: u64,
+    },
     /// Right-click on an open automation strip's empty area (a point under
     /// the pointer is deleted outright, like a marker) — opens the strip's
     /// clear/hide menu.
@@ -2526,6 +2531,7 @@ impl CadenceApp {
             // The chord-lane menu is owned by the ruler's own context_menu
             // call (`chord_lane_menu`); the grid's menu can't open it.
             Some(ContextTarget::ChordLane { .. }) => {}
+            Some(ContextTarget::Marker { id }) => self.marker_menu(ui, id),
             Some(ContextTarget::Ruler { step }) => {
                 ui.label(
                     RichText::new(format!("At bar {}", ops::format_position(step).trim()))
@@ -2786,6 +2792,135 @@ impl CadenceApp {
         true
     }
 
+    /// A section marker's right-click menu. The section runs from the marker
+    /// to the next one (or the song end), see [`ops::section_range`].
+    fn marker_menu(&mut self, ui: &mut Ui, id: u64) {
+        let pal = self.palette();
+        let Some(name) = self
+            .project
+            .markers
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.name.clone())
+        else {
+            ui.close();
+            return;
+        };
+        let range = ops::section_range(&self.project, id);
+        ui.label(
+            RichText::new(match range {
+                Some((a, b)) => format!("{name} · bars {}–{}", bar_number(a), bar_number_end(b)),
+                None => format!("{name} · past the song end"),
+            })
+            .small()
+            .color(pal.text_faint),
+        );
+        if ui
+            .add(egui::Button::new("Rename…").shortcut_text("Double-click"))
+            .clicked()
+        {
+            self.arranger.marker_rename = Some(MarkerRename { id, text: name });
+        }
+        ui.separator();
+        let has = range.is_some();
+        if ui
+            .add_enabled(has, egui::Button::new("Loop this section"))
+            .on_hover_text(
+                "Sets the loop region from this marker to the next one (or the song end)",
+            )
+            .clicked()
+        {
+            self.loop_marker_section(id);
+        }
+        if ui
+            .add_enabled(has, egui::Button::new("Select section clips"))
+            .on_hover_text("Selects every clip that starts inside this section")
+            .clicked()
+        {
+            self.select_section_clips(id);
+        }
+        if ui
+            .add_enabled(has, egui::Button::new("Duplicate section after"))
+            .on_hover_text(
+                "Copies the section's clips, chords and automation right after it; later sections move back to make room",
+            )
+            .clicked()
+        {
+            self.duplicate_marker_section(id);
+        }
+        ui.separator();
+        if ui
+            .button(RichText::new("Delete marker").color(pal.danger))
+            .clicked()
+        {
+            self.edit("Delete marker", None, |p| {
+                ops::delete_marker(p, id);
+            });
+            if self
+                .arranger
+                .marker_rename
+                .as_ref()
+                .is_some_and(|r| r.id == id)
+            {
+                self.arranger.marker_rename = None;
+            }
+        }
+    }
+
+    /// "Loop this section": the marker's section becomes the loop region.
+    pub(super) fn loop_marker_section(&mut self, id: u64) {
+        if let Some(range) = ops::section_range(&self.project, id) {
+            self.set_loop_region(Some(range));
+        }
+    }
+
+    /// "Select section clips": every clip starting inside the section.
+    pub(super) fn select_section_clips(&mut self, id: u64) {
+        let Some((a, b)) = ops::section_range(&self.project, id) else {
+            return;
+        };
+        let ids = ops::clip_ids_starting_in(&self.project, a, b);
+        let n = ids.len();
+        let primary = ids.iter().next().copied();
+        self.set_clip_selection(ids, primary);
+        self.focus = Focus::Arranger;
+        self.set_status(
+            StatusKind::Info,
+            format!("Selected {n} clip{}.", sidebar::plural(n)),
+        );
+    }
+
+    /// "Duplicate section after" as one undo step; the copies become the
+    /// selection and the loop region follows the shifted song.
+    pub(super) fn duplicate_marker_section(&mut self, id: u64) -> bool {
+        let Some((a, b)) = ops::section_range(&self.project, id) else {
+            return false;
+        };
+        let mut new = None;
+        self.edit("Duplicate section", None, |p| {
+            new = ops::duplicate_section(p, id)
+        });
+        let Some(ids) = new else {
+            self.set_status(
+                StatusKind::Warning,
+                format!(
+                    "No room to duplicate the section (songs hold up to {} bars and {} note events).",
+                    ops::MAX_BARS,
+                    ops::MAX_SONG_EVENTS
+                ),
+            );
+            return false;
+        };
+        if let Some(r) = self.transport.loop_region {
+            self.set_loop_region(Some(ops::region_after_insert(r, b, b - a)));
+        }
+        let primary = ids.first().copied();
+        self.set_clip_selection(ids.into_iter().collect(), primary);
+        self.fix_selection();
+        self.focus = Focus::Arranger;
+        true
+    }
+
     /// Adds a section marker named `name` at `step` (grid-snapped) through
     /// the undoable edit path; returns the new marker's id for the caller
     /// to open the rename popup on, and warns when the cap is reached.
@@ -2885,18 +3020,8 @@ impl CadenceApp {
                         }
                     }
                 } else if let Some(id) = self.marker_at(ui.ctx(), pos, ruler, tl) {
-                    self.arranger.context = None;
-                    self.edit("Delete marker", None, |p| {
-                        ops::delete_marker(p, id);
-                    });
-                    if self
-                        .arranger
-                        .marker_rename
-                        .as_ref()
-                        .is_some_and(|r| r.id == id)
-                    {
-                        self.arranger.marker_rename = None;
-                    }
+                    self.focus = Focus::Arranger;
+                    self.arranger.context = Some(ContextTarget::Marker { id });
                 } else {
                     // Bare seek strip: the ruler's own context menu opens
                     // the structure menu at the clicked step.
@@ -3047,7 +3172,10 @@ impl CadenceApp {
         // instead.
         if matches!(self.arranger.context, Some(ContextTarget::ChordLane { .. })) {
             resp.context_menu(|ui| self.chord_lane_menu(ui));
-        } else if matches!(self.arranger.context, Some(ContextTarget::Ruler { .. })) {
+        } else if matches!(
+            self.arranger.context,
+            Some(ContextTarget::Ruler { .. } | ContextTarget::Marker { .. })
+        ) {
             resp.context_menu(|ui| self.arranger_context_menu(ui));
         }
         // One short tip per strip; marker flags and the loop band's ✕
@@ -3947,7 +4075,7 @@ impl CadenceApp {
             // with the ruler's input handler.
             ui.interact(chip, ui.id().with(("marker_chip", m.id)), Sense::hover())
                 .on_hover_text(format!(
-                    "{}: drag to move · double-click to rename · right-click to delete",
+                    "{}: drag to move · double-click to rename · right-click for the section menu",
                     m.name
                 ));
         }
@@ -6066,6 +6194,96 @@ mod tests {
         let now = app.project.clone();
         assert!(!app.insert_time_at(16.0, ops::MAX_SONG_STEPS, false));
         assert_eq!(app.project, now);
+    }
+
+    #[test]
+    fn marker_right_click_opens_its_menu_instead_of_deleting() {
+        let ctx = egui::Context::default();
+        let size = vec2(1360.0, 860.0);
+        let mut app = CadenceApp::headless(Project::demo());
+        let id = app.add_marker_named(32.0, "Verse".to_string()).unwrap();
+        run_frames(&ctx, &mut app, size, 3, Vec::new(), Modifiers::NONE);
+        let grid = app.arranger.grid;
+        let tl = app.arranger.timeline(grid);
+        let flag = pos2(
+            tl.x(32.0) + 8.0,
+            grid.top() - RULER_H + LOOP_LANE_H + MARKER_LANE_H * 0.5,
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: flag,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(flag), button(true)],
+            Modifiers::NONE,
+        );
+        run_frames(
+            &ctx,
+            &mut app,
+            size,
+            2,
+            vec![button(false)],
+            Modifiers::NONE,
+        );
+        assert!(
+            app.project.markers.iter().any(|m| m.id == id),
+            "right-click no longer deletes"
+        );
+        assert!(matches!(
+            app.arranger.context,
+            Some(ContextTarget::Marker { id: m }) if m == id
+        ));
+    }
+
+    #[test]
+    fn marker_section_menu_loops_selects_and_duplicates() {
+        let mut app = CadenceApp::headless(Project::demo());
+        app.arranger.snap = Snap::Bar;
+        app.project.markers.clear();
+        let verse = app.add_marker_named(0.0, "Verse".to_string()).unwrap();
+        app.add_marker_named(64.0, "Chorus".to_string()).unwrap();
+        app.loop_marker_section(verse);
+        assert_eq!(app.transport.loop_region, Some((0.0, 64.0)));
+        app.select_section_clips(verse);
+        let picked = app.selected_clip_ids();
+        let expected = ops::clip_ids_starting_in(&app.project, 0.0, 64.0);
+        assert!(!picked.is_empty());
+        assert_eq!(picked, expected);
+        let before = app.project.clone();
+        let events = app.project.events(false).len();
+        assert!(app.duplicate_marker_section(verse));
+        app.project.validate().unwrap();
+        assert_eq!(app.project.bars, before.bars + 4);
+        let names: Vec<(&str, f64)> = app
+            .project
+            .markers
+            .iter()
+            .map(|m| (m.name.as_str(), m.step))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("Verse", 0.0), ("Verse 2", 64.0), ("Chorus", 128.0)]
+        );
+        // The copy plays the section's notes a second time.
+        let in_verse = before
+            .events(false)
+            .iter()
+            .filter(|e| e.step < 64.0)
+            .count();
+        assert_eq!(app.project.events(false).len(), events + in_verse);
+        assert!(
+            !app.selected_clip_ids().is_empty(),
+            "the copies are selected"
+        );
+        assert_eq!(app.transport.loop_region, Some((0.0, 64.0)));
+        app.undo();
+        assert_eq!(app.project, before, "one undo step");
     }
 
     /// The demo song with every optional toolbar item showing: a loop

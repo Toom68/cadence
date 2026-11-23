@@ -2434,6 +2434,134 @@ pub fn region_after_delete(region: (f64, f64), x: f64, y: f64) -> Option<(f64, f
     (b - a > SPLIT_EDGE_TOL).then_some((a, b))
 }
 
+// ----- sections (marker to next marker) -----------------------------------------
+
+/// The span a section marker heads: from its step to the next marker after
+/// it, or to the song end. `None` when the marker is missing or sits at or
+/// past the end with no later marker.
+pub fn section_range(project: &Project, marker_id: u64) -> Option<(f64, f64)> {
+    let m = project.markers.iter().find(|m| m.id == marker_id)?;
+    let end = project
+        .markers
+        .iter()
+        .filter(|n| n.step > m.step)
+        .map(|n| n.step)
+        .fold(f64::INFINITY, f64::min);
+    let end = if end.is_finite() {
+        end
+    } else {
+        project.total_steps()
+    };
+    (end > m.step).then_some((m.step, end))
+}
+
+/// Ids of every clip (both kinds) that starts inside `[a, b)`.
+pub fn clip_ids_starting_in(project: &Project, a: f64, b: f64) -> BTreeSet<u64> {
+    let inside = |s: f64| s >= a - SPLIT_EDGE_TOL && s < b - SPLIT_EDGE_TOL;
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| {
+            t.clips
+                .iter()
+                .filter(|c| inside(c.start))
+                .map(|c| c.id)
+                .chain(
+                    t.audio_clips
+                        .iter()
+                        .filter(|c| inside(c.start))
+                        .map(|c| c.id),
+                )
+        })
+        .collect()
+}
+
+/// "Duplicate section after": inserts the section's length of time right
+/// after the section headed by `marker_id` (everything later shifts, see
+/// [`insert_time`]) and fills the gap with a copy — every track's clips
+/// (clips crossing the section edges are cut first so the copy sounds the
+/// same), chord events and automation — plus a marker heading the copy
+/// ("Chorus" → "Chorus 2"). Returns the new clip ids; `None`, project
+/// untouched, when the section is empty, the song has no room or a limit
+/// (clips, note events) refuses.
+pub fn duplicate_section(project: &mut Project, marker_id: u64) -> Option<Vec<u64>> {
+    let (a, b) = section_range(project, marker_id)?;
+    let len = b - a;
+    let mut work = project.clone();
+    if !insert_time(&mut work, b, len) || !split_all_at(&mut work, a) {
+        return None;
+    }
+    let ids = clip_ids_starting_in(&work, a, b);
+    let originals = collect_clips(&work, &ids);
+    let audio = collect_audio_clips(&work, &ids);
+    let new = if originals.is_empty() && audio.is_empty() {
+        Vec::new()
+    } else {
+        copy_mixed_clip_group(&mut work, &originals, &audio, len)?
+    };
+    let chords: Vec<ChordEvent> = work
+        .chord_events
+        .iter()
+        .filter(|e| e.step >= a && e.step < b)
+        .cloned()
+        .collect();
+    for ev in chords {
+        if work.chord_events.len() >= MAX_CHORD_EVENTS {
+            break;
+        }
+        work.chord_events.push(ChordEvent {
+            id: next_id(),
+            step: ev.step + len,
+            ..ev
+        });
+    }
+    sort_chord_events(&mut work);
+    for t in &mut work.tracks {
+        let Some(auto) = t.automation.as_mut() else {
+            continue;
+        };
+        for lane in AutomationLane::ALL {
+            let pts = auto.lane(lane);
+            let section: Vec<AutomationPoint> = pts
+                .iter()
+                .filter(|p| p.step >= a && p.step < b)
+                .copied()
+                .collect();
+            let spans = pts.iter().any(|p| p.step < a) && pts.iter().any(|p| p.step >= b + len);
+            let mut copies: Vec<AutomationPoint> = Vec::new();
+            if (!section.is_empty() || spans) && section.first().is_none_or(|p| p.step > a) {
+                if let Some(v) = crate::model::automation_value(pts, a) {
+                    copies.push(AutomationPoint { step: b, value: v });
+                }
+            }
+            copies.extend(section.iter().map(|p| AutomationPoint {
+                step: p.step + len,
+                value: p.value,
+            }));
+            let lane_pts = auto.lane_mut(lane);
+            for c in copies {
+                if lane_pts.len() >= MAX_AUTOMATION_POINTS {
+                    break;
+                }
+                let i = lane_pts.partition_point(|p| p.step <= c.step);
+                lane_pts.insert(i, c);
+            }
+        }
+    }
+    let name = work
+        .markers
+        .iter()
+        .find(|m| m.id == marker_id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "Section".to_string());
+    if work.markers.len() < MAX_MARKERS {
+        let name = unique_name(&name, work.markers.iter().map(|m| m.name.clone()));
+        add_marker(&mut work, b, Some(name));
+    }
+    *project = work;
+    Some(new)
+}
+
 /// Gives a clip its own copy of its pattern so edits don't affect other clips.
 pub fn make_clip_unique(project: &mut Project, track_id: u64, clip_id: u64) -> Option<u64> {
     let t = track_mut(project, track_id)?;
@@ -6114,6 +6242,43 @@ mod tests {
         set_audio_clip_loops(&mut p, aid, last, 2);
         assert!(split_audio_clip(&mut p, aid, last, 40.0));
         assert_eq!(p.tracks[3].audio_clips.len(), 5);
+    }
+
+    #[test]
+    fn duplicate_section_copies_clips_chords_and_marker_and_shifts_the_rest() {
+        let (mut p, tid, aid) = timeline_project();
+        let intro = p.markers[0].id;
+        assert_eq!(section_range(&p, intro), Some((0.0, 32.0)));
+        add_chord_event(&mut p, 0.0, 7, ChordQuality::Major);
+        let new = duplicate_section(&mut p, intro).unwrap();
+        p.validate().unwrap();
+        assert_eq!(new.len(), 1, "the bar-1 clip was copied");
+        let t = track(&p, tid).unwrap();
+        let starts: Vec<f64> = t.clips.iter().map(|c| c.start).collect();
+        assert_eq!(starts, vec![0.0, 64.0, 32.0]);
+        assert_eq!(track(&p, aid).unwrap().audio_clips[0].start, 64.0);
+        let marks: Vec<(&str, f64)> = p
+            .markers
+            .iter()
+            .map(|m| (m.name.as_str(), m.step))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![("Intro", 0.0), ("Intro 2", 32.0), ("Verse", 64.0)]
+        );
+        let chords: Vec<f64> = p.chord_events.iter().map(|e| e.step).collect();
+        assert_eq!(chords, vec![0.0, 32.0, 64.0]);
+        assert_eq!(p.bars, 8);
+        // Automation in the copy starts where the section did.
+        let v = automation_value(&auto_volume(&p, tid), 32.0);
+        assert_eq!(v, Some(0.2));
+        assert_eq!(
+            clip_ids_starting_in(&p, 32.0, 64.0),
+            BTreeSet::from([new[0]])
+        );
+        // The last section runs to the song end.
+        let verse = p.markers[2].id;
+        assert_eq!(section_range(&p, verse), Some((64.0, 128.0)));
     }
 
     // ----- split_clip --------------------------------------------------------
