@@ -550,13 +550,13 @@ impl CadenceApp {
             );
             return;
         }
-        let refs = in_use.names;
+        let refs = persistence::audio_names_folded(&in_use.names);
         let files: Vec<PathBuf> = plan
             .files
             .iter()
             .filter(|p| {
                 p.file_name()
-                    .is_some_and(|n| !refs.contains(n.to_string_lossy().as_ref()))
+                    .is_some_and(|n| !refs.contains(&n.to_string_lossy().to_ascii_lowercase()))
             })
             .cloned()
             .collect();
@@ -1919,6 +1919,29 @@ mod tests {
             }
             other => panic!("expected the confirm dialog, got {other:?}"),
         }
+    }
+
+    /// The confirm-time re-check ignores ASCII case like the scan does: a
+    /// clip referencing `take.wav` keeps a stored `TAKE.WAV`.
+    #[test]
+    fn audio_cleanup_recheck_ignores_name_case() {
+        let store = tempfile::tempdir().unwrap();
+        let file = store.path().join("TAKE.WAV");
+        std::fs::write(&file, b"x").unwrap();
+        let mut app = CadenceApp::headless(Project::empty());
+        app.edit("Add", None, |p| {
+            let mut track = crate::model::create_audio_track("Audio");
+            track
+                .audio_clips
+                .push(crate::model::AudioClip::new("take.wav", "Take", 0.0, 16.0));
+            p.tracks.push(track);
+        });
+        let plan = persistence::UnusedAudio {
+            files: vec![file.clone()],
+            bytes: 1,
+        };
+        app.run_audio_cleanup(&plan);
+        assert!(file.is_file());
     }
 
     fn fake_font(dir: &Path, name: &str, body: &[u8]) -> PathBuf {

@@ -446,9 +446,10 @@ pub struct UnusedAudio {
 }
 
 /// Lists the `.wav` files directly in `store` whose names are not in
-/// `referenced`. Only plain staged-style names count (subfolders, temp files
-/// and anything else in the folder are never offered). Read-only: deleting
-/// is a separate explicit step, [`remove_audio_files`].
+/// `referenced` (ignoring ASCII case). Only plain staged-style names count
+/// (subfolders, temp files and anything else in the folder are never
+/// offered). Read-only: deleting is a separate explicit step,
+/// [`remove_audio_files`].
 pub fn unused_audio_files_in(
     store: &Path,
     referenced: &std::collections::BTreeSet<String>,
@@ -457,10 +458,12 @@ pub fn unused_audio_files_in(
     let Ok(entries) = fs::read_dir(store) else {
         return unused;
     };
+    let referenced = audio_names_folded(referenced);
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let wav = name.to_ascii_lowercase().ends_with(".wav");
-        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&name) {
+        let folded = name.to_ascii_lowercase();
+        let wav = folded.ends_with(".wav");
+        if !wav || !crate::model::audio_ref_name_ok(&name) || referenced.contains(&folded) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -471,6 +474,15 @@ pub fn unused_audio_files_in(
     }
     unused.files.sort();
     unused
+}
+
+/// `names` ASCII-lowercased: store names are ASCII-only, and on
+/// case-insensitive disks (macOS, Windows) `Take.WAV` and `take.wav` are
+/// the same file — cleanup must treat a reference in either case as use.
+pub fn audio_names_folded(
+    names: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    names.iter().map(|n| n.to_ascii_lowercase()).collect()
 }
 
 /// Deletes `files` (an [`UnusedAudio`] list the user confirmed). Returns how
@@ -1218,6 +1230,19 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&store);
         let _ = fs::remove_dir_all(&src);
+    }
+
+    /// On case-insensitive disks `Take.WAV` and `take.wav` are one file, so
+    /// a reference in either case keeps it.
+    #[test]
+    fn unused_audio_matches_names_ignoring_ascii_case() {
+        let store = temp_dir("unused-case");
+        fs::write(store.join("ABCDEF0123456789.WAV"), b"x").unwrap();
+        fs::write(store.join("Take.wav"), b"x").unwrap();
+        let referenced: std::collections::BTreeSet<String> =
+            ["abcdef0123456789.wav".to_owned(), "TAKE.WAV".to_owned()].into();
+        assert!(unused_audio_files_in(&store, &referenced).files.is_empty());
+        let _ = fs::remove_dir_all(&store);
     }
 
     #[test]
