@@ -1564,6 +1564,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
         title: "CHORD LANE (BOTTOM OF THE RULER)",
         rows: &[
             ("Add the key's chord", Mouse("Click the lane")),
+            ("Hear a chord on the selected track", Mouse("Hover a chord")),
             ("Change the chord quality", Mouse("Click a chord")),
             ("Change the chord root", Mouse("{shift}+click a chord")),
             ("Move a chord", Mouse("Drag it")),

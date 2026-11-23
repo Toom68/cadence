@@ -3418,6 +3418,24 @@ impl CadenceApp {
         );
     }
 
+    /// Hover audition for an arranger chord-lane chip: plays chord event
+    /// `id` once through the selected track, voiced like the chord strip.
+    /// Silent without a melodic track selected. Returns whether a track was
+    /// asked to play it (headless apps have no audio engine to hear it).
+    pub(super) fn audition_chord_event(&self, id: u64) -> bool {
+        let Some(ev) = self.project.chord_events.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let Some(track) = self.selected_track() else {
+            return false;
+        };
+        if track.audio || track.shows_drum_grid() {
+            return false;
+        }
+        self.audition_chord_spec(track, &ops::ChordSpec::new(ev.root, ev.quality));
+        true
+    }
+
     /// Hover audition for the chord strip: plays the chord's tones once.
     fn audition_chord_spec(&self, track: &Track, spec: &ops::ChordSpec) {
         if track.shows_drum_grid() {
