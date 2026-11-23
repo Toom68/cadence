@@ -256,6 +256,7 @@ impl CadenceApp {
         }
         app.startup(crate::launch_path().map(std::path::Path::to_path_buf));
         app.update = updates::UpdateState::load();
+        app.review_previous_update();
         app.auto_check_updates(&cc.egui_ctx);
         app
     }

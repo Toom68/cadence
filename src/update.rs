@@ -12,12 +12,21 @@
 //! setup to Inno Setup (per-user, no admin prompt); macOS swaps the verified
 //! `Cadence.app` into place after the app quits. Portable copies and
 //! read-only locations get the download page instead.
+//!
+//! Both installers finish after Cadence has quit, so a hand-off marker in
+//! the data dir lets the next launch report an update that didn't land
+//! (and, on macOS, remove the previous bundle kept for a manual rollback
+//! once the new version has launched twice). Downloads report progress and
+//! can be cancelled ([`Transfer`]); the manifest may carry each file's size
+//! and short release notes, both optional.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
@@ -84,18 +93,56 @@ pub fn platform_key() -> Option<&'static str> {
 }
 
 /// A release newer than (or equal to) this build, as the manifest describes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
     /// This platform's download file name; `None` when the release has none.
     pub asset: Option<String>,
+    /// The download's size in bytes, when the manifest gives it (progress).
+    pub size: Option<u64>,
+    /// Short plain-text release notes for the Update dialog.
+    pub notes: Option<String>,
 }
 
+/// `latest.json`. Fields added after 1.2 (`sizes`, `notes`) are optional and
+/// read leniently, so a malformed extra never hides an update; older apps
+/// ignore them (serde skips unknown fields).
 #[derive(Deserialize)]
 struct Manifest {
     version: String,
     #[serde(default)]
     assets: BTreeMap<String, String>,
+    /// File name → size in bytes.
+    #[serde(default)]
+    sizes: serde_json::Value,
+    #[serde(default)]
+    notes: serde_json::Value,
+}
+
+/// Release notes are shown as plain text and capped at this many bytes.
+pub const MAX_NOTES_BYTES: usize = 4 * 1024;
+
+/// Plain text only: no control characters but newlines and tabs, CRLF
+/// folded, trimmed, and cut to [`MAX_NOTES_BYTES`] on a character boundary.
+fn clean_notes(raw: &str) -> Option<String> {
+    let text: String = raw
+        .replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c == '\r' { '\n' } else { c })
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect();
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() <= MAX_NOTES_BYTES {
+        return Some(text.to_owned());
+    }
+    let mut end = MAX_NOTES_BYTES - '…'.len_utf8();
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", text[..end].trim_end()))
 }
 
 /// File names are joined onto URLs and a local folder: plain names only.
@@ -125,7 +172,18 @@ pub fn parse_manifest(bytes: &[u8], platform: Option<&str>) -> Result<Release, S
         .and_then(|key| manifest.assets.get(key))
         .filter(|name| asset_name_ok(name))
         .cloned();
-    Ok(Release { version, asset })
+    let size = asset
+        .as_deref()
+        .and_then(|name| manifest.sizes.get(name))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|&n| n > 0 && n <= MAX_ASSET_BYTES);
+    let notes = manifest.notes.as_str().and_then(clean_notes);
+    Ok(Release {
+        version,
+        asset,
+        size,
+        notes,
+    })
 }
 
 /// The base URL releases are served from.
@@ -224,8 +282,66 @@ fn hide_console(cmd: &mut Command) {
     let _ = cmd;
 }
 
-/// Downloads `url` to `out` over https only (redirects included).
-fn fetch(url: &str, out: &Path, max_bytes: u64, timeout_secs: u32) -> Result<(), String> {
+/// What a cancelled download reports (the UI goes back quietly).
+pub const CANCELLED: &str = "The download was cancelled.";
+
+/// A download's progress and its Cancel switch, shared between the worker
+/// thread and the UI.
+#[derive(Debug, Default)]
+pub struct Transfer {
+    cancel: AtomicBool,
+    received: AtomicU64,
+    /// Expected size in bytes; 0 = unknown.
+    total: AtomicU64,
+}
+
+impl Transfer {
+    /// A transfer expecting `total` bytes, when the manifest says.
+    pub fn new(total: Option<u64>) -> Self {
+        Transfer {
+            total: AtomicU64::new(total.unwrap_or(0)),
+            ..Transfer::default()
+        }
+    }
+
+    /// Asks the download to stop: curl is killed and the partial file removed.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Bytes on disk so far and the expected total, if known.
+    pub fn progress(&self) -> (u64, Option<u64>) {
+        let total = self.total.load(Ordering::Relaxed);
+        (
+            self.received.load(Ordering::Relaxed),
+            (total > 0).then_some(total),
+        )
+    }
+
+    /// Share done, 0.0..=1.0, when the total is known.
+    pub fn fraction(&self) -> Option<f32> {
+        let (done, total) = self.progress();
+        total.map(|total| (done as f64 / total as f64).clamp(0.0, 1.0) as f32)
+    }
+}
+
+/// How often a running curl is polled for progress and cancellation.
+const POLL: Duration = Duration::from_millis(100);
+
+/// Downloads `url` to `out` over https only (redirects included). With a
+/// `transfer`, the file's growing size is reported and a cancel kills curl
+/// and deletes the partial file.
+fn fetch(
+    url: &str,
+    out: &Path,
+    max_bytes: u64,
+    timeout_secs: u32,
+    transfer: Option<&Transfer>,
+) -> Result<(), String> {
     let mut cmd = Command::new(curl_program());
     cmd.args([
         "--fail",
@@ -250,17 +366,49 @@ fn fetch(url: &str, out: &Path, max_bytes: u64, timeout_secs: u32) -> Result<(),
     .arg("--output")
     .arg(out)
     .arg(url)
-    .stdin(Stdio::null());
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    // `--silent --show-error` prints one short line at most, far below a
+    // pipe buffer, so reading it after exit cannot deadlock.
+    .stderr(Stdio::piped());
     hide_console(&mut cmd);
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|err| format!("Could not start curl to download the update ({err})."))?;
-    if output.status.success() {
+    let status = loop {
+        if transfer.is_some_and(Transfer::is_cancelled) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(out);
+            return Err(CANCELLED.to_owned());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(out);
+                return Err(format!("The download stopped unexpectedly ({err})."));
+            }
+        }
+        if let (Some(transfer), Ok(meta)) = (transfer, fs::metadata(out)) {
+            transfer.received.store(meta.len(), Ordering::Relaxed);
+        }
+        std::thread::sleep(POLL);
+    };
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    if status.success() {
+        if let (Some(transfer), Ok(meta)) = (transfer, fs::metadata(out)) {
+            transfer.received.store(meta.len(), Ordering::Relaxed);
+        }
         return Ok(());
     }
     let _ = fs::remove_file(out);
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let detail = detail.trim().trim_start_matches("curl: ");
+    let detail = stderr.trim().trim_start_matches("curl: ");
     Err(if detail.contains("error: 404") {
         "No update information is published yet.".to_owned()
     } else {
@@ -304,6 +452,7 @@ pub fn check() -> Result<Option<Release>, String> {
         &path,
         MAX_MANIFEST_BYTES,
         30,
+        None,
     )?;
     let bytes = read_capped(&path, MAX_MANIFEST_BYTES);
     let _ = fs::remove_file(&path);
@@ -312,8 +461,9 @@ pub fn check() -> Result<Option<Release>, String> {
 }
 
 /// Downloads this platform's file of `release` and verifies its signature;
-/// returns the verified file. A file that fails verification is deleted.
-pub fn download(release: &Release) -> Result<PathBuf, String> {
+/// returns the verified file. A file that fails verification is deleted, as
+/// is a partial one when `transfer` is cancelled (the error is [`CANCELLED`]).
+pub fn download(release: &Release, transfer: &Transfer) -> Result<PathBuf, String> {
     let name = release
         .asset
         .as_deref()
@@ -328,13 +478,20 @@ pub fn download(release: &Release) -> Result<PathBuf, String> {
     let file = dir.join(name);
     let sig_path = dir.join(format!("{name}.minisig"));
     let sig_url = asset_url(&base, &release.version, &format!("{name}.minisig"));
-    fetch(&sig_url, &sig_path, MAX_SIGNATURE_BYTES, 60)?;
-    fetch(
+    fetch(&sig_url, &sig_path, MAX_SIGNATURE_BYTES, 60, Some(transfer))?;
+    transfer.received.store(0, Ordering::Relaxed);
+    let fetched = fetch(
         &asset_url(&base, &release.version, name),
         &file,
         MAX_ASSET_BYTES,
         900,
-    )?;
+        Some(transfer),
+    );
+    if fetched.is_err() || transfer.is_cancelled() {
+        let _ = fs::remove_file(&sig_path);
+        let _ = fs::remove_file(&file);
+        return Err(fetched.err().unwrap_or_else(|| CANCELLED.to_owned()));
+    }
     let checked = read_capped(&sig_path, MAX_SIGNATURE_BYTES)
         .and_then(|sig| String::from_utf8(sig).map_err(|_| "The signature is not text.".to_owned()))
         .and_then(|sig| {
@@ -476,26 +633,40 @@ pub fn prepare(mode: &InstallMode, file: PathBuf) -> Result<Prepared, String> {
     }
 }
 
+/// The previous bundle's name inside the staging folder after a swap. It
+/// is kept as a manual rollback until the new version has launched twice.
+pub const MAC_BACKUP_NAME: &str = "Cadence (previous).app";
+
 /// Swaps the bundle once Cadence (`$1`) has exited, rolling back if the new
-/// one can't be moved in; reopens the app when `$5` is 1.
+/// one can't be moved in; reopens the app when `$5` is 1. On success the
+/// old bundle stays in the staging folder as `Cadence (previous).app` (see
+/// [`review_handoff`]); everything else staged is removed.
 const MAC_SWAP_SCRIPT: &str = r#"pid="$1"; app="$2"; new="$3"; stage="$4"; relaunch="$5"
 i=0
 while kill -0 "$pid" 2>/dev/null; do
   sleep 0.2; i=$((i+1)); [ "$i" -gt 600 ] && exit 1
 done
-old="$stage/previous.app"
+old="$stage/Cadence (previous).app"
 rm -rf "$old"
 if mv "$app" "$old"; then
-  if mv "$new" "$app"; then rm -rf "$stage"; else mv "$old" "$app"; fi
+  if mv "$new" "$app"; then
+    find "$stage" -mindepth 1 -maxdepth 1 ! -name "Cadence (previous).app" -exec rm -rf {} +
+  else
+    mv "$old" "$app"
+  fi
 fi
 [ "$relaunch" = 1 ] && open "$app"
 exit 0
 "#;
 
-/// Starts the installer as Cadence quits. `relaunch` reopens Cadence
-/// afterwards (Restart & Update) instead of just installing (on quit).
-pub fn launch(prepared: &Prepared, relaunch: bool) -> Result<(), String> {
-    match prepared {
+/// Starts the installer for `version` as Cadence quits. `relaunch` reopens
+/// Cadence afterwards (Restart & Update) instead of just installing (on
+/// quit). A hand-off marker is written first so the next launch can tell
+/// whether the update landed ([`review_handoff`]).
+pub fn launch(prepared: &Prepared, version: &str, relaunch: bool) -> Result<(), String> {
+    let data = crate::persistence::data_dir();
+    record_handoff_in(&data, version);
+    let started = match prepared {
         Prepared::WindowsSetup(setup) => {
             let mut cmd = Command::new(setup);
             cmd.args([
@@ -531,7 +702,175 @@ pub fn launch(prepared: &Prepared, relaunch: bool) -> Result<(), String> {
             .spawn()
             .map(drop)
             .map_err(|err| format!("Could not start the update ({err}).")),
+    };
+    if started.is_err() {
+        clear_handoff_in(&data);
     }
+    started
+}
+
+// ----- after the hand-off ----------------------------------------------------------
+
+/// `<data dir>/update-pending.json`: written just before an installer or
+/// swap starts. A silent setup or a swap script can fail after Cadence has
+/// quit, where nobody sees it; the next launch compares its own version
+/// with this one and says so.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Handoff {
+    /// The version handed to the installer.
+    pub version: String,
+    /// The version that handed it off.
+    pub from: String,
+    /// Unix time of the hand-off.
+    pub started: u64,
+    /// The new version has launched once (the macOS rollback copy is kept
+    /// until the launch after that).
+    pub launched: bool,
+    /// The "didn't finish" dialog has been shown once already.
+    pub notified: bool,
+}
+
+/// What the previous run's hand-off came to, as this launch sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandoffOutcome {
+    /// This is the new version, launched for the first time.
+    Installed { version: String },
+    /// Still older than the version handed off: the install failed or was
+    /// interrupted. `first` the first time this is noticed.
+    Unfinished { version: String, first: bool },
+}
+
+const HANDOFF_FILE: &str = "update-pending.json";
+
+fn handoff_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(HANDOFF_FILE)
+}
+
+fn write_handoff_in(data_dir: &Path, handoff: &Handoff) {
+    let _ = fs::create_dir_all(data_dir);
+    if let Ok(json) = serde_json::to_vec_pretty(handoff) {
+        let _ = crate::persistence::write_file_atomic(&handoff_path(data_dir), &json);
+    }
+}
+
+/// Best effort: without the marker the update still installs, the next
+/// launch just can't report a failure.
+fn record_handoff_in(data_dir: &Path, version: &str) {
+    write_handoff_in(
+        data_dir,
+        &Handoff {
+            version: version.to_owned(),
+            from: APP_VERSION.to_owned(),
+            started: now_secs(),
+            ..Handoff::default()
+        },
+    );
+}
+
+fn read_handoff_in(data_dir: &Path) -> Option<Handoff> {
+    let bytes = fs::read(handoff_path(data_dir)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn clear_handoff_in(data_dir: &Path) {
+    let _ = fs::remove_file(handoff_path(data_dir));
+}
+
+/// What a launch running `running` makes of `handoff`: the outcome to
+/// report, the marker to keep (`None` = delete it) and whether the macOS
+/// rollback copy can go.
+fn review(handoff: &Handoff, running: &str) -> (Option<HandoffOutcome>, Option<Handoff>, bool) {
+    if parse_version(&handoff.version).is_none() {
+        return (None, None, false);
+    }
+    let version = handoff.version.clone();
+    if is_newer(&version, running) {
+        let first = !handoff.notified;
+        let keep = Handoff {
+            notified: true,
+            ..handoff.clone()
+        };
+        return (
+            Some(HandoffOutcome::Unfinished { version, first }),
+            Some(keep),
+            false,
+        );
+    }
+    if handoff.launched {
+        // The second launch of the new version: it works, drop the backup.
+        return (None, None, true);
+    }
+    let keep = Handoff {
+        launched: true,
+        ..handoff.clone()
+    };
+    (
+        Some(HandoffOutcome::Installed { version }),
+        Some(keep),
+        false,
+    )
+}
+
+/// Checks the previous run's hand-off (if any) at launch: updates the
+/// marker, removes the macOS rollback copy once the new version has
+/// launched twice, and says what to tell the user.
+pub fn review_handoff() -> Option<HandoffOutcome> {
+    review_handoff_in(&crate::persistence::data_dir(), &install_mode())
+}
+
+fn review_handoff_in(data_dir: &Path, mode: &InstallMode) -> Option<HandoffOutcome> {
+    let handoff = read_handoff_in(data_dir);
+    let Some(handoff) = handoff else {
+        // A marker that is unreadable (or absent) is simply dropped.
+        clear_handoff_in(data_dir);
+        return None;
+    };
+    let (outcome, keep, drop_backup) = review(&handoff, APP_VERSION);
+    match keep {
+        Some(keep) => write_handoff_in(data_dir, &keep),
+        None => clear_handoff_in(data_dir),
+    }
+    if drop_backup {
+        if let InstallMode::MacBundle(bundle) = mode {
+            remove_mac_backup(bundle, std::env::current_exe().ok().as_deref());
+        }
+    }
+    outcome
+}
+
+/// The rollback copy a macOS swap leaves beside `bundle`.
+pub fn mac_backup_path(bundle: &Path) -> Option<PathBuf> {
+    Some(
+        bundle
+            .parent()?
+            .join(".cadence-update")
+            .join(MAC_BACKUP_NAME),
+    )
+}
+
+/// Deletes the rollback copy — never the bundle or executable that is
+/// running (`running_exe`), whatever the paths look like — and the
+/// then-empty staging folder.
+fn remove_mac_backup(bundle: &Path, running_exe: Option<&Path>) {
+    let Some(backup) = mac_backup_path(bundle) else {
+        return;
+    };
+    let in_use = bundle.starts_with(&backup)
+        || backup.starts_with(bundle)
+        || running_exe.is_some_and(|exe| exe.starts_with(&backup));
+    if in_use || !backup.is_dir() {
+        return;
+    }
+    let _ = fs::remove_dir_all(&backup);
+    if let Some(stage) = backup.parent() {
+        let _ = fs::remove_dir(stage);
+    }
+}
+
+/// Forgets a hand-off (the user skipped that version, say).
+pub fn forget_handoff() {
+    clear_handoff_in(&crate::persistence::data_dir());
 }
 
 // ----- preferences ---------------------------------------------------------------
@@ -694,6 +1033,200 @@ trusted comment: cadence-update 9.8.7 Cadence-9.8.7-windows-x64-setup.exe
     }
 
     #[test]
+    fn manifest_extras_are_optional_lenient_and_forward_compatible() {
+        // What CI writes since sizes and notes were added.
+        let json = br#"{"version": "1.3.0",
+            "assets": {"windows-x64": "Cadence-1.3.0-windows-x64-setup.exe"},
+            "sizes": {"Cadence-1.3.0-windows-x64-setup.exe": 12345678},
+            "notes": "Faster startup.\r\n\n- Fixed \u0007the mixer",
+            "some_future_field": {"nested": [1, 2, 3]}}"#;
+        let release = parse_manifest(json, Some("windows-x64")).unwrap();
+        assert_eq!(release.size, Some(12_345_678));
+        assert_eq!(
+            release.notes.as_deref(),
+            Some("Faster startup.\n\n- Fixed the mixer")
+        );
+        // The pre-1.3 manifest shape still parses, without extras.
+        let old = br#"{"version": "1.3.0", "assets": {}}"#;
+        let release = parse_manifest(old, Some("windows-x64")).unwrap();
+        assert_eq!((release.size, release.notes), (None, None));
+        // Malformed extras are ignored rather than hiding the update.
+        let odd = br#"{"version": "1.3.0",
+            "assets": {"windows-x64": "Cadence-1.3.0-windows-x64-setup.exe"},
+            "sizes": {"Cadence-1.3.0-windows-x64-setup.exe": "big"}, "notes": 7}"#;
+        let release = parse_manifest(odd, Some("windows-x64")).unwrap();
+        assert_eq!(release.version, "1.3.0");
+        assert_eq!((release.size, release.notes), (None, None));
+        let odd = br#"{"version": "1.3.0", "sizes": [1], "notes": "   "}"#;
+        assert_eq!(parse_manifest(odd, None).unwrap().notes, None);
+    }
+
+    #[test]
+    fn release_notes_are_capped_on_a_character_boundary() {
+        let long = "é".repeat(MAX_NOTES_BYTES);
+        let notes = clean_notes(&long).unwrap();
+        assert!(notes.len() <= MAX_NOTES_BYTES, "{}", notes.len());
+        assert!(notes.ends_with('…'));
+        assert_eq!(clean_notes("  ok\tfine \n").as_deref(), Some("ok\tfine"));
+        assert_eq!(clean_notes("\u{1b}[31m"), Some("[31m".to_owned()));
+        assert_eq!(clean_notes(""), None);
+    }
+
+    #[test]
+    fn transfer_reports_progress_and_cancels() {
+        let t = Transfer::new(Some(200));
+        assert_eq!(t.progress(), (0, Some(200)));
+        t.received.store(50, Ordering::Relaxed);
+        assert_eq!(t.fraction(), Some(0.25));
+        t.received.store(999, Ordering::Relaxed);
+        assert_eq!(t.fraction(), Some(1.0));
+        assert_eq!(Transfer::new(None).fraction(), None);
+        assert!(!t.is_cancelled());
+        t.cancel();
+        assert!(t.is_cancelled());
+    }
+
+    /// A cancelled fetch kills curl and removes the partial file. The URL is
+    /// loopback, and curl is killed before it could get anywhere anyway.
+    #[test]
+    fn cancelled_fetch_removes_the_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("partial.exe");
+        fs::write(&out, b"half a download").unwrap();
+        let transfer = Transfer::new(None);
+        transfer.cancel();
+        let result = fetch("https://127.0.0.1:9/x", &out, 1024, 5, Some(&transfer));
+        if let Err(err) = &result {
+            if err.starts_with("Could not start curl") {
+                return; // no curl on this machine
+            }
+        }
+        assert_eq!(result, Err(CANCELLED.to_owned()));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn handoff_review_reports_failures_and_keeps_the_backup_one_launch() {
+        let handoff = Handoff {
+            version: "1.3.0".into(),
+            from: "1.2.0".into(),
+            started: 1,
+            ..Handoff::default()
+        };
+        // Still the old version: the install didn't finish. Said loudly
+        // once, quietly afterwards; the marker stays until it lands.
+        let (outcome, keep, drop_backup) = review(&handoff, "1.2.0");
+        assert_eq!(
+            outcome,
+            Some(HandoffOutcome::Unfinished {
+                version: "1.3.0".into(),
+                first: true
+            })
+        );
+        let keep = keep.unwrap();
+        assert!(keep.notified && !drop_backup);
+        let (outcome, keep, _) = review(&keep, "1.2.0");
+        assert_eq!(
+            outcome,
+            Some(HandoffOutcome::Unfinished {
+                version: "1.3.0".into(),
+                first: false
+            })
+        );
+        assert!(keep.is_some());
+        // The new version's first launch: report it, keep the backup.
+        let (outcome, keep, drop_backup) = review(&handoff, "1.3.0");
+        assert_eq!(
+            outcome,
+            Some(HandoffOutcome::Installed {
+                version: "1.3.0".into()
+            })
+        );
+        let keep = keep.unwrap();
+        assert!(keep.launched && !drop_backup);
+        // Its second launch: quietly drop the marker and the backup.
+        assert_eq!(review(&keep, "1.3.0"), (None, None, true));
+        // A later version (installed by hand) counts as landed too.
+        assert!(matches!(
+            review(&handoff, "1.4.0").0,
+            Some(HandoffOutcome::Installed { .. })
+        ));
+        // Junk markers are dropped.
+        let junk = Handoff {
+            version: "../x".into(),
+            ..Handoff::default()
+        };
+        assert_eq!(review(&junk, "1.2.0"), (None, None, false));
+    }
+
+    #[test]
+    fn handoff_marker_round_trips_and_cleans_up_the_mac_backup() {
+        let data = tempfile::tempdir().unwrap();
+        let apps = tempfile::tempdir().unwrap();
+        let bundle = apps.path().join("Cadence.app");
+        fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let backup = mac_backup_path(&bundle).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let mode = InstallMode::MacBundle(bundle.clone());
+        assert_eq!(review_handoff_in(data.path(), &mode), None);
+
+        // The marker names this very version: the update landed.
+        record_handoff_in(data.path(), APP_VERSION);
+        let marker = read_handoff_in(data.path()).unwrap();
+        assert_eq!(
+            (marker.version.as_str(), marker.from.as_str()),
+            (APP_VERSION, APP_VERSION)
+        );
+        assert!(matches!(
+            review_handoff_in(data.path(), &mode),
+            Some(HandoffOutcome::Installed { .. })
+        ));
+        assert!(backup.is_dir(), "kept through the first launch");
+        assert_eq!(review_handoff_in(data.path(), &mode), None);
+        assert!(!backup.exists(), "removed on the next launch");
+        assert!(
+            !backup.parent().unwrap().exists(),
+            "empty staging folder removed"
+        );
+        assert!(bundle.is_dir(), "the app itself is untouched");
+        assert!(read_handoff_in(data.path()).is_none());
+
+        // A newer version than this one was handed off: it didn't finish.
+        record_handoff_in(data.path(), "999.0.0");
+        assert_eq!(
+            review_handoff_in(data.path(), &mode),
+            Some(HandoffOutcome::Unfinished {
+                version: "999.0.0".into(),
+                first: true
+            })
+        );
+        clear_handoff_in(data.path());
+        assert!(read_handoff_in(data.path()).is_none());
+
+        // An unreadable marker is dropped.
+        fs::write(handoff_path(data.path()), b"{not json").unwrap();
+        assert_eq!(review_handoff_in(data.path(), &mode), None);
+        assert!(!handoff_path(data.path()).exists());
+    }
+
+    #[test]
+    fn backup_cleanup_never_touches_the_running_app() {
+        let apps = tempfile::tempdir().unwrap();
+        let bundle = apps.path().join("Cadence.app");
+        fs::create_dir_all(&bundle).unwrap();
+        let backup = mac_backup_path(&bundle).unwrap();
+        let exe = backup.join("Contents/MacOS/cadence");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, b"").unwrap();
+        // Someone launched the backup copy itself: it stays.
+        remove_mac_backup(&bundle, Some(&exe));
+        assert!(exe.is_file());
+        remove_mac_backup(&bundle, Some(&bundle.join("Contents/MacOS/cadence")));
+        assert!(!backup.exists());
+        assert!(bundle.is_dir());
+    }
+
+    #[test]
     fn asset_names_are_plain_file_names() {
         assert!(asset_name_ok("Cadence-1.2.0-macos-universal.zip"));
         for bad in ["", ".hidden", "a/b", "a\\b", "..", "a b", "x?y"] {
@@ -839,17 +1372,35 @@ trusted comment: cadence-update 9.8.7 Cadence-9.8.7-windows-x64-setup.exe
         fs::write(app.join("v"), "old").unwrap();
         fs::create_dir_all(&new).unwrap();
         fs::write(new.join("v"), "new").unwrap();
+        fs::write(stage.join("leftover.txt"), "x").unwrap();
         run(&app, &new, &stage);
         assert_eq!(fs::read_to_string(app.join("v")).unwrap(), "new");
-        assert!(!stage.exists(), "staging folder cleaned up");
+        // The old bundle stays as a rollback copy; nothing else is left.
+        let backup = stage.join(MAC_BACKUP_NAME);
+        assert_eq!(mac_backup_path(&app).unwrap(), backup);
+        assert_eq!(fs::read_to_string(backup.join("v")).unwrap(), "old");
+        let left: Vec<_> = fs::read_dir(&stage)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from(MAC_BACKUP_NAME)]);
 
-        fs::create_dir_all(&stage).unwrap();
+        // A failed move rolls back; the previous backup is replaced by
+        // the bundle that was running, then moved back into place.
         run(&app, &stage.join("missing.app"), &stage);
         assert_eq!(
             fs::read_to_string(app.join("v")).unwrap(),
             "new",
             "rolled back"
         );
+        assert!(!backup.exists());
+
+        // A second successful update replaces the older backup.
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("v"), "newer").unwrap();
+        run(&app, &new, &stage);
+        assert_eq!(fs::read_to_string(app.join("v")).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(backup.join("v")).unwrap(), "new");
     }
 
     #[test]
