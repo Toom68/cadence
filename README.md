@@ -34,7 +34,7 @@ Get the latest build from **[Releases](https://github.com/Toom68/cadence/release
 
 **First launch:** the builds are not code-signed yet. On Windows, SmartScreen may warn once — **More info → Run anyway**. On macOS, right-click Cadence and choose **Open** the first time.
 
-**Updates:** once installed, Cadence checks for a new version at most once a day and shows an update button in the status bar. One click downloads it, verifies its signature against the release key built into the app, and installs it when you restart (or when you quit). Turn the daily check off in **Help → Check for Updates…** — it only asks github.com for the newest version number; nothing about you or your songs is sent.
+**Updates:** once installed, Cadence checks for a new version each time it opens (and once a day while it stays open) and shows an update button in the status bar. One click downloads it, verifies its signature against the release key built into the app, and installs it when you restart (or when you quit). Turn the automatic check off in **Help → Check for Updates…** — it only asks github.com for the newest version number; nothing about you or your songs is sent.
 
 An audio output device is needed to hear playback; editing, saving and WAV export work without one, and Cadence picks up a device that appears later. Pick your output from the audio indicator in the status bar.
 

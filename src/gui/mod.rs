@@ -1309,6 +1309,7 @@ impl CadenceApp {
         }
         self.poll_export();
         self.poll_updates();
+        self.auto_check_updates(ctx);
         self.handle_close_request(ctx);
         self.handle_shortcuts(ctx);
 

@@ -33,8 +33,11 @@ pub const UPDATE_URL_ENV: &str = "CADENCE_UPDATE_URL";
 pub const NO_CHECK_ENV: &str = "CADENCE_NO_UPDATE_CHECK";
 /// The release manifest's file name.
 pub const MANIFEST_NAME: &str = "latest.json";
-/// Automatic checks run at most this often.
-pub const CHECK_INTERVAL_SECS: u64 = 20 * 60 * 60;
+/// While Cadence stays open, automatic checks repeat this long after the
+/// last successful one (every launch checks as well).
+pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// A failed automatic check (offline) is retried after this long.
+pub const RETRY_SECS: u64 = 60 * 60;
 
 /// The release signing public key (minisign format). Until a real key is
 /// committed this is a placeholder that fails to parse, and updates fall
@@ -537,8 +540,8 @@ pub fn launch(prepared: &Prepared, relaunch: bool) -> Result<(), String> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdatePrefs {
-    /// Check once a day on launch (on by default; Help → Check for Updates
-    /// always works).
+    /// Check at every launch and once a day while open (on by default;
+    /// Help → Check for Updates always works).
     pub auto_check: bool,
     /// Unix time of the last successful check.
     pub last_check: u64,
@@ -557,9 +560,34 @@ impl Default for UpdatePrefs {
 }
 
 impl UpdatePrefs {
-    /// Whether an automatic check is due at unix time `now`.
+    /// Whether a day has passed since the last successful check at unix
+    /// time `now` (or the clock went backwards).
     pub fn check_due(&self, now: u64) -> bool {
         self.auto_check && (now < self.last_check || now - self.last_check >= CHECK_INTERVAL_SECS)
+    }
+
+    /// Seconds until the next automatic check (0 = now); `None` when
+    /// automatic checks are off. `last_attempt` is this session's latest
+    /// automatic attempt: `None` means none yet, so every launch checks
+    /// right away. Afterwards a check is due a day after the last
+    /// successful one, and a failed attempt (offline) waits [`RETRY_SECS`]
+    /// instead of retrying every frame.
+    pub fn next_check_in(&self, now: u64, last_attempt: Option<u64>) -> Option<u64> {
+        if !self.auto_check {
+            return None;
+        }
+        let Some(attempt) = last_attempt else {
+            return Some(0);
+        };
+        let due = if now < self.last_check {
+            now
+        } else {
+            self.last_check.saturating_add(CHECK_INTERVAL_SECS)
+        };
+        Some(
+            due.max(attempt.saturating_add(RETRY_SECS))
+                .saturating_sub(now),
+        )
     }
 }
 
@@ -722,6 +750,42 @@ trusted comment: cadence-update 9.8.7 Cadence-9.8.7-windows-x64-setup.exe
         assert!(prefs.check_due(10));
         prefs.auto_check = false;
         assert!(!prefs.check_due(1_000_000 + CHECK_INTERVAL_SECS));
+    }
+
+    #[test]
+    fn checks_at_every_launch_then_daily_with_an_hourly_offline_retry() {
+        let day = CHECK_INTERVAL_SECS;
+        let now = 10_000_000;
+        let mut prefs = UpdatePrefs {
+            last_check: now - 60,
+            ..UpdatePrefs::default()
+        };
+        assert_eq!(day, 24 * 60 * 60);
+        // Launch: nothing tried this session yet, so check right away even
+        // though the last check was a minute ago.
+        assert_eq!(prefs.next_check_in(now, None), Some(0));
+        // That check succeeded: the next one is due a day later, and an
+        // app left open counts down to it.
+        prefs.last_check = now;
+        assert_eq!(prefs.next_check_in(now, Some(now)), Some(day));
+        assert_eq!(prefs.next_check_in(now + day - 5, Some(now)), Some(5));
+        assert_eq!(prefs.next_check_in(now + day, Some(now)), Some(0));
+        // Offline: the attempt failed (last_check unchanged), so retry after
+        // an hour rather than every frame.
+        let tried = now + day;
+        assert_eq!(prefs.next_check_in(tried, Some(tried)), Some(RETRY_SECS));
+        assert_eq!(
+            prefs.next_check_in(tried + RETRY_SECS, Some(tried)),
+            Some(0)
+        );
+        // A clock that jumped backwards still checks.
+        assert_eq!(
+            prefs.next_check_in(now - day, Some(now - day - RETRY_SECS)),
+            Some(0)
+        );
+        // Turned off: never.
+        prefs.auto_check = false;
+        assert_eq!(prefs.next_check_in(now, None), None);
     }
 
     #[test]

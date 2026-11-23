@@ -2,8 +2,8 @@
 //! Update dialog. The network, signature and installer work lives in
 //! [`crate::update`]; this module only decides *when* and asks the user.
 //!
-//! Flow: a launch-time check (release builds, at most once a day, can be
-//! turned off) or Help → Check for Updates finds a newer release → a pill
+//! Flow: an automatic check (release builds, at every launch and once a day
+//! while open, can be turned off) or Help → Check for Updates finds a newer release → a pill
 //! appears in the status bar → the dialog downloads and verifies it → the
 //! user picks Restart & Update or Install When I Quit. Quitting goes through
 //! the normal unsaved-changes guard, and the installer starts only once
@@ -51,6 +51,9 @@ pub(super) struct UpdateState {
     /// Install as the window closes; `relaunch` reopens Cadence afterwards.
     pub(super) install_on_quit: Option<bool>,
     rx: Option<Receiver<Msg>>,
+    /// Unix time of this session's latest automatic check (`None` until the
+    /// launch check starts).
+    last_attempt: Option<u64>,
 }
 
 impl UpdateState {
@@ -83,11 +86,31 @@ fn spawn(ctx: &Context, job: impl FnOnce() -> Msg + Send + 'static) -> Option<Re
 }
 
 impl CadenceApp {
-    /// Launch-time check: release builds only, at most once a day, never
-    /// when the user turned automatic checks off.
+    /// Automatic checks, run every frame: one at launch, then once a day
+    /// while Cadence stays open (an idle window wakes itself when the next
+    /// one is due). Release builds only, never when the user turned them
+    /// off, and never while an update is downloading or waiting to install.
     pub(super) fn auto_check_updates(&mut self, ctx: &Context) {
-        if update::auto_check_allowed() && self.update.prefs.check_due(update::now_secs()) {
-            self.start_update_check(ctx, false);
+        if !update::auto_check_allowed()
+            || !matches!(
+                self.update.phase,
+                Phase::Idle | Phase::UpToDate | Phase::Available(_) | Phase::Failed(_)
+            )
+        {
+            return;
+        }
+        let now = update::now_secs();
+        match self
+            .update
+            .prefs
+            .next_check_in(now, self.update.last_attempt)
+        {
+            Some(0) => {
+                self.update.last_attempt = Some(now);
+                self.start_update_check(ctx, false);
+            }
+            Some(wait) => ctx.request_repaint_after(std::time::Duration::from_secs(wait)),
+            None => {}
         }
     }
 
@@ -311,8 +334,8 @@ impl CadenceApp {
             theme::hint(
                 ui,
                 pal,
-                "At most once a day, Cadence asks github.com for the newest version number. \
-                 Nothing about you or your songs is sent.",
+                "When it opens and once a day while open, Cadence asks github.com for the \
+                 newest version number. Nothing about you or your songs is sent.",
             );
             dialogs::button_row(ui, |ui| match &phase {
                 Phase::Available(r) => {

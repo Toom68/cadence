@@ -857,7 +857,7 @@ impl CadenceApp {
                     "Write drum patterns and melodies, arrange them across instrument tracks, \
                      mix with per-track effects and export WAV or MIDI. Everything is written \
                      in Rust and runs fully offline — no account, no cloud. The only network \
-                     use is the optional daily update check (Help → Check for Updates).",
+                     use is the optional update check (Help → Check for Updates).",
                 )
                 .color(pal.text_dim),
             );

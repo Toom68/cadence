@@ -8,11 +8,12 @@ export WAV or MIDI. Everything runs offline — no account, no cloud.
 Updates
 -------
 Installed copies (the Windows setup, or Cadence.app in your Applications
-folder) check for a new version at most once a day and show an update
-button in the status bar. Each update is checked against Cadence's release
-signature before it installs. Help > Check for Updates... checks right away
-and has the switch to turn the daily check off; it only asks github.com for
-the newest version number. The portable Windows zip doesn't update itself —
+folder) check for a new version each time they open (and once a day while
+left open) and show an update button in the status bar. Each update is
+checked against Cadence's release signature before it installs.
+Help > Check for Updates... checks right away and has the switch to turn
+the automatic check off; it only asks github.com for the newest version
+number. The portable Windows zip doesn't update itself —
 use the setup from the download page instead.
 
 THIS BUILD IS UNSIGNED
