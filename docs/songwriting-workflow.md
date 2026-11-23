@@ -56,7 +56,7 @@ Selecting a track opens its **pattern editor**. A track can hold many patterns; 
 - The built-in kit has eight voices — **Kick, Snare, Closed hat, Open hat, Clap, Low tom, Crash, Ride** — × sixteenth-note steps (drum-kit presets can carry up to 32 pieces).
 - Click or drag across the rows to paint hits; hits carry the current velocity. **Shift+click** cycles accent levels (100% → 70% → 40%); **right-click** erases.
 - Row labels show the piece name, the computer key that plays it, and a preview icon on hover.
-- The **Fill** button lays down a four-on-the-floor kick pattern as a starting point.
+- The **Fill ▾** menu stamps a named groove into the current pattern: **Four on the floor**, **Backbeat rock**, **Half-time**, **Boom bap**, **Trap hats** (16ths rolling into 32nds), **House** (offbeat open hats), **Reggaeton / dembow**; these replace the pattern's hits and repeat on every bar of the pattern. **Fill last bar** rewrites only the second half of the last bar with a snare/tom fill, and **Kick on every beat** adds kicks without touching anything else. Pieces are matched to the track's kit rows by General-MIDI pitch, then by row name (a clap falls back to the snare, toms to each other); pieces the kit lacks are skipped and named in the status bar. Hit velocities follow the toolbar's velocity, and each stamp is one undo step.
 - The strip under the grid is a velocity lane — drag it to shape hit loudness.
 
 ### Melodic tracks — piano roll

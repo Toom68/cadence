@@ -4061,3 +4061,22 @@ fn bassline_from_chords_follows_the_lane_and_undoes_in_one_step() {
     ui.app.undo();
     assert_eq!(ui.app.project, before);
 }
+
+#[test]
+fn grooves_map_onto_a_kit_preset_and_name_what_it_lacks() {
+    let mut ui = Ui::new(CadenceApp::headless(Project::empty()));
+    ui.step();
+    ui.app.add_preset_track(&test_kit_preset());
+    let t = ui.app.project.tracks.last().unwrap();
+    let (tid, pid) = (t.id, t.patterns[0].id);
+    ui.app.select_track(tid);
+    ui.step();
+    ui.app.stamp_groove(tid, pid, ops::Groove::House);
+    let pat = &ui.app.project.tracks.last().unwrap().patterns[0];
+    let on = |pitch: u8| pat.notes.iter().filter(|n| n.pitch == pitch).count();
+    assert_eq!(on(60), 4, "the kit's Kick row (pitch 60, matched by name)");
+    assert_eq!(on(39), 2, "claps on 2 and 4");
+    assert_eq!(on(42), 8, "soft 16th hats");
+    let status = ui.app.status.as_ref().unwrap();
+    assert!(status.text.contains("no open hat"), "{}", status.text);
+}

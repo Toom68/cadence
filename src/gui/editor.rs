@@ -449,7 +449,8 @@ enum ToolAction {
     Humanize,
     ScaleVelocity(f32),
     DeleteNotes,
-    Fill,
+    /// Stamp a named groove from the drum toolbar's Fill menu.
+    Groove(ops::Groove),
     ScaleSnap,
     ScaleHighlight,
 }
@@ -1697,20 +1698,7 @@ impl CadenceApp {
             ToolAction::Humanize => self.humanize_notes(tid, pid),
             ToolAction::ScaleVelocity(gain) => self.scale_velocities(tid, pid, gain),
             ToolAction::DeleteNotes => self.delete_selection(),
-            ToolAction::Fill => {
-                let pitch = self
-                    .track_ref(tid)
-                    .and_then(|t| t.drum_rows().first().map(|(p, _)| *p))
-                    .unwrap_or(36);
-                let vel = self.editor.velocity;
-                self.edit("Fill pattern", None, |p| {
-                    if let Some(pat) = ops::pattern_mut(p, tid, pid) {
-                        for s in (0..pat.length).step_by(4) {
-                            ops::set_drum(pat, pitch, s, true, vel);
-                        }
-                    }
-                });
-            }
+            ToolAction::Groove(groove) => self.stamp_groove(tid, pid, groove),
             ToolAction::ScaleSnap | ToolAction::ScaleHighlight => {}
         }
     }
@@ -3903,6 +3891,54 @@ impl CadenceApp {
 
     // ----- drum grid --------------------------------------------------------
 
+    /// Stamps `groove` into drum pattern `pid` of track `tid`, mapping its
+    /// pieces onto the track's kit rows (pieces the kit lacks are skipped
+    /// and named in the status line). Hit velocities follow the toolbar
+    /// velocity. One undo step.
+    pub(super) fn stamp_groove(&mut self, tid: u64, pid: u64, groove: ops::Groove) {
+        let Some(track) = self.track_ref(tid) else {
+            return;
+        };
+        let rows: Vec<(u8, String)> = track
+            .drum_rows()
+            .into_iter()
+            .map(|(p, n)| (p, n.to_string()))
+            .collect();
+        let rows: Vec<(u8, &str)> = rows.iter().map(|(p, n)| (*p, n.as_str())).collect();
+        let velocity = self.editor.velocity;
+        let mut out = ops::GrooveOutcome::default();
+        self.edit(groove.label(), None, |p| {
+            if let Some(pat) = ops::pattern_mut(p, tid, pid) {
+                out = ops::stamp_groove(pat, &rows, groove, velocity);
+            }
+        });
+        // Replaced hits may have been selected.
+        if let Some(pat) = self.pat_ref(tid, pid) {
+            let live: BTreeSet<u64> = pat.notes.iter().map(|n| n.id).collect();
+            self.sel.notes.retain(|id| live.contains(id));
+        }
+        if out.hits == 0 {
+            self.set_status(
+                StatusKind::Warning,
+                format!("This kit has none of the pieces {} needs.", groove.label()),
+            );
+            return;
+        }
+        let mut text = format!(
+            "{} — {} hit{}.",
+            groove.label(),
+            out.hits,
+            sidebar::plural(out.hits)
+        );
+        if !out.missing.is_empty() {
+            text.push_str(&format!(
+                " This kit has no {}, so those were skipped.",
+                out.missing.join(" or ")
+            ));
+        }
+        self.set_status(StatusKind::Success, text);
+    }
+
     /// Step-sequencer toolbar: velocity, Fill, the shared Edit group, an
     /// off-kit warning when imported notes miss the kit rows, and the
     /// selection on the right.
@@ -3943,15 +3979,28 @@ impl CadenceApp {
         let out = toolbar_row(ui, pal, ("drum-tools", tid), |tb| {
             velocity_item(tb, pal, &mut ed.velocity);
             tb.separator();
-            if tb
-                .button(
+            // Fill opens the groove menu: a popup under the row button, or
+            // a submenu when the button sits in the toolbar's ⋯ overflow.
+            if tb.in_menu() {
+                tb.item(0.0, |ui| {
+                    ui.menu_button("Fill", |ui| {
+                        if let Some(g) = groove_menu(ui) {
+                            act = Some(ToolAction::Groove(g));
+                        }
+                    })
+                });
+            } else {
+                let resp = tb.button(
                     Some(theme::Icon::Wand),
                     "Fill",
-                    "Four-on-the-floor on the top row (the kick for the built-in kit)",
-                )
-                .clicked()
-            {
-                act = Some(ToolAction::Fill);
+                    "Stamp a groove into this pattern — four on the floor, rock, boom bap, \
+                     trap, house, dembow, a fill…",
+                );
+                egui::Popup::menu(&resp).show(|ui| {
+                    if let Some(g) = groove_menu(ui) {
+                        act = Some(ToolAction::Groove(g));
+                    }
+                });
             }
             tb.separator();
             if let Some(a) = note_edit_items(tb, targets, &quantize_tip) {
@@ -4566,6 +4615,27 @@ pub(super) fn lane_part_menu(ui: &mut Ui, blocker: Option<&'static str>) -> Opti
         .response
         .on_disabled_hover_text(why);
     });
+    pick
+}
+
+/// The drum toolbar's Fill menu: the named grooves (which replace the
+/// pattern), then the additive tools. Returns the pick.
+fn groove_menu(ui: &mut Ui) -> Option<ops::Groove> {
+    ui.set_min_width(200.0);
+    let mut pick = None;
+    for g in ops::Groove::ALL {
+        if g == ops::Groove::FillLastBar {
+            ui.separator();
+        }
+        let tip = if g.replaces() {
+            format!("{} · replaces this pattern's hits", g.hint())
+        } else {
+            g.hint().to_string()
+        };
+        if ui.button(g.label()).on_hover_text(tip).clicked() {
+            pick = Some(g);
+        }
+    }
     pick
 }
 
@@ -5456,6 +5526,48 @@ mod tests {
             }
             f.app.editor.chord_open = false;
         }
+    }
+
+    #[test]
+    fn fill_button_opens_the_groove_menu() {
+        let mut f = Frames::demo(1360.0, 860.0);
+        f.step();
+        f.select(0);
+        f.steps(2);
+        assert!(!egui::Popup::is_any_open(&f.ctx));
+        // Velocity, then Fill.
+        let fill = f.app.editor.layout.tools.1[1];
+        f.click(fill.center());
+        f.steps(2);
+        assert!(egui::Popup::is_any_open(&f.ctx), "Fill opens its menu");
+    }
+
+    #[test]
+    fn grooves_stamp_onto_the_kit_rows_as_one_undo_step() {
+        let (mut app, tid, pid) = app_with(Instrument::Drums, &[(51, 3.0, 1.0, 0.8)]);
+        app.stamp_groove(tid, pid, ops::Groove::BackbeatRock);
+        let pat = pattern_of(&app, tid, pid);
+        let on = |pitch: u8| {
+            pat.notes
+                .iter()
+                .filter(|n| n.pitch == pitch)
+                .map(|n| n.start)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(on(36), vec![0.0, 8.0, 10.0]);
+        assert_eq!(on(38), vec![4.0, 12.0]);
+        assert_eq!(on(42).len(), 8);
+        assert!(on(51).is_empty(), "a groove replaces the pattern");
+        assert_eq!(app.history.undo_label(), Some("Backbeat rock"));
+        assert!(status_text(&app).starts_with("Backbeat rock — 13 hits"));
+        app.undo();
+        assert_eq!(pattern_of(&app, tid, pid).notes.len(), 1);
+        // "Kick on every beat" keeps the old Fill: kicks added, nothing removed.
+        app.stamp_groove(tid, pid, ops::Groove::KickEveryBeat);
+        assert_eq!(pattern_of(&app, tid, pid).notes.len(), 5);
+        // The built-in kit has every piece House needs.
+        app.stamp_groove(tid, pid, ops::Groove::House);
+        assert!(!status_text(&app).contains("skipped"));
     }
 
     #[test]

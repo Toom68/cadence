@@ -1571,7 +1571,10 @@ const EDITOR_SECTIONS: &[Section] = &[
             ("Accent: 100 → 70 → 40%", Mouse("{shift}+click a hit")),
             ("Erase", Mouse("Right-click / right-drag")),
             ("Hear a piece", Mouse("Click its name")),
-            ("Four on the floor on the top row", Mouse("Click Fill")),
+            (
+                "Stamp a groove (rock, house, trap…) or a fill",
+                Mouse("Click Fill"),
+            ),
         ],
     },
     Section {

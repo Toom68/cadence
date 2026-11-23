@@ -530,8 +530,8 @@ pub enum Groove {
 type GrooveLine = (DrumPiece, &'static str);
 
 impl Groove {
+    /// Menu order: the full grooves, then the additive tools.
     pub const ALL: [Groove; 9] = [
-        Groove::KickEveryBeat,
         Groove::FourOnTheFloor,
         Groove::BackbeatRock,
         Groove::HalfTime,
@@ -540,6 +540,7 @@ impl Groove {
         Groove::House,
         Groove::Dembow,
         Groove::FillLastBar,
+        Groove::KickEveryBeat,
     ];
 
     pub fn label(self) -> &'static str {
