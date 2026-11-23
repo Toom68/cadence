@@ -1735,6 +1735,348 @@ pub fn duplicate_clip_groups_after(
     copy_mixed_clip_group(project, originals, audio, (end - start).max(1.0))
 }
 
+// ----- moving and copying clips between tracks -------------------------------
+
+/// What a lane plays, deciding where a clip may land: pattern clips only
+/// cross between lanes of the same kind (a drum beat on a piano roll would
+/// play as low notes, a melody on a kit as random drums), imported-WAV clips
+/// only between audio lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneKind {
+    /// A drum-grid track (built-in kit or kit preset on a Drums track).
+    Drums,
+    /// A piano-roll track.
+    Melodic,
+    /// An imported-WAV lane.
+    Audio,
+}
+
+/// The [`LaneKind`] of `track`.
+pub fn lane_kind(track: &Track) -> LaneKind {
+    if track.audio {
+        LaneKind::Audio
+    } else if track.shows_drum_grid() {
+        LaneKind::Drums
+    } else {
+        LaneKind::Melodic
+    }
+}
+
+/// Index of the track `dlane` rows below `track_id` (above for `dlane < 0`).
+fn offset_track_index(project: &Project, track_id: u64, dlane: i32) -> Option<usize> {
+    let i = track_index(project, track_id)? as i64 + i64::from(dlane);
+    (0..project.tracks.len() as i64)
+        .contains(&i)
+        .then_some(i as usize)
+}
+
+/// Whether `pattern` on `track` already holds exactly `src`'s notes and
+/// length — a cross-track copy reuses it instead of piling up duplicates.
+fn same_pattern_content(a: &Pattern, b: &Pattern) -> bool {
+    a.length == b.length
+        && a.notes.len() == b.notes.len()
+        && a.notes.iter().zip(&b.notes).all(|(x, y)| {
+            x.pitch == y.pitch
+                && x.start == y.start
+                && x.duration == y.duration
+                && x.velocity == y.velocity
+        })
+}
+
+/// Checks a lane shift of a clip group by `dlane` rows without touching the
+/// project and returns the `(source, destination)` track-id pairs. `None`
+/// when any clip would leave the track list, land on a lane of another
+/// [`LaneKind`], or push a destination past its clip/pattern caps — or, for
+/// copies, the song past [`MAX_SONG_EVENTS`]. `moving` clips leave their
+/// source tracks; copies stay.
+fn plan_lane_shift(
+    project: &Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dlane: i32,
+    moving: bool,
+) -> Option<Vec<(u64, u64)>> {
+    let mut map: Vec<(u64, u64)> = Vec::new();
+    let mut dest = |src: u64| -> Option<u64> {
+        if let Some(&(_, d)) = map.iter().find(|(s, _)| *s == src) {
+            return Some(d);
+        }
+        let d = project.tracks[offset_track_index(project, src, dlane)?].id;
+        map.push((src, d));
+        Some(d)
+    };
+    for (src, clip) in originals {
+        let st = track(project, *src)?;
+        let dt = track(project, dest(*src)?)?;
+        if st.audio || dt.audio || lane_kind(st) != lane_kind(dt) {
+            return None;
+        }
+        pattern(st, clip.pattern_id)?;
+        if moving && !st.clips.iter().any(|c| c.id == clip.id) {
+            return None;
+        }
+    }
+    for (src, clip) in audio {
+        let st = track(project, *src)?;
+        let dt = track(project, dest(*src)?)?;
+        if !dt.audio || (moving && audio_clip(st, clip.id).is_none()) {
+            return None;
+        }
+    }
+    let dst_of = |src: u64| map.iter().find(|(s, _)| *s == src).map(|(_, d)| *d);
+    let mut dests: Vec<u64> = map.iter().map(|(_, d)| *d).collect();
+    dests.sort_unstable();
+    dests.dedup();
+    for d in dests {
+        let dt = track(project, d)?;
+        let arriving = originals
+            .iter()
+            .filter(|(s, _)| dst_of(*s) == Some(d))
+            .count();
+        let leaving = if moving {
+            originals.iter().filter(|(s, _)| *s == d).count()
+        } else {
+            0
+        };
+        let a_arriving = audio.iter().filter(|(s, _)| dst_of(*s) == Some(d)).count();
+        let a_leaving = if moving {
+            audio.iter().filter(|(s, _)| *s == d).count()
+        } else {
+            0
+        };
+        if (dt.clips.len() + arriving).saturating_sub(leaving) > MAX_CLIPS_PER_TRACK
+            || (dt.audio_clips.len() + a_arriving).saturating_sub(a_leaving)
+                > MAX_AUDIO_CLIPS_PER_TRACK
+        {
+            return None;
+        }
+        // Every distinct source pattern arriving here may need a slot
+        // (copies can reuse an identical one). Patterns a move takes away
+        // are not credited back — a conservative bound.
+        let mut groups: Vec<(u64, u64)> = Vec::new();
+        for (s, c) in originals.iter().filter(|(s, _)| dst_of(*s) == Some(d)) {
+            if !groups.contains(&(*s, c.pattern_id)) {
+                groups.push((*s, c.pattern_id));
+            }
+        }
+        let new = groups
+            .iter()
+            .filter(|(s, pid)| {
+                moving
+                    || !track(project, *s)
+                        .and_then(|st| pattern(st, *pid))
+                        .is_some_and(|sp| dt.patterns.iter().any(|p| same_pattern_content(p, sp)))
+            })
+            .count();
+        if dt.patterns.len() + new > MAX_PATTERNS_PER_TRACK {
+            return None;
+        }
+    }
+    if !moving && group_events(project, originals) > event_budget(project) {
+        return None;
+    }
+    Some(map)
+}
+
+/// Whether [`move_clip_group_lanes`] (`moving`) or [`copy_clip_group_lanes`]
+/// can shift this group `dlane` rows. Always true for `dlane == 0`.
+pub fn can_shift_clip_lanes(
+    project: &Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dlane: i32,
+    moving: bool,
+) -> bool {
+    dlane == 0 || plan_lane_shift(project, originals, audio, dlane, moving).is_some()
+}
+
+/// `pattern`'s name made unique among `track`'s patterns (and capped).
+fn pattern_name_on(track: &Track, name: &str) -> String {
+    unique_name(name, track.patterns.iter().map(|p| p.name.clone()))
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect()
+}
+
+/// Moves a clip group by `dstep` steps and `dlane` rows in one go — the
+/// arranger's clip drag. Clips keep their ids. Pattern ids are per track,
+/// so each source pattern travels with its clips: it is *moved* to the
+/// destination when no clip left behind still plays it, otherwise the
+/// destination gets its own copy. All or nothing: `false`, leaving the
+/// project untouched, when [`can_shift_clip_lanes`] refuses. `originals`
+/// must describe where the clips sit in `project` now; their starts are
+/// the reference for `dstep` (clamped like [`mixed_group_delta`]).
+pub fn move_clip_group_lanes(
+    project: &mut Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dstep: f64,
+    dlane: i32,
+) -> bool {
+    let dstep = mixed_group_delta(project, originals, audio, dstep);
+    if dlane == 0 {
+        let a = move_clip_group(project, originals, dstep);
+        let b = move_audio_clip_group(project, audio, dstep);
+        return a || b;
+    }
+    let Some(map) = plan_lane_shift(project, originals, audio, dlane, true) else {
+        return false;
+    };
+    let dst_of = |src: u64| map.iter().find(|(s, _)| *s == src).map_or(src, |(_, d)| *d);
+    let moved: BTreeSet<u64> = originals.iter().map(|(_, c)| c.id).collect();
+    // Patterns first, while every moving clip still sits on its source.
+    let mut pmap: Vec<((u64, u64), u64)> = Vec::new();
+    for (src, clip) in originals {
+        let key = (*src, clip.pattern_id);
+        if pmap.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        let dst = dst_of(*src);
+        let Some(st) = track_mut(project, *src) else {
+            continue;
+        };
+        let shared = st
+            .clips
+            .iter()
+            .any(|c| c.pattern_id == clip.pattern_id && !moved.contains(&c.id));
+        let pat = if shared {
+            pattern(st, clip.pattern_id).map(|p| p.duplicate(p.name.clone()))
+        } else {
+            st.patterns
+                .iter()
+                .position(|p| p.id == clip.pattern_id)
+                .map(|i| st.patterns.remove(i))
+        };
+        let (Some(mut pat), Some(dt)) = (pat, track_mut(project, dst)) else {
+            continue;
+        };
+        pat.name = pattern_name_on(dt, &pat.name);
+        if dt.patterns.iter().any(|p| p.id == pat.id) {
+            pat.id = next_id();
+        }
+        pmap.push((key, pat.id));
+        dt.patterns.push(pat);
+    }
+    for (src, original) in originals {
+        let Some(st) = track_mut(project, *src) else {
+            continue;
+        };
+        let Some(i) = st.clips.iter().position(|c| c.id == original.id) else {
+            continue;
+        };
+        let mut clip = st.clips.remove(i);
+        if let Some((_, pid)) = pmap.iter().find(|(k, _)| *k == (*src, original.pattern_id)) {
+            clip.pattern_id = *pid;
+        }
+        clip.start = original.start + dstep;
+        if let Some(dt) = track_mut(project, dst_of(*src)) {
+            dt.clips.push(clip);
+        }
+    }
+    for (src, original) in audio {
+        let Some(st) = track_mut(project, *src) else {
+            continue;
+        };
+        let Some(i) = st.audio_clips.iter().position(|c| c.id == original.id) else {
+            continue;
+        };
+        let mut clip = st.audio_clips.remove(i);
+        clip.start = original.start + dstep;
+        if let Some(dt) = track_mut(project, dst_of(*src)) {
+            dt.audio_clips.push(clip);
+        }
+    }
+    fit_bars_to_content(project);
+    true
+}
+
+/// Copies a clip group `dstep` steps and `dlane` rows away — paste onto
+/// another track. Each copy gets a fresh id; a pattern crossing to another
+/// track reuses an identical pattern already there, else arrives as a copy
+/// (so repeated pastes don't pile up duplicates). `dlane == 0` is plain
+/// [`copy_mixed_clip_group`]. All or nothing, `None` when
+/// [`can_shift_clip_lanes`] refuses; returns the new ids (pattern clips
+/// first, then audio clips).
+pub fn copy_clip_group_lanes(
+    project: &mut Project,
+    originals: &[(u64, Clip)],
+    audio: &[(u64, AudioClip)],
+    dstep: f64,
+    dlane: i32,
+) -> Option<Vec<u64>> {
+    if dlane == 0 {
+        return copy_mixed_clip_group(project, originals, audio, dstep);
+    }
+    if originals.is_empty() && audio.is_empty() {
+        return None;
+    }
+    let dstep = mixed_group_delta(project, originals, audio, dstep);
+    let map = plan_lane_shift(project, originals, audio, dlane, false)?;
+    let dst_of = |src: u64| map.iter().find(|(s, _)| *s == src).map_or(src, |(_, d)| *d);
+    let mut pmap: Vec<((u64, u64), u64)> = Vec::new();
+    for (src, clip) in originals {
+        let key = (*src, clip.pattern_id);
+        if pmap.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        let sp = track(project, *src).and_then(|t| pattern(t, clip.pattern_id))?;
+        let dt = track(project, dst_of(*src))?;
+        let pid = match dt.patterns.iter().find(|p| same_pattern_content(p, sp)) {
+            Some(p) => p.id,
+            None => {
+                let copy = sp.duplicate(pattern_name_on(dt, &sp.name));
+                let id = copy.id;
+                track_mut(project, dst_of(*src))?.patterns.push(copy);
+                id
+            }
+        };
+        pmap.push((key, pid));
+    }
+    let mut ids = Vec::with_capacity(originals.len() + audio.len());
+    for (src, original) in originals {
+        let pid = pmap
+            .iter()
+            .find(|(k, _)| *k == (*src, original.pattern_id))
+            .map(|(_, p)| *p)?;
+        let dt = track_mut(project, dst_of(*src))?;
+        let id = next_id();
+        let mut clip = original.clone();
+        clip.id = id;
+        clip.pattern_id = pid;
+        clip.start = original.start + dstep;
+        dt.clips.push(clip);
+        ids.push(id);
+    }
+    for (src, original) in audio {
+        let dt = track_mut(project, dst_of(*src))?;
+        let id = next_id();
+        let mut clip = original.clone();
+        clip.id = id;
+        clip.start = original.start + dstep;
+        dt.audio_clips.push(clip);
+        ids.push(id);
+    }
+    fit_bars_to_content(project);
+    Some(ids)
+}
+
+/// Moves a track so it lands in insertion `slot` (`0..=tracks.len()`, the
+/// gap before track `slot` in the current order) — the header drag. `false`
+/// when the track is missing or the slot leaves it where it is.
+pub fn move_track_to(project: &mut Project, track_id: u64, slot: usize) -> bool {
+    let Some(idx) = track_index(project, track_id) else {
+        return false;
+    };
+    let slot = slot.min(project.tracks.len());
+    let target = if slot > idx { slot - 1 } else { slot };
+    if target == idx {
+        return false;
+    }
+    let t = project.tracks.remove(idx);
+    project.tracks.insert(target, t);
+    true
+}
+
 /// Gives a clip its own copy of its pattern so edits don't affect other clips.
 pub fn make_clip_unique(project: &mut Project, track_id: u64, clip_id: u64) -> Option<u64> {
     let t = track_mut(project, track_id)?;
@@ -5062,6 +5404,145 @@ mod tests {
         assert!(add_chord_event(&mut p, 0.0, 0, ChordQuality::Major).is_none());
         assert_eq!(p.chord_events.len(), MAX_CHORD_EVENTS);
         p.validate().unwrap();
+    }
+
+    // ----- clips across tracks, track reorder --------------------------------
+
+    /// Two drum tracks, one piano and two audio lanes; every pattern holds a
+    /// note so event counts are meaningful.
+    fn lanes_project() -> Project {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        for inst in [Instrument::Drums, Instrument::Drums, Instrument::Piano] {
+            let id = add_track(&mut p, inst).unwrap();
+            let t = track_mut(&mut p, id).unwrap();
+            t.patterns[0].notes.push(Note::new(36, 0.0, 1.0, 0.8));
+        }
+        for _ in 0..2 {
+            add_audio_track(&mut p).unwrap();
+        }
+        let a = p.tracks[3].id;
+        add_audio_clip(&mut p, a, "abc.wav", "Loop", 16.0, 8.0).unwrap();
+        p
+    }
+
+    #[test]
+    fn moving_a_clip_to_another_track_moves_its_unshared_pattern() {
+        let mut p = lanes_project();
+        let (t0, t1) = (p.tracks[0].id, p.tracks[1].id);
+        let clip = p.tracks[0].clips[0].clone();
+        let pid = clip.pattern_id;
+        let originals = vec![(t0, clip.clone())];
+        assert!(can_shift_clip_lanes(&p, &originals, &[], 1, true));
+        assert!(move_clip_group_lanes(&mut p, &originals, &[], 16.0, 1));
+        assert!(p.tracks[0].clips.is_empty());
+        assert!(p.tracks[0].pattern(pid).is_none(), "nothing left uses it");
+        let t = track(&p, t1).unwrap();
+        let moved = t.clips.iter().find(|c| c.id == clip.id).unwrap();
+        assert_eq!(moved.start, 16.0);
+        let pat = t.pattern(moved.pattern_id).unwrap();
+        assert_eq!(pat.notes.len(), 1);
+        assert_ne!(pat.name, t.patterns[0].name, "unique on the target");
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn moving_a_clip_copies_a_pattern_other_clips_still_play() {
+        let mut p = lanes_project();
+        let t0 = p.tracks[0].id;
+        let pid = p.tracks[0].clips[0].pattern_id;
+        let second = add_clip(&mut p, t0, pid, 32.0).unwrap();
+        let originals = collect_clips(&p, &BTreeSet::from([second]));
+        let events = song_events(&p);
+        assert!(move_clip_group_lanes(&mut p, &originals, &[], 0.0, 1));
+        assert!(p.tracks[0].pattern(pid).is_some(), "the source keeps it");
+        let moved = p.tracks[1].clips.iter().find(|c| c.id == second).unwrap();
+        assert_ne!(moved.pattern_id, pid, "the target plays its own copy");
+        assert_eq!(song_events(&p), events, "a move adds no notes");
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn lane_moves_refuse_other_lane_kinds_and_leave_the_project_alone() {
+        let p = lanes_project();
+        let drum = vec![(p.tracks[1].id, p.tracks[1].clips[0].clone())];
+        let audio = vec![(p.tracks[3].id, p.tracks[3].audio_clips[0].clone())];
+        // Drums → piano, drums → audio, past either end.
+        for d in [1, 2, -2, 9] {
+            assert!(!can_shift_clip_lanes(&p, &drum, &[], d, true), "dlane {d}");
+            let mut q = p.clone();
+            assert!(!move_clip_group_lanes(&mut q, &drum, &[], 0.0, d));
+            assert_eq!(q, p);
+        }
+        assert!(can_shift_clip_lanes(&p, &drum, &[], -1, true));
+        // Audio clips only land on audio lanes.
+        assert!(!can_shift_clip_lanes(&p, &[], &audio, -1, true));
+        assert!(can_shift_clip_lanes(&p, &[], &audio, 1, true));
+        // A mixed group needs every member to fit.
+        assert!(!can_shift_clip_lanes(&p, &drum, &audio, 1, true));
+        assert_eq!(lane_kind(&p.tracks[0]), LaneKind::Drums);
+        assert_eq!(lane_kind(&p.tracks[2]), LaneKind::Melodic);
+        assert_eq!(lane_kind(&p.tracks[3]), LaneKind::Audio);
+    }
+
+    #[test]
+    fn audio_clips_move_between_audio_lanes() {
+        let mut p = lanes_project();
+        let audio = vec![(p.tracks[3].id, p.tracks[3].audio_clips[0].clone())];
+        assert!(move_clip_group_lanes(&mut p, &[], &audio, -16.0, 1));
+        assert!(p.tracks[3].audio_clips.is_empty());
+        assert_eq!(p.tracks[4].audio_clips[0].id, audio[0].1.id);
+        assert_eq!(p.tracks[4].audio_clips[0].start, 0.0);
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn cross_track_copies_reuse_an_identical_pattern() {
+        let mut p = lanes_project();
+        p.tracks[0].patterns[0]
+            .notes
+            .push(Note::new(38, 4.0, 1.0, 0.8));
+        let originals = vec![(p.tracks[0].id, p.tracks[0].clips[0].clone())];
+        let events = song_events(&p);
+        let a = copy_clip_group_lanes(&mut p, &originals, &[], 16.0, 1).unwrap();
+        let patterns = p.tracks[1].patterns.len();
+        assert_eq!(patterns, 2, "first paste copies the pattern");
+        let b = copy_clip_group_lanes(&mut p, &originals, &[], 32.0, 1).unwrap();
+        assert_eq!(
+            p.tracks[1].patterns.len(),
+            patterns,
+            "second paste reuses it"
+        );
+        let pid = |id: u64| {
+            p.tracks[1]
+                .clips
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .pattern_id
+        };
+        assert_eq!(pid(a[0]), pid(b[0]));
+        assert_eq!(song_events(&p), events + 4);
+        assert_eq!(p.tracks[0].clips.len(), 1, "the source is untouched");
+        p.validate().unwrap();
+        // Incompatible targets refuse the whole paste.
+        assert!(copy_clip_group_lanes(&mut p, &originals, &[], 0.0, 2).is_none());
+    }
+
+    #[test]
+    fn move_track_to_uses_insertion_slots() {
+        let mut p = lanes_project();
+        let ids: Vec<u64> = p.tracks.iter().map(|t| t.id).collect();
+        assert!(!move_track_to(&mut p, ids[1], 1), "the gap before itself");
+        assert!(!move_track_to(&mut p, ids[1], 2), "the gap after itself");
+        assert!(move_track_to(&mut p, ids[0], 3));
+        let now: Vec<u64> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(now, vec![ids[1], ids[2], ids[0], ids[3], ids[4]]);
+        assert!(move_track_to(&mut p, ids[4], 0));
+        assert_eq!(p.tracks[0].id, ids[4]);
+        assert!(move_track_to(&mut p, ids[4], 99), "clamped to the end");
+        assert_eq!(p.tracks.last().unwrap().id, ids[4]);
+        assert!(!move_track_to(&mut p, 12345, 0));
     }
 
     // ----- split_clip --------------------------------------------------------

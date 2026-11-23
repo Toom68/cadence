@@ -979,48 +979,18 @@ impl CadenceApp {
         );
     }
 
-    /// Pastes clip snapshots back onto their original tracks, shifted so the
-    /// group's left edge lands on the playhead (`copy_mixed_clip_group`
-    /// clamps the move inside the song like every other clip edit).
-    /// `audio` holds the imported-WAV snapshots; the new clips become the
-    /// selection.
+    /// Pastes clip snapshots with the group's left edge on the playhead.
+    /// While the arranger has focus and a track other than the clips' own
+    /// is selected, the topmost clip lands on that track (relative lanes
+    /// kept); otherwise the copies go back to their source tracks — see
+    /// [`Self::paste_clip_snapshots`].
     fn paste_clips(&mut self, originals: &[(u64, Clip)], audio: &[(u64, AudioClip)]) {
-        if originals.is_empty() && audio.is_empty() {
-            return;
-        }
-        // `copy_mixed_clip_group` checks clip limits atomically but pushes
-        // clips track by track — a track deleted since the copy would
-        // otherwise leave a partial paste behind. Refuse up front instead.
-        if originals
-            .iter()
-            .map(|(track_id, _)| *track_id)
-            .chain(audio.iter().map(|(track_id, _)| *track_id))
-            .any(|track_id| ops::track(&self.project, track_id).is_none())
-        {
-            self.set_status(
-                StatusKind::Warning,
-                "Could not paste clips — a track they were copied from is gone.",
-            );
-            return;
-        }
-        let min_start = originals
-            .iter()
-            .map(|(_, c)| c.start)
-            .chain(audio.iter().map(|(_, c)| c.start))
-            .fold(f64::INFINITY, f64::min);
-        let dstep = self.transport.position - min_start;
-        let mut new = None;
-        self.edit("Paste clips", None, |p| {
-            new = ops::copy_mixed_clip_group(p, originals, audio, dstep);
+        let target = self.sel.track.filter(|t| {
+            self.focus == Focus::Arranger
+                && !originals.iter().any(|(s, _)| s == t)
+                && !audio.iter().any(|(s, _)| s == t)
         });
-        match new {
-            Some(ids) => {
-                let primary = ids.first().copied();
-                let set: BTreeSet<u64> = ids.into_iter().collect();
-                self.set_clip_selection(set, primary);
-            }
-            None => self.clip_limit_status("paste clips"),
-        }
+        self.paste_clip_snapshots(originals, audio, self.transport.position, target);
     }
 
     /// Pastes a copied track as a new independent track appended at the end
