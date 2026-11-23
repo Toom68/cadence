@@ -199,7 +199,7 @@ impl PresetParams {
             hold: p.sample_hold.clamp(1, 64),
             gain: finite(p.gain, 0.9).clamp(0.0, 1.0),
             mono: p.monophonic,
-            vel_cutoff: finite(p.velocity_to_cutoff, DEFAULT_VELOCITY_TO_CUTOFF).clamp(0.0, 6.0),
+            vel_cutoff: finite(p.velocity_to_cutoff, 0.0).clamp(0.0, 6.0),
             spread: finite(p.spread, 0.0).clamp(0.0, 1.0),
             // Choke groups are a kit-piece concept: set by `KitParams::from_kit`.
             choke_group: 0,
@@ -2959,6 +2959,7 @@ mod tests {
             filter_cutoff: 1_500.0,
             bit_depth: 24,
             sample_hold: 1,
+            velocity_to_cutoff: crate::packs::EXPRESSIVE_VELOCITY_TO_CUTOFF,
             ..chip_preset()
         }
     }
@@ -3028,6 +3029,38 @@ mod tests {
             age: 1,
         });
         assert_eq!(v.cutoff, 1_500.0);
+    }
+
+    #[test]
+    fn legacy_preset_without_velocity_to_cutoff_keeps_its_cutoff() {
+        // Songs and packs saved before velocity → brightness existed omit the
+        // field; they must render exactly as before (cutoff never scaled).
+        let json = r#"{"id":"old.saw","name":"Old Saw","oscillators":[{"waveform":"saw"}],
+            "envelope":{"attack":0.002,"decay":0.2,"sustain":0.8,"release":0.1},
+            "filter_cutoff":1500,"bit_depth":24,"sample_hold":1}"#;
+        let legacy: InstrumentPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(legacy.velocity_to_cutoff, 0.0);
+        let mut v = Voice::new(SR);
+        v.start(&NoteStart {
+            sound: preset_sound(legacy.clone()),
+            strip: 0,
+            pitch: 48,
+            velocity: 0.4,
+            gate: 100,
+            from_song: true,
+            age: 1,
+        });
+        assert_eq!(v.cutoff, 1_500.0, "cutoff is unscaled at velocity 0.4");
+        // Identical render to an explicit "off".
+        let mut off = legacy.clone();
+        off.velocity_to_cutoff = 0.0;
+        let a = render_stereo(preset_sound(legacy), 48, 0.4, 0.4, 0.3);
+        let b = render_stereo(preset_sound(off), 48, 0.4, 0.4, 0.3);
+        assert_eq!(a, b);
+        // Saving never adds the field to old content.
+        let text = serde_json::to_string(&serde_json::from_str::<InstrumentPreset>(json).unwrap())
+            .unwrap();
+        assert!(!text.contains("velocity_to_cutoff"), "{text}");
     }
 
     /// Max error of reading a sampled sine (period `period` frames) at

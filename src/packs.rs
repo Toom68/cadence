@@ -94,10 +94,16 @@ pub const MAX_KIT_NAME_LEN: usize = 64;
 /// Highest kit-piece `choke_group` (0 = the piece never chokes or is choked).
 pub const MAX_CHOKE_GROUP: u8 = 16;
 
-/// Default `velocity_to_cutoff`: octaves of filter-cutoff swing across the
-/// full velocity range, centred on velocity 0.8 (where the cutoff is exactly
-/// `filter_cutoff`).
-pub const DEFAULT_VELOCITY_TO_CUTOFF: f32 = 2.0;
+/// Default `velocity_to_cutoff` when the field is missing: 0 (off), so songs
+/// and packs saved before velocity → brightness existed sound exactly as they
+/// did. New content opts in explicitly (see [`EXPRESSIVE_VELOCITY_TO_CUTOFF`]).
+pub const DEFAULT_VELOCITY_TO_CUTOFF: f32 = 0.0;
+
+/// Recommended `velocity_to_cutoff` for new filtered presets and kit voices:
+/// octaves of filter-cutoff swing across the full velocity range, centred on
+/// velocity 0.8 (where the cutoff is exactly `filter_cutoff`). The bundled
+/// packs and the `--new-pack` template set it explicitly.
+pub const EXPRESSIVE_VELOCITY_TO_CUTOFF: f32 = 2.0;
 
 /// Maximum *decoded* sample payload in bytes for a preset `sample` block.
 /// The clip is stored as base64 little-endian 16-bit mono PCM inside the
@@ -579,12 +585,10 @@ pub struct InstrumentPreset {
     /// `2^(velocity_to_cutoff * (velocity - 0.8))`, so velocity 0.8 plays
     /// exactly at `filter_cutoff`, harder notes open the filter and softer
     /// ones close it. Octaves per full velocity range, 0.0..=6.0 (0 = off,
-    /// default [`DEFAULT_VELOCITY_TO_CUTOFF`]). A fully open filter
+    /// the default when omitted so legacy content is unchanged; new presets
+    /// usually set [`EXPRESSIVE_VELOCITY_TO_CUTOFF`]). A fully open filter
     /// (`filter_cutoff` 20000) is never scaled.
-    #[serde(
-        default = "default_velocity_to_cutoff",
-        skip_serializing_if = "is_default_velocity_to_cutoff"
-    )]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub velocity_to_cutoff: f32,
     /// Stereo width 0.0..=1.0 (default 0 = mono, unchanged). Above 0 the
     /// voice renders a second, slightly detuned and phase-offset copy of its
@@ -635,12 +639,6 @@ pub struct InstrumentPreset {
 
 fn default_filter_cutoff() -> f32 {
     20_000.0
-}
-fn default_velocity_to_cutoff() -> f32 {
-    DEFAULT_VELOCITY_TO_CUTOFF
-}
-fn is_default_velocity_to_cutoff(value: &f32) -> bool {
-    *value == DEFAULT_VELOCITY_TO_CUTOFF
 }
 fn is_zero_f32(value: &f32) -> bool {
     *value == 0.0
@@ -710,10 +708,7 @@ pub struct KitVoice {
     #[serde(default = "default_gain")]
     pub gain: f32,
     /// Same as [`InstrumentPreset::velocity_to_cutoff`].
-    #[serde(
-        default = "default_velocity_to_cutoff",
-        skip_serializing_if = "is_default_velocity_to_cutoff"
-    )]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub velocity_to_cutoff: f32,
     /// Same as [`InstrumentPreset::spread`].
     #[serde(skip_serializing_if = "is_zero_f32")]
@@ -745,7 +740,7 @@ impl Default for KitVoice {
             bit_depth: default_bit_depth(),
             sample_hold: default_sample_hold(),
             gain: default_gain(),
-            velocity_to_cutoff: default_velocity_to_cutoff(),
+            velocity_to_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
             spread: 0.0,
             choke_group: 0,
             sample: None,
@@ -1369,7 +1364,7 @@ pub fn template_pack(id: &str, name: &str) -> Result<InstrumentPack, String> {
             sample_hold: 4,
             gain: 0.8,
             monophonic: false,
-            velocity_to_cutoff: DEFAULT_VELOCITY_TO_CUTOFF,
+            velocity_to_cutoff: EXPRESSIVE_VELOCITY_TO_CUTOFF,
             spread: 0.0,
             hidden: false,
             audition_note: 60,
@@ -2788,7 +2783,15 @@ mod tests {
             serde_json::from_str(r#"{"id":"a.b","name":"B","oscillators":[{}]}"#).unwrap();
         assert_eq!(minimal.velocity_to_cutoff, DEFAULT_VELOCITY_TO_CUTOFF);
         assert_eq!(minimal.spread, 0.0);
-        // Set: round-trips.
+        assert_eq!(
+            DEFAULT_VELOCITY_TO_CUTOFF, 0.0,
+            "legacy content stays unscaled"
+        );
+        // Set: round-trips (the recommended value too: only 0 is omitted).
+        let mut p = valid_preset();
+        p.velocity_to_cutoff = EXPRESSIVE_VELOCITY_TO_CUTOFF;
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(text.contains("\"velocity_to_cutoff\":2.0"), "{text}");
         let mut p = valid_preset();
         p.velocity_to_cutoff = 3.5;
         p.spread = 0.4;
@@ -2811,6 +2814,46 @@ mod tests {
             let err = validate_preset(&p).unwrap_err();
             assert!(err.contains(path), "{err}");
         }
+    }
+
+    #[test]
+    fn bundled_filtered_voices_opt_into_velocity_brightness() {
+        // The field defaults to off for legacy content, so the bundled packs
+        // set it explicitly wherever a filter is engaged.
+        let mut checked = 0;
+        for (name, text) in EMBEDDED_PACKS
+            .iter()
+            .copied()
+            .chain([("template", include_str!("../packs/template/pack.json"))])
+        {
+            let pack = parse_pack(text).unwrap();
+            for preset in &pack.instruments {
+                let voices: Vec<(f32, f32)> = match &preset.kit {
+                    Some(kit) => kit
+                        .pieces
+                        .iter()
+                        .map(|p| (p.voice.filter_cutoff, p.voice.velocity_to_cutoff))
+                        .collect(),
+                    None => vec![(preset.filter_cutoff, preset.velocity_to_cutoff)],
+                };
+                for (cutoff, amount) in voices {
+                    if cutoff < 20_000.0 {
+                        assert_eq!(
+                            amount, EXPRESSIVE_VELOCITY_TO_CUTOFF,
+                            "{name}: {}",
+                            preset.id
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
+        let starter = template_pack("my-pack", "").unwrap();
+        assert_eq!(
+            starter.instruments[0].velocity_to_cutoff,
+            EXPRESSIVE_VELOCITY_TO_CUTOFF
+        );
     }
 
     #[test]
