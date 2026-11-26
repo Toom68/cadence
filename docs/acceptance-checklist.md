@@ -38,6 +38,7 @@ Run these on a release build of the machine you ship. **Windows has had a first 
 - [ ] Piano roll click/drag-to-draw length, Alt+drag box-select / copy-drag, move/resize/erase, 1–6 note lengths, 0 / Shift+0 fit, Ghosts and Chord tones toggles, key-column audition, velocity lane, Note/Snap combos, Scale snap + Scale tint, Quantize/Humanize, Velocity ±10%, off-grid count in the Quantize tooltip.
 - [ ] Chords strip on melodic tracks (Diatonic / Borrowed / Progressions tabs, Type/Inversion/Bass/Strum); hidden on drum tracks.
 - [ ] Keyboard tab: piano glissando or drum pads; record (R or ●) writes notes into the pattern, live and step modes.
+- [ ] Held live notes: a computer key, mouse-held piano key or MIDI key (and sustain pedal) on a sustaining sound (Pad, Lead, an organ preset, a SoundFont strings program) keeps sounding while held and releases on key-up; switching track/tab, opening a dialog or clicking away from the window ends held computer/mouse notes.
 - [ ] Arranger: ruler four-strip interactions (loop drag, marker double-click/rename/drag, seek, chord lane); clip marquee/move/Alt-copy/edge-loop/corner-fades; header right-click menu incl. Show automation → click/draw VOL/PAN points; Import audio here on audio lanes; library cards drop as new tracks.
 - [ ] Shared navigation: wheel scrolls, Shift+wheel horizontal, ⌘/Ctrl+wheel zooms at pointer, Alt+wheel row/lane heights, middle-drag pans, trackpad pan.
 
