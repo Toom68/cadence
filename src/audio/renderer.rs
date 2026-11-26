@@ -23,8 +23,12 @@ use std::sync::Arc;
 pub const MAX_BLOCK: usize = 256;
 /// Voice pool size; the oldest/quietest voice is stolen beyond this.
 pub const MAX_VOICES: usize = 96;
-/// Strip used for auditioning notes from the editor.
+/// Strip used for auditioning notes from the editor (and for live notes).
 pub const PREVIEW_STRIP: usize = MAX_TRACKS;
+/// Most live keys held at once; one more releases the oldest held key.
+pub const MAX_LIVE_NOTES: usize = 32;
+/// Gate of a live note: it never elapses, only a live note-off ends it.
+pub(crate) const LIVE_GATE: u64 = u64::MAX;
 pub(crate) const STRIPS: usize = MAX_TRACKS + 1;
 /// Transport timing tolerance in steps.
 const EPS: f64 = 1e-9;
@@ -65,7 +69,35 @@ pub enum Command {
         velocity: f32,
         seconds: f64,
     },
+    /// A live key went down (computer keyboard, on-screen keys, MIDI
+    /// controller): `pitch` sounds with `params`' sound on the preview strip
+    /// and sustains until the matching [`Command::LiveNoteOff`]. `source`
+    /// tells input devices apart, so the same pitch held from two sources
+    /// sounds until both let go.
+    LiveNoteOn {
+        params: TrackParams,
+        pitch: u8,
+        velocity: f32,
+        source: u32,
+    },
+    /// The live key `source`/`pitch` went up: its note enters its release.
+    LiveNoteOff {
+        source: u32,
+        pitch: u8,
+    },
+    /// Releases every live note (focus loss, track switch, disconnect…).
+    AllLiveNotesOff,
     Metronome(bool),
+}
+
+/// One held live key (see [`Command::LiveNoteOn`]).
+#[derive(Clone, Copy, Debug)]
+struct LiveKey {
+    source: u32,
+    pitch: u8,
+    velocity: f32,
+    /// Press order, for stealing the oldest key and the mono fallback.
+    order: u64,
 }
 
 /// One mixer channel.
@@ -416,6 +448,12 @@ pub struct Renderer {
     /// Stereo scratch for rustysynth output (its `render` needs separate L/R).
     font_scratch_l: Vec<f32>,
     font_scratch_r: Vec<f32>,
+    /// Held live keys. Session state: never part of a song snapshot, never
+    /// touched by offline export (which sends no live commands).
+    live_keys: [Option<LiveKey>; MAX_LIVE_NOTES],
+    live_order: u64,
+    /// Sound and mix of the newest live key (mono fallback, track deletion).
+    live_params: Option<TrackParams>,
 }
 
 impl Renderer {
@@ -472,6 +510,9 @@ impl Renderer {
             font_bank: FontBank::new(sr, Arc::new(FontLibrary::empty())),
             font_scratch_l: vec![0.0; MAX_BLOCK],
             font_scratch_r: vec![0.0; MAX_BLOCK],
+            live_keys: [None; MAX_LIVE_NOTES],
+            live_order: 0,
+            live_params: None,
         }
     }
 
@@ -621,6 +662,23 @@ impl Renderer {
                 self.preview(params, pitch, velocity, seconds);
                 None
             }
+            Command::LiveNoteOn {
+                params,
+                pitch,
+                velocity,
+                source,
+            } => {
+                self.live_note_on(params, pitch, velocity, source);
+                None
+            }
+            Command::LiveNoteOff { source, pitch } => {
+                self.live_note_off(source, pitch);
+                None
+            }
+            Command::AllLiveNotesOff => {
+                self.all_live_notes_off();
+                None
+            }
             Command::Metronome(on) => {
                 self.metronome = on;
                 None
@@ -658,6 +716,13 @@ impl Renderer {
         }
         self.glue.set_amount(song.glue, snap);
         let old = std::mem::replace(&mut self.song, song);
+        // Live keys of a track that is gone (deleted, or another song
+        // loaded) must not hang waiting for a release nobody will send.
+        if let Some(live) = self.live_params {
+            if !self.song.tracks.iter().any(|t| t.id == live.id) {
+                self.all_live_notes_off();
+            }
+        }
         self.font_bank.retain_tracks(&self.song.tracks);
         self.resync();
         old
@@ -715,6 +780,7 @@ impl Renderer {
             v.active = false;
             v.held = false;
         }
+        self.live_keys = [None; MAX_LIVE_NOTES];
         self.font_bank.hard_reset();
         for s in &mut self.strips {
             s.reset();
@@ -842,6 +908,7 @@ impl Renderer {
         for v in &mut self.voices {
             v.held = false;
         }
+        self.live_keys = [None; MAX_LIVE_NOTES];
         if self.is_quiet() {
             self.hard_reset();
         } else {
@@ -849,8 +916,9 @@ impl Renderer {
         }
     }
 
-    /// Auditions a note on the dedicated preview strip with the given track's sound and mix.
-    pub fn preview(&mut self, params: TrackParams, pitch: u8, velocity: f32, seconds: f64) {
+    /// Points the preview strip at `params`' mix before an audition or a
+    /// live note.
+    fn arm_preview_strip(&mut self, params: &TrackParams) {
         if self.panic_left > 0 {
             self.hard_reset();
         }
@@ -864,9 +932,14 @@ impl Renderer {
         let preview = TrackParams {
             audible: true,
             bus: 0,
-            ..params
+            ..*params
         };
         self.strips[PREVIEW_STRIP].set(&preview, self.sr, snap);
+    }
+
+    /// Auditions a note on the dedicated preview strip with the given track's sound and mix.
+    pub fn preview(&mut self, params: TrackParams, pitch: u8, velocity: f32, seconds: f64) {
+        self.arm_preview_strip(&params);
         let secs = if seconds.is_finite() {
             seconds.clamp(0.02, 10.0)
         } else {
@@ -881,6 +954,121 @@ impl Renderer {
             gate,
             false,
         );
+    }
+
+    /// A live key went down: `pitch` plays with `params`' sound and mix on
+    /// the preview strip (like an audition, so a muted or bus-gated track
+    /// is still heard while played) and sustains — the envelope holds its
+    /// sustain stage — until [`Self::live_note_off`] for the same
+    /// `source`/`pitch`. Striking a held key again restarts it; beyond
+    /// [`MAX_LIVE_NOTES`] held keys the oldest is released. Bounded work:
+    /// one scan of the key table and the voice pool.
+    pub fn live_note_on(&mut self, params: TrackParams, pitch: u8, velocity: f32, source: u32) {
+        let pitch = pitch.min(127);
+        let velocity = if velocity.is_finite() {
+            velocity.clamp(0.0, 1.0)
+        } else {
+            0.8
+        };
+        self.arm_preview_strip(&params);
+        let same = self
+            .live_keys
+            .iter()
+            .position(|k| k.is_some_and(|k| k.source == source && k.pitch == pitch));
+        let slot = match same.or_else(|| self.live_keys.iter().position(Option::is_none)) {
+            Some(i) => i,
+            None => {
+                let oldest = (0..MAX_LIVE_NOTES)
+                    .min_by_key(|&i| self.live_keys[i].map_or(u64::MAX, |k| k.order))
+                    .unwrap_or(0);
+                if let Some(k) = self.live_keys[oldest].take() {
+                    if !self.live_pitch_held(k.pitch) {
+                        self.release_live_pitch(k.pitch, false);
+                    }
+                }
+                oldest
+            }
+        };
+        self.live_order += 1;
+        self.live_keys[slot] = Some(LiveKey {
+            source,
+            pitch,
+            velocity,
+            order: self.live_order,
+        });
+        self.live_params = Some(params);
+        self.note_on(PREVIEW_STRIP, &params, pitch, velocity, LIVE_GATE, false);
+    }
+
+    /// The live key `source`/`pitch` went up: its note releases unless
+    /// another source still holds the same pitch. On a mono (or glide)
+    /// sound the voice slides back to the newest key still held instead,
+    /// like a mono synth's last-note priority.
+    pub fn live_note_off(&mut self, source: u32, pitch: u8) {
+        let Some(i) = self
+            .live_keys
+            .iter()
+            .position(|k| k.is_some_and(|k| k.source == source && k.pitch == pitch))
+        else {
+            return;
+        };
+        self.live_keys[i] = None;
+        if !self.live_pitch_held(pitch) {
+            self.release_live_pitch(pitch, true);
+        }
+    }
+
+    /// Releases every live note (their natural release tails ring out).
+    pub fn all_live_notes_off(&mut self) {
+        self.live_keys = [None; MAX_LIVE_NOTES];
+        for v in self.voices.iter_mut().filter(|v| v.active && v.live) {
+            v.release();
+        }
+        self.font_bank.preview_live_all_off();
+    }
+
+    /// Live keys currently held.
+    #[cfg(test)]
+    pub fn live_notes(&self) -> usize {
+        self.live_keys.iter().flatten().count()
+    }
+
+    fn live_pitch_held(&self, pitch: u8) -> bool {
+        self.live_keys.iter().flatten().any(|k| k.pitch == pitch)
+    }
+
+    fn release_live_pitch(&mut self, pitch: u8, mono_fallback: bool) {
+        if let (true, Some(params)) = (mono_fallback, self.live_params) {
+            let glide = params.glide.clamp(0.0, MAX_GLIDE_SECONDS) > 0.0;
+            let mono = !matches!(params.sound, Sound::Font(_))
+                && (params.sound.is_mono() || (glide && !params.sound.is_drums()));
+            let sounding = self.voices.iter().any(|v| {
+                v.active && v.live && v.held && v.strip == PREVIEW_STRIP && v.pitch == pitch
+            });
+            let newest = self
+                .live_keys
+                .iter()
+                .flatten()
+                .max_by_key(|k| k.order)
+                .copied();
+            if let (true, true, Some(next)) = (mono, sounding, newest) {
+                self.note_on(
+                    PREVIEW_STRIP,
+                    &params,
+                    next.pitch,
+                    next.velocity,
+                    LIVE_GATE,
+                    false,
+                );
+                return;
+            }
+        }
+        for v in self.voices.iter_mut().filter(|v| {
+            v.active && v.live && v.held && v.strip == PREVIEW_STRIP && v.pitch == pitch
+        }) {
+            v.release();
+        }
+        self.font_bank.preview_live_off(pitch);
     }
 
     fn release_song_voices(&mut self) {
@@ -928,6 +1116,7 @@ impl Renderer {
             velocity,
             gate,
             from_song,
+            live: gate == LIVE_GATE && !from_song,
             age: self.age,
         };
         // Per-track glide (seconds, 0 = off): on melodic sounds the newest
@@ -974,6 +1163,7 @@ impl Renderer {
                 }
                 v.age = self.age;
                 v.from_song = from_song;
+                v.live = start.live;
                 for other in self
                     .voices
                     .iter_mut()
@@ -2953,5 +3143,297 @@ mod tests {
             (0.25..=0.6).contains(&ratio),
             "seek landed mid-ramp (~0.4), not at the ramp start or end: {ratio}"
         );
+    }
+
+    // ----- live (held) notes -------------------------------------------------
+
+    /// Dry params of a fresh `instrument` track (no reverb/delay tails).
+    fn live_params(instrument: Instrument) -> TrackParams {
+        let mut t = create_track(instrument);
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        TrackParams::from_track(&t, true)
+    }
+
+    /// RMS of the left channel over `[from, to)` seconds of `l`.
+    fn window(l: &[f32], from: f32, to: f32) -> f32 {
+        rms(&l[(from * SR) as usize..(to * SR) as usize])
+    }
+
+    fn live_held(r: &Renderer) -> usize {
+        r.voices
+            .iter()
+            .filter(|v| v.active && v.live && v.held)
+            .count()
+    }
+
+    /// A plain sustaining pack preset: one sine, ADSR sustain 0.7.
+    fn sustaining_preset() -> TrackParams {
+        let mut t = create_track(Instrument::Lead);
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        t.preset = Some(crate::packs::InstrumentPreset {
+            id: "test.organ".into(),
+            name: "Organ".into(),
+            description: String::new(),
+            oscillators: vec![Default::default()],
+            envelope: Default::default(),
+            pitch_envelope: None,
+            filter_envelope: None,
+            filter_cutoff: 8_000.0,
+            filter_resonance: 0.0,
+            lfo: None,
+            bit_depth: 16,
+            sample_hold: 1,
+            gain: 0.8,
+            monophonic: false,
+            velocity_to_cutoff: crate::packs::DEFAULT_VELOCITY_TO_CUTOFF,
+            spread: 0.0,
+            hidden: false,
+            audition_note: 60,
+            audition_duration: 1.0,
+            kit: None,
+            sample: None,
+        });
+        let params = TrackParams::from_track(&t, true);
+        assert!(matches!(params.sound, Sound::Preset(_)));
+        params
+    }
+
+    /// Holds `params` at C4 for 1.6 s, then lets go; returns the held
+    /// render, the energy at +0.2 s and at +1 s, and the release render.
+    fn hold_and_release(params: TrackParams) -> (f32, f32, Vec<f32>, Renderer) {
+        let mut r = Renderer::new(SR);
+        r.apply(Command::LiveNoteOn {
+            params,
+            pitch: 60,
+            velocity: 0.9,
+            source: 1,
+        });
+        let (held, _) = run(&mut r, (SR * 1.6) as usize);
+        let early = window(&held, 0.15, 0.25);
+        let late = window(&held, 0.95, 1.05);
+        assert_eq!(r.live_notes(), 1);
+        r.apply(Command::LiveNoteOff {
+            source: 1,
+            pitch: 60,
+        });
+        let (after, _) = run(&mut r, SR as usize);
+        (early, late, after, r)
+    }
+
+    #[test]
+    fn live_note_sustains_while_held_and_decays_after_note_off() {
+        let (early, late, after, mut r) = hold_and_release(sustaining_preset());
+        assert!(early > 0.01, "audible while held: {early}");
+        assert!(
+            (0.85..=1.15).contains(&(late / early)),
+            "a sustaining preset holds its level: {early} -> {late}"
+        );
+        let tail = window(&after, 0.9, 1.0);
+        assert!(tail < early * 0.01, "decays after note-off: {tail}");
+        run(&mut r, SR as usize * 2);
+        assert_eq!(r.active_voices(), 0, "voice freed");
+        assert_eq!(r.live_notes(), 0);
+        // Built-in sustaining instruments hold too (their detuned
+        // oscillators beat, so only "still clearly sounding" is checked).
+        for instrument in [Instrument::Lead, Instrument::Bass, Instrument::Pad] {
+            let (early, late, after, _) = hold_and_release(live_params(instrument));
+            assert!(late > 0.01 && late > early * 0.4, "{instrument:?}: {late}");
+            let tail = window(&after, 0.9, 1.0);
+            assert!(tail < late * 0.05, "{instrument:?} decays: {tail}");
+        }
+    }
+
+    #[test]
+    fn live_note_outlasts_the_fixed_preview() {
+        let mut r = Renderer::new(SR);
+        r.preview(live_params(Instrument::Lead), 60, 0.9, 0.45);
+        let (preview, _) = run(&mut r, SR as usize * 2);
+        let mut live = Renderer::new(SR);
+        live.live_note_on(live_params(Instrument::Lead), 60, 0.9, 1);
+        let (held, _) = run(&mut live, SR as usize * 2);
+        assert!(window(&preview, 1.5, 1.6) < 1e-3, "preview is fixed-length");
+        assert!(window(&held, 1.5, 1.6) > 0.01, "live note still sounds");
+    }
+
+    #[test]
+    fn same_pitch_from_two_sources_sounds_until_both_release() {
+        let mut r = Renderer::new(SR);
+        let params = live_params(Instrument::Pad);
+        r.live_note_on(params, 64, 0.8, 1);
+        r.live_note_on(params, 64, 0.8, 3);
+        run(&mut r, 4_800);
+        r.live_note_off(1, 64);
+        run(&mut r, 4_800);
+        assert_eq!(live_held(&r), 1, "the controller still holds 64");
+        // A release for a key nobody holds is ignored.
+        r.live_note_off(2, 64);
+        r.live_note_off(1, 64);
+        assert_eq!(live_held(&r), 1);
+        r.live_note_off(3, 64);
+        assert_eq!(live_held(&r), 0);
+        // Re-striking a held key restarts it instead of stacking keys.
+        r.live_note_on(params, 67, 0.8, 1);
+        r.live_note_on(params, 67, 0.8, 1);
+        assert_eq!(r.live_notes(), 1);
+        assert_eq!(live_held(&r), 1);
+    }
+
+    #[test]
+    fn all_live_notes_off_silences_everything() {
+        let mut r = Renderer::new(SR);
+        let pad = live_params(Instrument::Pad);
+        for (i, pitch) in [48u8, 55, 60, 64, 67].into_iter().enumerate() {
+            r.live_note_on(pad, pitch, 0.8, 1 + i as u32 % 3);
+        }
+        let (l, _) = run(&mut r, SR as usize);
+        assert!(window(&l, 0.8, 1.0) > 0.01);
+        assert_eq!(live_held(&r), 5);
+        r.apply(Command::AllLiveNotesOff);
+        assert_eq!(r.live_notes(), 0);
+        assert_eq!(live_held(&r), 0, "every live voice released");
+        let (l, _) = run(&mut r, SR as usize * 3);
+        assert!(window(&l, 2.9, 3.0) < 1e-5, "silent after the release");
+        assert_eq!(r.active_voices(), 0);
+    }
+
+    #[test]
+    fn live_keys_are_capped_and_the_oldest_is_released() {
+        let mut r = Renderer::new(SR);
+        let pad = live_params(Instrument::Pad);
+        for pitch in 20..120u8 {
+            r.live_note_on(pad, pitch, 0.6, 1 + u32::from(pitch % 3));
+            run(&mut r, 64);
+            assert!(r.live_notes() <= MAX_LIVE_NOTES);
+            assert!(live_held(&r) <= MAX_LIVE_NOTES);
+            assert!(r.active_voices() <= MAX_VOICES);
+        }
+        assert_eq!(r.live_notes(), MAX_LIVE_NOTES);
+        let newest_held = |r: &Renderer, pitch: u8| {
+            r.voices
+                .iter()
+                .any(|v| v.active && v.live && v.held && v.pitch == pitch)
+        };
+        assert!(newest_held(&r, 119), "the newest key sounds");
+        assert!(!newest_held(&r, 20), "the oldest key was released");
+        r.all_live_notes_off();
+        run(&mut r, SR as usize * 3);
+        assert_eq!(r.active_voices(), 0);
+    }
+
+    #[test]
+    fn mono_live_notes_fall_back_to_the_newest_held_key() {
+        let mut r = Renderer::new(SR);
+        let lead = live_params(Instrument::Lead);
+        r.live_note_on(lead, 60, 0.8, 1);
+        run(&mut r, 2_400);
+        r.live_note_on(lead, 67, 0.8, 1);
+        run(&mut r, 2_400);
+        let sounding = |r: &Renderer| {
+            r.voices
+                .iter()
+                .filter(|v| v.active && v.live && v.held)
+                .map(|v| v.pitch)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sounding(&r), vec![67], "one mono voice");
+        r.live_note_off(1, 67);
+        assert_eq!(sounding(&r), vec![60], "slides back to the held key");
+        r.live_note_off(1, 60);
+        assert!(sounding(&r).is_empty());
+    }
+
+    #[test]
+    fn stop_device_loss_and_track_removal_end_live_notes() {
+        let pad = live_params(Instrument::Pad);
+        // Stop is a panic: live voices fade out with everything else.
+        let mut r = Renderer::new(SR);
+        r.live_note_on(pad, 60, 0.8, 1);
+        run(&mut r, 4_800);
+        r.apply(Command::Stop);
+        assert_eq!(r.live_notes(), 0);
+        run(&mut r, 4_800);
+        assert_eq!(r.active_voices(), 0);
+        // Device loss resets the renderer outright.
+        r.live_note_on(pad, 60, 0.8, 1);
+        r.device_lost();
+        assert_eq!((r.live_notes(), r.active_voices()), (0, 0));
+        // A song without the live note's track releases it; one that still
+        // has the track keeps it held.
+        let mut p = one_note_project(Instrument::Pad, 60, 0.0, 1.0);
+        p.tracks[0].patterns[0].notes.clear();
+        let mut t = p.tracks[0].clone();
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        r.load(Box::new(SongData::from_project(&p)));
+        r.live_note_on(TrackParams::from_track(&t, true), 60, 0.8, 1);
+        r.load(Box::new(SongData::from_project(&p)));
+        assert_eq!(live_held(&r), 1, "same song: still held");
+        // Starting and pausing the transport leaves held keys alone.
+        r.play(0.0, true);
+        run(&mut r, 4_800);
+        r.pause();
+        assert_eq!(live_held(&r), 1, "play/pause keep live notes");
+        r.load(Box::new(SongData::empty()));
+        assert_eq!(r.live_notes(), 0);
+        assert_eq!(live_held(&r), 0, "track gone: released");
+        run(&mut r, SR as usize * 3);
+        assert_eq!(r.active_voices(), 0);
+    }
+
+    #[test]
+    fn live_font_track_without_its_font_sustains_the_fallback() {
+        use crate::model::FontRef;
+        let mut t = create_track(Instrument::Lead);
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        t.font = Some(FontRef::new("DefinitelyNotInstalled", 0));
+        let mut r = Renderer::new(SR);
+        r.live_note_on(TrackParams::from_track(&t, true), 60, 0.9, 1);
+        let (l, _) = run(&mut r, SR as usize * 2);
+        assert!(window(&l, 1.8, 1.9) > 0.01, "fallback lead sustains");
+        r.live_note_off(1, 60);
+        run(&mut r, SR as usize * 2);
+        assert_eq!(r.active_voices(), 0);
+    }
+
+    #[test]
+    fn live_soundfont_note_sustains_and_releases_on_note_off() {
+        use crate::model::FontRef;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("LiveTiny.sf2"),
+            super::super::test_sf2::tiny_sf2(),
+        )
+        .unwrap();
+        let library = crate::font::load_library_from(dir.path());
+        let mut t = create_track(Instrument::Piano);
+        t.effects.reverb = 0.0;
+        t.effects.delay = 0.0;
+        t.font = Some(FontRef::new("LiveTiny", 0));
+        let params = TrackParams::from_track(&t, true);
+        assert!(matches!(params.sound, Sound::Font(_)));
+        let mut r = Renderer::new(SR);
+        r.set_fonts(Arc::new(library));
+        r.live_note_on(params, 69, 0.9, 3);
+        let (held, _) = run(&mut r, SR as usize * 2);
+        assert_eq!(r.font_bank.preview_live_notes(), 1, "font synth holds it");
+        let early = window(&held, 0.15, 0.25);
+        let late = window(&held, 1.85, 1.95);
+        assert!(early > 0.005, "font note audible: {early}");
+        assert!(late > early * 0.5, "font note sustains: {early} -> {late}");
+        r.live_note_off(3, 69);
+        assert_eq!(r.font_bank.preview_live_notes(), 0);
+        let (after, _) = run(&mut r, SR as usize * 2);
+        assert!(window(&after, 1.85, 1.95) < late * 0.05, "released");
+        // AllLiveNotesOff reaches the font synth too.
+        r.live_note_on(params, 60, 0.9, 1);
+        r.live_note_on(params, 64, 0.9, 2);
+        assert_eq!(r.font_bank.preview_live_notes(), 2);
+        r.all_live_notes_off();
+        assert_eq!(r.font_bank.preview_live_notes(), 0);
+        let (after, _) = run(&mut r, SR as usize * 2);
+        assert!(window(&after, 1.85, 1.95) < 1e-4);
     }
 }

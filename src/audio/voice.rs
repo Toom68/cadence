@@ -544,6 +544,8 @@ pub struct NoteStart {
     /// Samples until the note is released.
     pub gate: u64,
     pub from_song: bool,
+    /// Played live (a held key): only a live note-off releases it.
+    pub live: bool,
     pub age: u64,
 }
 
@@ -570,6 +572,9 @@ pub struct Voice {
     pub pitch: u8,
     pub age: u64,
     pub from_song: bool,
+    /// Started by a live key (see `Renderer::live_note_on`); its gate never
+    /// elapses, so only a live note-off (or a panic) ends it.
+    pub live: bool,
     /// Key is down: the gate has not elapsed and the note was not released.
     pub held: bool,
     /// Envelope level times gain, refreshed per block; used to pick steal victims.
@@ -691,6 +696,7 @@ impl Voice {
             pitch: 0,
             age: 0,
             from_song: false,
+            live: false,
             held: false,
             level: 0.0,
             drum: DrumKind::Kick,
@@ -783,6 +789,7 @@ impl Voice {
         self.pitch = n.pitch;
         self.age = n.age;
         self.from_song = n.from_song;
+        self.live = n.live;
         self.vel = n.velocity.clamp(0.0, 1.0);
         self.gain = velocity_gain(self.vel);
         self.gate = n.gate;
@@ -1926,6 +1933,7 @@ mod tests {
             velocity: 0.8,
             gate: (gate_seconds * SR) as u64,
             from_song: true,
+            live: false,
             age: 1,
         });
         let n = (seconds * SR) as usize;
@@ -2664,6 +2672,7 @@ mod tests {
             velocity,
             gate: (gate_seconds * SR) as u64,
             from_song: true,
+            live: false,
             age: 1,
         });
         let n = (seconds * SR) as usize;
@@ -2749,6 +2758,7 @@ mod tests {
             velocity: 1.0,
             gate: u64::MAX,
             from_song: false,
+            live: false,
             age: 3,
         });
         let mut l = vec![0.0; 512];
@@ -2917,6 +2927,7 @@ mod tests {
             velocity,
             gate: (gate_seconds * SR) as u64,
             from_song: true,
+            live: false,
             age: 1,
         });
         let n = (seconds * SR) as usize;
@@ -3026,6 +3037,7 @@ mod tests {
             velocity: 0.8,
             gate: 100,
             from_song: true,
+            live: false,
             age: 1,
         });
         assert_eq!(v.cutoff, 1_500.0);
@@ -3048,6 +3060,7 @@ mod tests {
             velocity: 0.4,
             gate: 100,
             from_song: true,
+            live: false,
             age: 1,
         });
         assert_eq!(v.cutoff, 1_500.0, "cutoff is unscaled at velocity 0.4");

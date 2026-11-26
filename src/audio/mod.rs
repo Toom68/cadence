@@ -25,6 +25,11 @@ mod renderer;
 mod song;
 mod voice;
 
+/// The tiny SoundFont fixture the integration tests use, shared by path.
+#[cfg(test)]
+#[path = "../../tests/common/sf2.rs"]
+mod test_sf2;
+
 pub use engine::{AudioEngine, TransportStatus};
 pub use export::{
     export_stems, export_wav, export_wav_with, render_project, stem_skip_reason, RenderedAudio,

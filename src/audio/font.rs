@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
-use super::renderer::{MAX_BLOCK, PREVIEW_STRIP, STRIPS};
+use super::renderer::{LIVE_GATE, MAX_BLOCK, PREVIEW_STRIP, STRIPS};
 use super::song::TrackParams;
 use super::voice::{FontKey, Sound};
 use crate::font::FontLibrary;
@@ -41,6 +41,8 @@ struct FontNote {
     pitch: u8,
     gate: u64,
     from_song: bool,
+    /// A held live key: its gate never elapses; a live note-off ends it.
+    live: bool,
 }
 
 /// A `rustysynth` instance playing one GM program for one track.
@@ -142,6 +144,7 @@ impl FontSynth {
             pitch,
             gate: gate.max(1),
             from_song,
+            live: gate == LIVE_GATE && !from_song,
         });
         self.sounding = true;
     }
@@ -151,6 +154,26 @@ impl FontSynth {
     fn release_all(&mut self) {
         self.synth.note_off_all(false);
         self.notes.retain(|n| !n.from_song);
+    }
+
+    /// Live key up: releases `pitch` if a live key holds it (a fixed-length
+    /// audition on the same pitch keeps its own gate).
+    fn live_note_off(&mut self, pitch: u8) {
+        if let Some(i) = self.notes.iter().position(|n| n.live && n.pitch == pitch) {
+            self.notes.remove(i);
+            self.synth.note_off(FONT_CHANNEL, pitch as i32);
+        }
+    }
+
+    /// Releases every live-held note; their release tails keep rendering.
+    fn live_notes_off(&mut self) {
+        let synth = &mut self.synth;
+        self.notes.retain(|n| {
+            if n.live {
+                synth.note_off(FONT_CHANNEL, n.pitch as i32);
+            }
+            !n.live
+        });
     }
 
     /// Immediate silence for stop/panic/track deletion.
@@ -456,6 +479,28 @@ impl FontBank {
             self.synths
                 .retain(|id, _| tracks.iter().any(|t| t.id == *id));
         }
+    }
+
+    /// Live key up on the preview strip (live notes always play there).
+    pub(crate) fn preview_live_off(&mut self, pitch: u8) {
+        if let Some(preview) = &mut self.preview {
+            preview.live_note_off(pitch);
+        }
+    }
+
+    /// Releases every live-held note on the preview-strip synth.
+    pub(crate) fn preview_live_all_off(&mut self) {
+        if let Some(preview) = &mut self.preview {
+            preview.live_notes_off();
+        }
+    }
+
+    /// Live notes held on the preview-strip synth (tests).
+    #[cfg(test)]
+    pub(crate) fn preview_live_notes(&self) -> usize {
+        self.preview
+            .as_ref()
+            .map_or(0, |p| p.notes.iter().filter(|n| n.live).count())
     }
 
     /// Whether the preview-strip synth may still be producing audio — used by
