@@ -9,7 +9,6 @@
 //! sizes) but tolerant of musically harmless leftovers such as notes past the end of a
 //! shortened pattern or clips past the end of a shortened song: those are simply inaudible.
 
-use crate::font::gm_program_name;
 use crate::packs::{validate_preset, InstrumentPreset};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -645,9 +644,12 @@ impl FontRef {
         crate::font::font_key(&self.name)
     }
 
-    /// GM display name of the selected program (e.g. "Acoustic Grand Piano").
+    /// Display name of the selected program: the GM name (e.g. "Acoustic
+    /// Grand Piano"), or the instrument of a single-instrument built-in font
+    /// ("Harmonium" for [`crate::font::HARMONIUM_FONT_NAME`], whatever the
+    /// program).
     pub fn program_name(&self) -> &'static str {
-        gm_program_name(self.program)
+        crate::font::program_label(&self.name, self.program)
     }
 
     /// "Font Name · Program" label for pickers and track headers.

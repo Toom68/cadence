@@ -5,10 +5,15 @@
 //! loaded:
 //!
 //! - **Bundled** fonts ship with the app ([`bundled_fonts_dirs`]): release
-//!   packages put the General MIDI font [`BUILTIN_FONT_NAME`] in a
+//!   packages put the General MIDI font [`BUILTIN_FONT_NAME`] and the sampled
+//!   harmonium [`HARMONIUM_FONT_NAME`] ([`BUILTIN_FONT_NAMES`]) in a
 //!   `soundfonts/` folder next to the executable (Windows) or in
 //!   `Cadence.app/Contents/Resources/soundfonts/` (macOS). They are read-only,
-//!   listed first and labelled "(built-in)" ([`FontLibrary::display_name`]).
+//!   listed first and labelled "(built-in)" ([`FontLibrary::display_name`]),
+//!   and a user font can't take a name a bundled font uses.
+//!   Single-instrument built-ins like the harmonium are also offered as
+//!   their own library rows ([`FEATURED_SOUNDS`]) rather than as a bank of
+//!   128 GM programs.
 //! - **User** fonts are `.sf2` files dropped into the user font directory
 //!   ([`user_fonts_dir`]).
 //!
@@ -56,6 +61,80 @@ pub const BUNDLED_FONTS_DIR_ENV: &str = "CADENCE_SOUNDFONT_DIR";
 /// so it must never change; the font behind it (currently GeneralUser GS, see
 /// `packaging/soundfont/README.md`) may.
 pub const BUILTIN_FONT_NAME: &str = "Cadence GM";
+
+/// Name (file stem) of the sampled harmonium shipped with Cadence —
+/// `Cadence Harmonium.sf2`, built by `scripts/build-harmonium-sf2.py` from
+/// real recordings (see `packaging/soundfont/README.md`). Songs store this
+/// name, so it must never change.
+pub const HARMONIUM_FONT_NAME: &str = "Cadence Harmonium";
+
+/// The GM program of the harmonium font's only preset (20 = Reed Organ).
+/// The font has a single preset, so any program plays the harmonium; new
+/// tracks use this one.
+pub const HARMONIUM_PROGRAM: u8 = 20;
+
+/// Every font that ships with Cadence (file stems in the bundled
+/// `soundfonts/` folder), General MIDI first.
+pub const BUILTIN_FONT_NAMES: [&str; 2] = [BUILTIN_FONT_NAME, HARMONIUM_FONT_NAME];
+
+/// A single-instrument built-in font, offered as one named sound in the
+/// instrument library and quick add instead of a bank of GM programs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeaturedSound {
+    /// Display name of the sound (and of tracks playing it).
+    pub label: &'static str,
+    /// The font that plays it (a [`BUILTIN_FONT_NAMES`] entry).
+    pub font: &'static str,
+    /// The program new tracks use.
+    pub program: u8,
+    /// One-line description for library rows.
+    pub description: &'static str,
+    /// Extra lowercase search words.
+    pub keywords: &'static str,
+    /// Where the samples come from (tooltips, About).
+    pub credit: &'static str,
+}
+
+/// The single-instrument built-in fonts.
+pub const FEATURED_SOUNDS: [FeaturedSound; 1] = [FeaturedSound {
+    label: "Harmonium",
+    font: HARMONIUM_FONT_NAME,
+    program: HARMONIUM_PROGRAM,
+    description: "Real sampled harmonium: warm, reedy sustained chords and drones",
+    keywords: "harmonium reed organ pump organ indian drone sampled soundfont",
+    credit: "Recorded by Donya Quick (CC0); samples by Nicholaus P. Brosowsky / \
+             tonejs-instruments (CC BY 3.0)",
+}];
+
+/// The featured sound font `name` plays, when it is a single-instrument
+/// built-in font.
+pub fn featured_sound(name: &str) -> Option<&'static FeaturedSound> {
+    FEATURED_SOUNDS.iter().find(|f| f.font == name.trim())
+}
+
+/// Whether font `name` is a General MIDI bank (any of the 128 programs):
+/// everything but the single-instrument built-ins ([`FEATURED_SOUNDS`]).
+pub fn is_gm_font(name: &str) -> bool {
+    featured_sound(name).is_none()
+}
+
+/// Display name of `program` on font `name`: the featured sound's label for
+/// single-instrument built-ins (every program plays the same instrument),
+/// else the GM program name.
+pub fn program_label(name: &str, program: u8) -> &'static str {
+    featured_sound(name).map_or_else(|| gm_program_name(program), |f| f.label)
+}
+
+/// What a built-in font is, for tooltips; `None` for other fonts.
+pub fn builtin_font_blurb(name: &str) -> Option<String> {
+    if name.trim() == BUILTIN_FONT_NAME {
+        return Some(
+            "Built-in General MIDI SoundFont (GeneralUser GS by S. Christian Collins)".to_owned(),
+        );
+    }
+    featured_sound(name)
+        .map(|f| format!("Built-in sampled {} · {}", f.label.to_lowercase(), f.credit))
+}
 
 /// Folder name holding bundled fonts, next to the executable (Windows,
 /// portable zip, Linux) or in the macOS bundle's `Contents/Resources`.
@@ -464,6 +543,26 @@ impl FontLibrary {
         !self.builtin.is_empty()
     }
 
+    /// Whether a font called `name` is installed (built-in or user).
+    pub fn has_font(&self, name: &str) -> bool {
+        let key = font_key(name);
+        self.fonts.iter().any(|info| info.key == key)
+    }
+
+    /// The installed fonts that are General MIDI banks ([`is_gm_font`]),
+    /// in display order.
+    pub fn gm_fonts(&self) -> impl Iterator<Item = &FontInfo> {
+        self.fonts.iter().filter(|info| is_gm_font(&info.name))
+    }
+
+    /// The [`FEATURED_SOUNDS`] whose font is installed, in order.
+    pub fn featured_sounds(&self) -> Vec<&'static FeaturedSound> {
+        FEATURED_SOUNDS
+            .iter()
+            .filter(|f| self.has_font(f.font))
+            .collect()
+    }
+
     fn insert(&mut self, name: String, font: Arc<SoundFont>, builtin: bool) {
         let key = font_key(&name);
         let presets = font.get_presets().len();
@@ -789,6 +888,71 @@ mod tests {
             bytes <= MAX_FONT_BYTES,
             "the loader must accept the shipped font"
         );
+    }
+
+    #[test]
+    fn packaging_pin_installs_the_harmonium_font_name() {
+        // build-harmonium-sf2.py writes HARMONIUM_FILE; its stem is the name
+        // songs store, so it must match HARMONIUM_FONT_NAME.
+        let pin = include_str!("../packaging/soundfont/harmonium-pin.txt");
+        let value = |key: &str| {
+            pin.lines()
+                .find_map(|line| line.trim().strip_prefix(key)?.strip_prefix('='))
+                .map(str::trim)
+                .unwrap_or_else(|| panic!("{key} missing from harmonium-pin.txt"))
+        };
+        let file = Path::new(value("HARMONIUM_FILE"));
+        assert_eq!(font_name(file).as_deref(), Some(HARMONIUM_FONT_NAME));
+        let sha = value("HARMONIUM_SHA256");
+        assert_eq!(sha.len(), 64);
+        assert!(sha.bytes().all(|b| b.is_ascii_hexdigit()));
+        let bytes: u64 = value("HARMONIUM_BYTES").parse().unwrap();
+        assert!(bytes > 0 && bytes <= MAX_FONT_BYTES);
+        let samples: Vec<&str> = pin
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("SAMPLE="))
+            .collect();
+        assert_eq!(samples.len(), 38, "one pinned file per recorded note");
+        for sample in samples {
+            let parts: Vec<&str> = sample.split_whitespace().collect();
+            assert_eq!(parts.len(), 3, "{sample}");
+            assert!(parts[0].ends_with(".wav"));
+            assert_eq!(parts[1].len(), 64);
+            assert!(parts[2].parse::<u64>().is_ok());
+        }
+    }
+
+    #[test]
+    fn featured_sounds_cover_the_single_instrument_builtins() {
+        assert_eq!(BUILTIN_FONT_NAMES, [BUILTIN_FONT_NAME, HARMONIUM_FONT_NAME]);
+        let harmonium = featured_sound(HARMONIUM_FONT_NAME).unwrap();
+        assert_eq!(harmonium.label, "Harmonium");
+        assert_eq!(harmonium.program, 20);
+        assert_eq!(gm_program_name(harmonium.program), "Reed Organ");
+        assert!(featured_sound(BUILTIN_FONT_NAME).is_none());
+        assert!(is_gm_font(BUILTIN_FONT_NAME));
+        assert!(is_gm_font("GeneralUser"));
+        assert!(!is_gm_font(HARMONIUM_FONT_NAME));
+        assert_eq!(program_label(HARMONIUM_FONT_NAME, 0), "Harmonium");
+        assert_eq!(program_label(BUILTIN_FONT_NAME, 20), "Reed Organ");
+        for f in &FEATURED_SOUNDS {
+            assert!(BUILTIN_FONT_NAMES.contains(&f.font));
+            assert_eq!(f.keywords, f.keywords.to_lowercase());
+            assert!(builtin_font_blurb(f.font).is_some());
+        }
+        assert!(builtin_font_blurb("GeneralUser").is_none());
+
+        let mut library = FontLibrary::empty();
+        assert!(library.featured_sounds().is_empty(), "hidden when missing");
+        library.fonts.push(FontInfo {
+            name: HARMONIUM_FONT_NAME.to_owned(),
+            key: font_key(HARMONIUM_FONT_NAME),
+            presets: 1,
+        });
+        assert!(library.has_font(HARMONIUM_FONT_NAME));
+        assert!(!library.has_font(BUILTIN_FONT_NAME));
+        assert_eq!(library.gm_fonts().count(), 0, "the harmonium is no GM bank");
+        assert_eq!(library.featured_sounds(), [harmonium]);
     }
 
     #[test]

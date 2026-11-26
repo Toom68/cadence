@@ -20,7 +20,7 @@ mod common;
 use cadence_studio::audio::render_project;
 use cadence_studio::font::{
     font_key, gm_program_name, load_library_from, load_library_with, user_fonts_dir,
-    BUILTIN_FONT_NAME, BUNDLED_FONTS_DIR_ENV,
+    BUILTIN_FONT_NAME, BUILTIN_FONT_NAMES, BUNDLED_FONTS_DIR_ENV, HARMONIUM_FONT_NAME,
 };
 use cadence_studio::model::{create_track, FontRef, Instrument, Note, Project};
 use cadence_studio::persistence::save_project;
@@ -120,6 +120,59 @@ fn bundled_fonts_come_first_and_are_marked_builtin() {
     assert!(library
         .get(FontRef::new(BUILTIN_FONT_NAME, 0).key())
         .is_some());
+}
+
+#[test]
+fn both_builtin_fonts_are_listed_and_protected() {
+    let bundled = tempfile::tempdir().unwrap();
+    let user = tempfile::tempdir().unwrap();
+    for name in BUILTIN_FONT_NAMES {
+        write_font(bundled.path(), name);
+        // Neither built-in name can be taken by a user font.
+        write_font(user.path(), name);
+    }
+    write_font(user.path(), "Mine");
+    let library = load_library_with(&[bundled.path().to_path_buf()], user.path());
+    let names: Vec<&str> = library.fonts.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, [BUILTIN_FONT_NAME, HARMONIUM_FONT_NAME, "Mine"]);
+    for name in BUILTIN_FONT_NAMES {
+        assert!(library.is_builtin(name), "{name}");
+        assert_eq!(library.display_name(name), format!("{name} (built-in)"));
+    }
+    assert_eq!(library.errors.len(), 2, "{:?}", library.errors);
+    assert!(library
+        .errors
+        .iter()
+        .all(|e| e.contains("built-in font already uses this name")));
+    assert_eq!(library.featured_sounds().len(), 1);
+    let gm: Vec<&str> = library.gm_fonts().map(|f| f.name.as_str()).collect();
+    assert_eq!(gm, [BUILTIN_FONT_NAME, "Mine"]);
+
+    // The CLI lists both, says what the harmonium plays, and reports a
+    // missing built-in by name.
+    let data = tempfile::tempdir().unwrap();
+    let out = cadence(
+        bundled.path(),
+        data.path(),
+        &["--list-instruments".as_ref()],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(stdout.contains("Cadence GM (built-in)"), "{stdout}");
+    assert!(stdout.contains("Cadence Harmonium (built-in)"), "{stdout}");
+    assert!(stdout.contains("plays Harmonium"), "{stdout}");
+    assert!(!stdout.contains("not found"), "{stdout}");
+    std::fs::remove_file(bundled.path().join("Cadence Harmonium.sf2")).unwrap();
+    let out = cadence(
+        bundled.path(),
+        data.path(),
+        &["--list-instruments".as_ref()],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("built-in SoundFont not found: Cadence Harmonium"),
+        "{stdout}"
+    );
 }
 
 #[test]

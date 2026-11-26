@@ -16,12 +16,14 @@
 use std::path::PathBuf;
 
 use cadence_studio::audio::render_project;
-use cadence_studio::font::{load_library_with, BUNDLED_FONTS_DIR_ENV, FONTS_DIR_ENV};
+use cadence_studio::font::{
+    load_library_with, BUNDLED_FONTS_DIR_ENV, FONTS_DIR_ENV, HARMONIUM_FONT_NAME, HARMONIUM_PROGRAM,
+};
 use cadence_studio::model::{create_track, FontRef, Instrument, Note, Project};
 use rustysynth::{Synthesizer, SynthesizerSettings};
 
-const NAME: &str = "Cadence Harmonium";
-const PROGRAM: u8 = 20;
+const NAME: &str = HARMONIUM_FONT_NAME;
+const PROGRAM: u8 = HARMONIUM_PROGRAM;
 const RATE: usize = 44_100;
 
 fn font_path() -> PathBuf {
