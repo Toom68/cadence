@@ -748,25 +748,58 @@ impl AudioEngine {
             velocity,
             seconds: duration_seconds,
         };
+        let _ = self.send_audition(&params, render);
+    }
+
+    /// A live key went down: `pitch` sounds with `track`'s sound and mix
+    /// (like [`Self::preview`], even when stopped or muted) and keeps
+    /// sounding — the instrument's sustain — until [`Self::live_note_off`]
+    /// with the same `source`, or [`Self::all_live_notes_off`]. `source`
+    /// tells inputs apart (computer keys, on-screen keys, a controller).
+    /// Returns `false` when the command could not be queued.
+    pub fn live_note_on(&self, track: &Track, pitch: u8, velocity: f32, source: u32) -> bool {
+        let params = TrackParams::from_track(track, true);
+        let render = Command::LiveNoteOn {
+            params,
+            pitch,
+            velocity,
+            source,
+        };
+        self.send_audition(&params, render).is_ok()
+    }
+
+    /// The live key `source`/`pitch` went up; its note releases. Returns
+    /// `false` when the command could not be queued — callers then retry
+    /// with [`Self::all_live_notes_off`] so nothing hangs.
+    pub fn live_note_off(&self, source: u32, pitch: u8) -> bool {
+        self.send(Command::LiveNoteOff { source, pitch }).is_ok()
+    }
+
+    /// Releases every live note. Returns `false` when the command could not
+    /// be queued (retry on the next frame).
+    pub fn all_live_notes_off(&self) -> bool {
+        self.send(Command::AllLiveNotesOff).is_ok()
+    }
+
+    /// Sends a preview-strip command, first preparing the preview SoundFont
+    /// synth on this thread when `params` plays a font the callback's
+    /// preview slot does not hold yet.
+    fn send_audition(&self, params: &TrackParams, render: Command) -> Result<(), String> {
         if let Sound::Font(key) = params.sound {
             let mut prep = self.preparation.lock().unwrap_or_else(|p| p.into_inner());
             let key = key.font_key;
             if prep.preview != Some(key) {
                 let preview = FontBank::prepare_synth(&prep.library, prep.rate, key);
-                if self
-                    .send(AudioCommand {
-                        render: Some(render),
-                        fonts: None,
-                        preview,
-                    })
-                    .is_ok()
-                {
-                    prep.preview = Some(key);
-                }
-                return;
+                self.send(AudioCommand {
+                    render: Some(render),
+                    fonts: None,
+                    preview,
+                })?;
+                prep.preview = Some(key);
+                return Ok(());
             }
         }
-        let _ = self.send(render);
+        self.send(render)
     }
 
     pub fn set_metronome(&self, enabled: bool) {
@@ -913,6 +946,74 @@ mod tests {
         rt.fill(&mut out, 2);
         assert!(out.iter().all(|s| *s == 0.0));
         assert_eq!(shared.voices.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn live_notes_hold_in_the_callback_until_released() {
+        use crate::model::{create_track, Instrument};
+
+        let (tx, rx) = bounded(8);
+        let (gtx, _grx) = bounded(8);
+        let shared = Arc::<Shared>::default();
+        let mut rt = RealTime::new(48_000.0, rx, gtx, Arc::clone(&shared));
+        let params = TrackParams::from_track(&create_track(Instrument::Pad), true);
+        tx.send(
+            Command::LiveNoteOn {
+                params,
+                pitch: 60,
+                velocity: 0.9,
+                source: 1,
+            }
+            .into(),
+        )
+        .unwrap();
+        let mut out = vec![0.0f32; 2 * 1024];
+        // ~2 s: far past any fixed-length preview.
+        for _ in 0..94 {
+            rt.fill(&mut out, 2);
+        }
+        assert!(out.iter().any(|s| s.abs() > 0.01), "still sounding");
+        assert_eq!(shared.voices.load(Ordering::Relaxed), 1);
+        assert!(!shared.playing.load(Ordering::Relaxed));
+        tx.send(
+            Command::LiveNoteOff {
+                source: 1,
+                pitch: 60,
+            }
+            .into(),
+        )
+        .unwrap();
+        for _ in 0..141 {
+            rt.fill(&mut out, 2);
+        }
+        assert_eq!(shared.voices.load(Ordering::Relaxed), 0, "released");
+        tx.send(
+            Command::LiveNoteOn {
+                params,
+                pitch: 64,
+                velocity: 0.9,
+                source: 3,
+            }
+            .into(),
+        )
+        .unwrap();
+        tx.send(Command::AllLiveNotesOff.into()).unwrap();
+        for _ in 0..141 {
+            rt.fill(&mut out, 2);
+        }
+        assert_eq!(shared.voices.load(Ordering::Relaxed), 0, "all off");
+        assert!(out.iter().all(|s| s.abs() < 1e-4));
+    }
+
+    #[test]
+    fn live_note_commands_queue_without_a_device() {
+        use crate::model::{create_track, Instrument};
+
+        let (engine, _drain) = AudioEngine::for_frame_benchmark();
+        let track = create_track(Instrument::Lead);
+        assert!(engine.live_note_on(&track, 60, 0.8, 1));
+        assert!(engine.live_note_off(1, 60));
+        assert!(engine.all_live_notes_off());
     }
 
     #[test]
