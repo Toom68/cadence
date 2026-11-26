@@ -2141,6 +2141,64 @@ pub fn icon_button(
     with_tooltip(resp, tooltip)
 }
 
+/// Square icon *key* (transport keys): always a raised key body with a hard
+/// bottom edge; `active` lights it (accent icon, tint, indicator bar).
+///
+/// `theme::key_icon_button(ui, pal, Icon::Loop, 32.0, looping, "Loop (L)")`
+pub fn key_icon_button(
+    ui: &mut Ui,
+    pal: Palette,
+    icon: Icon,
+    size: f32,
+    active: bool,
+    tooltip: &str,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, active, tooltip));
+    let on = if active {
+        OnStyle::Tint(pal.accent)
+    } else {
+        OnStyle::Off
+    };
+    let painter = unfaded_painter(ui);
+    paint_button(
+        ui,
+        &painter,
+        pal,
+        rect,
+        &resp,
+        enabled,
+        Some(icon),
+        None,
+        on,
+        false,
+        None,
+    );
+    with_tooltip(resp, tooltip)
+}
+
+/// Paints a transport-style key body into `rect` for a response the caller
+/// owns (custom glyphs such as the record dot). `lit` lights it in the accent.
+pub fn paint_key_body(ui: &Ui, pal: Palette, rect: Rect, resp: &Response, lit: bool) {
+    let press = Press::of(resp, ui.is_enabled());
+    let on = if lit {
+        OnStyle::Tint(pal.accent)
+    } else {
+        OnStyle::Off
+    };
+    let colors = button_colors(pal, press, on, false);
+    paint_button_body(
+        ui.painter(),
+        pal,
+        rect,
+        RADIUS_M,
+        colors,
+        press.focused,
+        lit,
+    );
+}
+
 /// Icon button without a resting body (list rows, panel headers); the body
 /// appears on hover.
 ///

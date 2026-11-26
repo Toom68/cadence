@@ -368,10 +368,10 @@ impl CadenceApp {
         self.refresh_bar(ctx);
         let mut name_buf = std::mem::take(&mut self.transport.name_buf);
         let mut act = BarAction::default();
+        // Edge to edge: the panel's own separator line is the seam below.
         let frame = Frame::new()
             .fill(pal.panel)
-            .inner_margin(Margin::symmetric(BAR_PAD, 8))
-            .stroke(Stroke::new(1.0_f32, pal.border_soft));
+            .inner_margin(Margin::symmetric(BAR_PAD, 8));
         egui::TopBottomPanel::top("transport")
             .exact_height(TRANSPORT_H)
             .frame(frame)
@@ -478,8 +478,7 @@ impl CadenceApp {
             #[cfg(test)]
             probe(ui, mark);
             ui.add_space(theme::GAP_S);
-            let block = fixed_block(ui, plan.name_w, |ui| {
-                kicker(ui, pal, "SONG");
+            let block = fixed_row(ui, plan.name_w, |ui| {
                 let resp = ui.add_sized(
                     vec2(plan.name_w, theme::CONTROL_M),
                     egui::TextEdit::singleline(name_buf)
@@ -497,7 +496,9 @@ impl CadenceApp {
                     ui.label(&self.project.name);
                     theme::hint(ui, pal, "Song name — also the default file name");
                 });
-            });
+            })
+            .response
+            .rect;
             #[cfg(test)]
             probe(ui, block);
             let _ = block;
@@ -505,20 +506,20 @@ impl CadenceApp {
 
             // --- transport buttons
             let gap = theme::GAP_XS;
-            let button = |ui: &mut Ui, icon: Icon, on: bool, color, text: &str| -> bool {
-                let resp = theme::icon_button(ui, pal, icon, plan.btn, on, color, text);
+            let button = |ui: &mut Ui, icon: Icon, on: bool, text: &str| -> bool {
+                let resp = theme::key_icon_button(ui, pal, icon, plan.btn, on, text);
                 #[cfg(test)]
                 probe(ui, resp.rect);
                 resp.clicked()
             };
-            act.to_start = button(ui, Icon::ToStart, false, pal.accent, tip(|t| &t.to_start));
+            act.to_start = button(ui, Icon::ToStart, false, tip(|t| &t.to_start));
             ui.add_space(gap);
             let play = theme::play_button(ui, pal, t.playing, plan.play);
             #[cfg(test)]
             probe(ui, play.rect);
             act.play = play.clicked();
             ui.add_space(gap);
-            act.stop = button(ui, Icon::Stop, false, pal.accent, tip(|t| &t.stop));
+            act.stop = button(ui, Icon::Stop, false, tip(|t| &t.stop));
             ui.add_space(gap);
             let time = ui.input(|i| i.time);
             let record_tip = if t.recording {
@@ -532,15 +533,14 @@ impl CadenceApp {
             act.record = record.clicked();
             act.count_in |= count_in_menu(&record, t.count_in);
             ui.add_space(gap);
-            act.looping = button(ui, Icon::Loop, t.looping, pal.accent, &cache.loop_tip);
+            act.looping = button(ui, Icon::Loop, t.looping, &cache.loop_tip);
             ui.add_space(gap);
-            let metronome = theme::icon_button(
+            let metronome = theme::key_icon_button(
                 ui,
                 pal,
                 Icon::Metronome,
                 plan.btn,
                 t.metronome,
-                pal.link,
                 tip(|t| &t.metronome),
             );
             #[cfg(test)]
@@ -558,7 +558,8 @@ impl CadenceApp {
 
             // --- tempo + tap
             let tempo_block_w = plan.tempo_w + gap + plan.tap_w;
-            let block = fixed_block(ui, tempo_block_w, |ui| {
+            let block = fixed_row(ui, tempo_block_w, |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
                 let now = Instant::now();
                 let fresh = t
                     .tap_bpm
@@ -568,65 +569,53 @@ impl CadenceApp {
                     && t.taps
                         .last()
                         .is_some_and(|last| now.duration_since(*last) < TAP_GAP);
-                if let Some((bpm, _)) = fresh {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("TAPPED  {bpm:.1}"))
-                                .text_style(theme::kicker())
-                                .color(pal.accent),
-                        )
-                        .selectable(false)
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                    );
-                } else if collecting {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("TAP  {}/3", t.taps.len()))
-                                .text_style(theme::kicker())
-                                .color(pal.text_dim),
-                        )
-                        .selectable(false)
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                    );
-                } else {
-                    kicker(ui, pal, "TEMPO");
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    let mut bpm = self.project.bpm;
-                    let resp = ui.add_sized(
-                        vec2(plan.tempo_w, theme::CONTROL_M),
+                let mut bpm = self.project.bpm;
+                let resp = lcd_drag_value(ui, pal, plan.tempo_w, "bpm", |ui, size| {
+                    ui.add_sized(
+                        size,
                         egui::DragValue::new(&mut bpm)
                             .range(ops::MIN_BPM..=ops::MAX_BPM)
                             .speed(0.25)
-                            .fixed_decimals(1)
-                            .suffix(" bpm"),
-                    );
-                    if resp.changed() {
-                        act.bpm = Some(bpm.clamp(ops::MIN_BPM, ops::MAX_BPM));
-                    }
-                    resp.on_hover_text(
-                        "Tempo in beats per minute. Drag, or double-click to type (30–300).",
-                    );
-                    let tap = ui
-                        .allocate_ui_with_layout(
-                            vec2(plan.tap_w, theme::CONTROL_M),
-                            Layout::left_to_right(Align::Center),
-                            |ui| {
-                                theme::toggle_button(
-                                    ui,
-                                    pal,
-                                    "Tap",
-                                    fresh.is_some(),
-                                    theme::CONTROL_M,
-                                    tip(|t| &t.tap),
-                                )
-                            },
-                        )
-                        .inner;
-                    act.tap = tap.clicked();
+                            .fixed_decimals(1),
+                    )
                 });
-            });
+                if resp.changed() {
+                    act.bpm = Some(bpm.clamp(ops::MIN_BPM, ops::MAX_BPM));
+                }
+                resp.on_hover_text(
+                    "Tempo in beats per minute. Drag, or double-click to type (30–300).",
+                );
+                // The tap key shows its own progress: "2/3" while counting,
+                // lit for a moment once the tempo was set.
+                let tap_label = if collecting {
+                    format!("{}/3", t.taps.len())
+                } else {
+                    "Tap".to_owned()
+                };
+                let tap = ui
+                    .allocate_ui_with_layout(
+                        vec2(plan.tap_w, theme::CONTROL_M),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            theme::toggle_button(
+                                ui,
+                                pal,
+                                &tap_label,
+                                fresh.is_some(),
+                                theme::CONTROL_M,
+                                tip(|t| &t.tap),
+                            )
+                        },
+                    )
+                    .inner;
+                let tap = match fresh {
+                    Some((bpm, _)) => tap.on_hover_text(format!("Tapped {bpm:.1} bpm")),
+                    None => tap,
+                };
+                act.tap = tap.clicked();
+            })
+            .response
+            .rect;
             #[cfg(test)]
             probe(ui, block);
             let _ = block;
@@ -634,39 +623,39 @@ impl CadenceApp {
             // --- swing
             if plan.swing {
                 ui.add_space(theme::GAP_M);
-                let block_w = plan.swing_w + gap + plan.swing_readout;
-                let block = fixed_block(ui, block_w, |ui| {
-                    kicker(ui, pal, "SWING");
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        let mut swing = self.project.swing;
-                        let resp = theme::slider_with(
-                            ui,
-                            pal,
-                            &mut swing,
-                            0.0..=ops::MAX_SWING,
-                            plan.swing_w,
-                            pal.accent,
-                            Some(0.0),
-                        );
-                        if resp.changed() {
-                            act.swing = Some(swing.clamp(0.0, ops::MAX_SWING));
-                        }
-                        resp.on_hover_ui(|ui| {
-                            ui.label(format!(
-                                "Swing delays every other 16th note: {:.0}%",
-                                self.project.swing / ops::MAX_SWING * 100.0
-                            ));
-                            theme::hint(ui, pal, "Double-click to reset");
-                        });
-                        readout(
-                            ui,
-                            pal,
-                            plan.swing_readout,
-                            &format!("{:.0}%", self.project.swing / ops::MAX_SWING * 100.0),
-                        );
+                let block_w = SWING_CAPTION + plan.swing_w + gap + plan.swing_readout;
+                let block = fixed_row(ui, block_w, |ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    caption(ui, pal, SWING_CAPTION - gap, "Swing");
+                    let mut swing = self.project.swing;
+                    let resp = theme::slider_with(
+                        ui,
+                        pal,
+                        &mut swing,
+                        0.0..=ops::MAX_SWING,
+                        plan.swing_w,
+                        pal.text_dim,
+                        Some(0.0),
+                    );
+                    if resp.changed() {
+                        act.swing = Some(swing.clamp(0.0, ops::MAX_SWING));
+                    }
+                    resp.on_hover_ui(|ui| {
+                        ui.label(format!(
+                            "Swing delays every other 16th note: {:.0}%",
+                            self.project.swing / ops::MAX_SWING * 100.0
+                        ));
+                        theme::hint(ui, pal, "Double-click to reset");
                     });
-                });
+                    readout(
+                        ui,
+                        pal,
+                        plan.swing_readout,
+                        &format!("{:.0}%", self.project.swing / ops::MAX_SWING * 100.0),
+                    );
+                })
+                .response
+                .rect;
                 #[cfg(test)]
                 probe(ui, block);
                 let _ = block;
@@ -675,10 +664,20 @@ impl CadenceApp {
             // --- right side, laid out from the edge inward
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let master_w = plan.master_total();
-                let block = fixed_block(ui, master_w, |ui| {
-                    kicker(ui, pal, "MASTER");
-                    ui.horizontal(|ui| {
+                let block = fixed_row(ui, master_w, |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
+                        // The speaker glyph is the inline label of the master level.
+                        let (icon, _) = ui.allocate_exact_size(
+                            vec2(MASTER_CAPTION, theme::ICON_S),
+                            Sense::hover(),
+                        );
+                        theme::paint_icon(
+                            ui.painter(),
+                            Rect::from_min_size(icon.min, Vec2::splat(theme::ICON_S)),
+                            Icon::Speaker,
+                            pal.text_dim,
+                        );
                         let mut vol = self.project.master_volume;
                         let resp = theme::slider_with(
                             ui,
@@ -686,7 +685,7 @@ impl CadenceApp {
                             &mut vol,
                             0.0..=1.0,
                             plan.master_w,
-                            pal.accent,
+                            pal.text_dim,
                             Some(0.8),
                         );
                         if resp.changed() {
@@ -710,7 +709,9 @@ impl CadenceApp {
                         let clipping = t.clip_until.is_some_and(|until| until > Instant::now());
                         master_meter(ui, pal, plan.meter_w, t.peak, clipping);
                     });
-                });
+                })
+                .response
+                .rect;
                 #[cfg(test)]
                 probe(ui, block);
                 let _ = block;
@@ -758,12 +759,12 @@ impl CadenceApp {
         act
     }
 
-    /// "● Unsaved" / "Saved" with a tooltip; just the icon in the tight tier.
-    /// Returns the slot it occupies.
+    /// "Unsaved" / "Saved" / "Not saved" in plain words with a tooltip; just
+    /// an icon in the tight tier. Returns the slot it occupies.
     fn save_status(&self, ui: &mut Ui, pal: Palette, plan: Plan) -> Rect {
         let dirty = self.dirty();
         let (text, ink) = if dirty {
-            ("Unsaved", pal.warn)
+            ("Unsaved", pal.text)
         } else if self.doc.path.is_some() {
             ("Saved", pal.text_faint)
         } else {
@@ -771,21 +772,21 @@ impl CadenceApp {
         };
         let slot = fixed_row(ui, plan.status_w, |ui| {
             ui.spacing_mut().item_spacing.x = theme::GAP_S;
-            if !plan.status_text {
-                ui.add_space((plan.status_w - theme::ICON_S) * 0.5);
-            }
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(theme::ICON_S), Sense::hover());
-            if dirty || self.doc.path.is_none() {
-                ui.painter().circle_filled(rect.center(), 4.0, ink);
-            } else {
-                theme::paint_icon(ui.painter(), rect, Icon::Check, ink);
-            }
             if plan.status_text {
                 ui.add(
                     egui::Label::new(RichText::new(text).size(theme::TEXT_SMALL + 1.0).color(ink))
                         .selectable(false)
                         .wrap_mode(egui::TextWrapMode::Extend),
                 );
+            } else {
+                ui.add_space((plan.status_w - theme::ICON_S) * 0.5);
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(theme::ICON_S), Sense::hover());
+                let icon = if dirty || self.doc.path.is_none() {
+                    Icon::Save
+                } else {
+                    Icon::Check
+                };
+                theme::paint_icon(ui.painter(), rect, icon, ink);
             }
         });
         let rect = slot.response.rect;
@@ -816,46 +817,42 @@ impl CadenceApp {
         if ui.is_rect_visible(rect) {
             let hot = resp.hovered();
             let p = ui.painter();
-            p.rect(
-                rect,
-                theme::RADIUS_M,
-                pal.inset,
-                Stroke::new(
-                    1.0_f32,
-                    if hot {
-                        pal.control_border
-                    } else {
-                        pal.border_soft
-                    },
-                ),
-                StrokeKind::Inside,
-            );
+            theme::paint_lcd(p, pal, rect);
             let (big, small, tag) = if t.time_first {
-                (&c.time_now, &c.bar_line, "TIME")
+                (&c.time_now, &c.bar_line, "time")
             } else {
-                (&c.position, &c.time_pair, "BAR")
+                (&c.position, &c.time_pair, "bar")
             };
             p.text(
                 pos2(rect.left() + 10.0, rect.top() + 4.0),
                 Align2::LEFT_TOP,
                 big,
-                FontId::monospace(19.0),
-                if t.playing { pal.accent } else { pal.text },
+                theme::readout_font(ui, theme::TEXT_DISPLAY),
+                pal.lcd_ink,
             );
             p.text(
                 pos2(rect.left() + 10.0, rect.bottom() - 5.0),
                 Align2::LEFT_BOTTOM,
                 small,
-                FontId::monospace(10.0),
-                pal.text_faint,
+                theme::mono_font(10.0),
+                pal.lcd_dim,
             );
             p.text(
                 pos2(rect.right() - 8.0, rect.top() + 6.0),
                 Align2::RIGHT_TOP,
                 tag,
-                theme::strong_font(ui, 9.0),
-                if hot { pal.text_dim } else { pal.text_faint },
+                theme::mono_font(10.0),
+                if hot { pal.lcd_ink } else { pal.lcd_dim },
             );
+            // The playhead is the one orange thing in the window: a small
+            // running light while the song plays.
+            if t.playing {
+                let led = Rect::from_center_size(
+                    pos2(rect.right() - 10.0, rect.bottom() - 10.0),
+                    vec2(6.0, 6.0),
+                );
+                p.rect_filled(led, 1.0, pal.accent);
+            }
         }
         resp.on_hover_ui(|ui| {
             ui.label("Playhead position");
@@ -921,7 +918,7 @@ impl CadenceApp {
 pub(super) const TRANSPORT_H: f32 = 60.0;
 /// Horizontal padding inside the bar.
 const BAR_PAD: i8 = 12;
-/// Height of a kicker + control block (kicker, 2 px gap, 28 px control).
+/// Height of a control block (controls are centred in it).
 const BLOCK_H: f32 = 40.0;
 /// Height of the position display.
 const POS_H: f32 = 44.0;
@@ -929,6 +926,10 @@ const POS_H: f32 = 44.0;
 const LOGO: f32 = 28.0;
 /// Room kept free between the left and right groups.
 const MIN_FLEX: f32 = 16.0;
+/// Inline "Swing" caption slot (caption plus its gap).
+const SWING_CAPTION: f32 = 38.0;
+/// Inline speaker glyph labelling the master level (glyph plus its gap).
+const MASTER_CAPTION: f32 = 20.0;
 /// Peak that counts as clipping on the master meter.
 const CLIP_LEVEL: f32 = 0.99;
 /// Id of the song-name text field.
@@ -980,28 +981,28 @@ const ROOMY: Plan = Plan {
     swing: true,
 };
 const NORMAL: Plan = Plan {
-    name_w: 150.0,
+    name_w: 140.0,
     pos_w: 136.0,
     tempo_w: 80.0,
     swing_w: 80.0,
     swing_readout: 34.0,
     master_w: 96.0,
     master_readout: 38.0,
-    meter_w: 72.0,
+    meter_w: 64.0,
     sep_pad: 10.0,
     ..ROOMY
 };
 const TIGHT: Plan = Plan {
     btn: 28.0,
     play: 40.0,
-    name_w: 112.0,
+    name_w: 100.0,
     pos_w: 124.0,
     tempo_w: 72.0,
-    swing_w: 56.0,
+    swing_w: 52.0,
     swing_readout: 30.0,
-    master_w: 64.0,
+    master_w: 60.0,
     master_readout: 34.0,
-    meter_w: 56.0,
+    meter_w: 44.0,
     status_w: 16.0,
     status_text: false,
     sep_pad: 8.0,
@@ -1009,7 +1010,7 @@ const TIGHT: Plan = Plan {
 };
 /// Below the smallest window the app allows: swing leaves the bar.
 const MINIMAL: Plan = Plan {
-    name_w: 96.0,
+    name_w: 88.0,
     swing: false,
     ..TIGHT
 };
@@ -1032,7 +1033,12 @@ impl Plan {
     }
 
     fn master_total(&self) -> f32 {
-        self.master_w + theme::GAP_XS + self.master_readout + theme::GAP_S + self.meter_w
+        MASTER_CAPTION
+            + self.master_w
+            + theme::GAP_XS
+            + self.master_readout
+            + theme::GAP_S
+            + self.meter_w
     }
 
     fn left(&self) -> f32 {
@@ -1047,7 +1053,7 @@ impl Plan {
             + theme::GAP_XS
             + self.tap_w
             + if self.swing {
-                theme::GAP_M + self.swing_w + theme::GAP_XS + self.swing_readout
+                theme::GAP_M + SWING_CAPTION + self.swing_w + theme::GAP_XS + self.swing_readout
             } else {
                 0.0
             }
@@ -1137,17 +1143,6 @@ fn count_in_menu(resp: &Response, on: bool) -> bool {
     toggled
 }
 
-/// A `width` × [`BLOCK_H`] slot whose content is stacked from the top; the
-/// slot is exactly that wide whatever the content does.
-fn fixed_block(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) -> Rect {
-    ui.allocate_ui_with_layout(vec2(width, BLOCK_H), Layout::top_down(Align::Min), |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
-        add(ui);
-    })
-    .response
-    .rect
-}
-
 /// A `width` × [`BLOCK_H`] slot whose content is centered vertically.
 fn fixed_row<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
     ui.allocate_ui_with_layout(
@@ -1157,32 +1152,97 @@ fn fixed_row<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> egui
     )
 }
 
-/// Small tracked caps label above a control; never wraps or selects.
-fn kicker(ui: &mut Ui, pal: Palette, text: &str) {
-    ui.add(
-        egui::Label::new(theme::kicker_text(pal, text))
-            .selectable(false)
-            .wrap_mode(egui::TextWrapMode::Extend),
-    );
-}
-
-/// Value text in a fixed-width slot next to a slider.
-fn readout(ui: &mut Ui, pal: Palette, width: f32, text: &str) {
+/// Inline sentence-case caption in a fixed `width` slot (left of its
+/// control); never wraps or selects.
+fn caption(ui: &mut Ui, pal: Palette, width: f32, text: &str) {
     ui.allocate_ui_with_layout(
         vec2(width, theme::CONTROL_S),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.add(
-                egui::Label::new(
-                    RichText::new(text)
-                        .size(theme::TEXT_SMALL + 1.0)
-                        .color(pal.text_dim),
-                )
-                .selectable(false)
-                .wrap_mode(egui::TextWrapMode::Extend),
+                egui::Label::new(theme::kicker_text(pal, text))
+                    .selectable(false)
+                    .truncate(),
             );
         },
     );
+}
+
+/// Value in a small recessed LCD window next to a slider.
+fn readout(ui: &mut Ui, pal: Palette, width: f32, text: &str) {
+    let size = if width < 36.0 { 11.0 } else { 12.0 };
+    theme::lcd_readout(ui, pal, text, "", size, width, theme::CONTROL_S);
+}
+
+/// An editable value (`add` puts a frameless `DragValue` into the given
+/// size) inside a recessed LCD window `width` wide, with `unit` printed at
+/// its right edge in the dim readout ink.
+fn lcd_drag_value(
+    ui: &mut Ui,
+    pal: Palette,
+    width: f32,
+    unit: &str,
+    add: impl FnOnce(&mut Ui, Vec2) -> Response,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, theme::CONTROL_M), Sense::hover());
+    theme::paint_lcd(ui.painter(), pal, rect);
+    let unit_font = theme::mono_font(10.0);
+    let unit_w = ui
+        .painter()
+        .layout_no_wrap(unit.to_owned(), unit_font.clone(), pal.lcd_dim)
+        .size()
+        .x;
+    let value = Rect::from_min_max(
+        pos2(rect.left() + 2.0, rect.top() + 1.0),
+        pos2(rect.right() - unit_w - 8.0, rect.bottom() - 1.0),
+    );
+    let font = theme::readout_font(ui, 15.0);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(value)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    {
+        let style = child.style_mut();
+        style.override_font_id = Some(font);
+        let v = &mut style.visuals;
+        v.button_frame = false;
+        v.override_text_color = Some(pal.lcd_ink);
+        v.extreme_bg_color = pal.lcd;
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+        ] {
+            w.bg_stroke = Stroke::NONE;
+            w.weak_bg_fill = egui::Color32::TRANSPARENT;
+            w.bg_fill = pal.lcd;
+        }
+    }
+    let resp = add(&mut child, value.size());
+    ui.painter().text(
+        pos2(rect.right() - 6.0, rect.center().y + 1.0),
+        Align2::RIGHT_CENTER,
+        unit,
+        unit_font,
+        pal.lcd_dim,
+    );
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            theme::RADIUS_S,
+            Stroke::new(
+                1.0_f32,
+                if resp.has_focus() {
+                    pal.accent
+                } else {
+                    pal.control_border
+                },
+            ),
+            StrokeKind::Outside,
+        );
+    }
+    resp
 }
 
 /// Divider with room on both sides, 28 px tall.
@@ -1192,11 +1252,11 @@ fn bar_sep(ui: &mut Ui, pal: Palette, plan: Plan) {
     ui.add_space(plan.sep_pad);
 }
 
-/// The Cadence mark: three bars on an accent tile.
+/// The Cadence mark: three level bars in a recessed window, like a strip
+/// of meter LEDs; the tallest one is the orange signal color.
 pub(super) fn paint_brand_mark(painter: &egui::Painter, rect: Rect, pal: Palette) {
     let unit = rect.width() / 30.0;
-    painter.rect_filled(rect, 8.0 * unit, pal.accent);
-    let ink = theme::ink_on(pal.accent);
+    painter.rect_filled(rect, 3.0 * unit, pal.lcd);
     for (i, h) in [0.45f32, 0.8, 0.6].iter().enumerate() {
         let x = rect.left() + (8.0 + i as f32 * 6.0) * unit;
         let bottom = rect.bottom() - 7.0 * unit;
@@ -1205,14 +1265,15 @@ pub(super) fn paint_brand_mark(painter: &egui::Painter, rect: Rect, pal: Palette
                 pos2(x, bottom - h * 14.0 * unit),
                 pos2(x + 3.5 * unit, bottom),
             ),
-            1.5 * unit,
-            ink,
+            0.5 * unit,
+            if i == 1 { pal.accent } else { pal.lcd_ink },
         );
     }
 }
 
-/// Record: a red dot on a button body. Dim red when unarmed, solid red with
-/// a tinted body when armed, pulsing while live recording rolls.
+/// Record: a red-orange dot on a transport key. Unarmed the dot is dim;
+/// armed the key is lit (accent indicator bar) and the dot glows, pulsing
+/// while live recording rolls.
 fn record_button(
     ui: &mut Ui,
     pal: Palette,
@@ -1227,47 +1288,22 @@ fn record_button(
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, armed, "Record")
     });
     if ui.is_rect_visible(rect) {
-        let down = resp.is_pointer_button_down_on();
         let hovered = resp.hovered();
-        let (fill, border, dot) = if armed {
+        let red = theme::mix(pal.accent, pal.danger, 0.5);
+        let dot = if armed {
             let pulse = if rolling {
                 0.5 + 0.5 * (time * std::f64::consts::TAU / 1.2).sin() as f32
             } else {
                 1.0
             };
-            (
-                theme::mix(pal.raised, pal.danger, if down { 0.34 } else { 0.22 }),
-                theme::mix(pal.raised, pal.danger, 0.7),
-                theme::mix(theme::mix(pal.danger, pal.panel, 0.35), pal.danger, pulse),
-            )
+            theme::mix(theme::mix(red, pal.control, 0.4), red, pulse)
         } else {
-            (
-                if down {
-                    pal.control_active
-                } else if hovered {
-                    pal.control_hover
-                } else {
-                    pal.control
-                },
-                if hovered {
-                    theme::mix(pal.control_border, pal.text, 0.3)
-                } else {
-                    pal.control_border
-                },
-                theme::mix(pal.danger, pal.text_dim, if hovered { 0.0 } else { 0.25 }),
-            )
+            theme::mix(red, pal.text_dim, if hovered { 0.1 } else { 0.4 })
         };
-        let p = ui.painter();
-        p.rect(
-            rect,
-            theme::RADIUS_M,
-            fill,
-            Stroke::new(1.0_f32, border),
-            StrokeKind::Inside,
-        );
-        let side = (size * 0.57).round().max(10.0);
+        theme::paint_key_body(ui, pal, rect, &resp, armed);
+        let side = (size * 0.5).round().max(10.0);
         theme::paint_icon(
-            p,
+            ui.painter(),
             Rect::from_center_size(rect.center(), Vec2::splat(side)),
             Icon::Record,
             dot,
@@ -1295,7 +1331,7 @@ fn master_meter(ui: &mut Ui, pal: Palette, width: f32, peak: [f32; 2], clipping:
     if ui.is_rect_visible(rect) {
         let m = pal.mixer;
         let p = ui.painter();
-        p.rect_filled(rect, 3.0, m.well);
+        p.rect_filled(rect, theme::RADIUS_S, m.well);
         let inner = rect.shrink(2.0);
         let lane_h = (inner.height() - 2.0) * 0.5;
         // Unlit segments stay readable on the dark well, in every theme.
