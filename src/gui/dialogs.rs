@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{
     vec2, Align, Color32, Context, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers,
-    RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui,
+    RichText, ScrollArea, Sense, Stroke, Ui,
 };
 
 use super::files::PendingAction;
@@ -512,7 +512,7 @@ impl CadenceApp {
         let resp = show_dialog(ctx, "cadence-new-song", pal, W_COMPACT, |ui| {
             header(ui, pal, "NEW SONG", "Start a new song");
             ui.add_space(theme::GAP_M);
-            ui.label(theme::kicker_text(pal, "NAME"));
+            ui.label(theme::kicker_text(pal, "Name"));
             ui.add_space(theme::GAP_XS);
             ui.add_sized(
                 vec2(ui.available_width(), theme::CONTROL_M),
@@ -523,11 +523,11 @@ impl CadenceApp {
                     .vertical_align(Align::Center),
             );
             ui.add_space(theme::GAP_M);
-            ui.label(theme::kicker_text(pal, "KEY"));
+            ui.label(theme::kicker_text(pal, "Key"));
             ui.add_space(theme::GAP_XS);
             key_picker(ui, pal, &mut draft.key);
             ui.add_space(theme::GAP_M);
-            ui.label(theme::kicker_text(pal, "START FROM"));
+            ui.label(theme::kicker_text(pal, "Start from"));
             ui.add_space(theme::GAP_XS);
             template_picker(ui, pal, &mut draft.template);
             ui.add_space(theme::GAP_S);
@@ -666,12 +666,12 @@ impl CadenceApp {
             );
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "SONG KEY"));
+            ui.label(theme::kicker_text(pal, "Song key"));
             ui.add_space(theme::GAP_XS);
             key_picker(ui, pal, &mut new_key);
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "CHORD"));
+            ui.label(theme::kicker_text(pal, "Chord"));
             ui.add_space(theme::GAP_XS);
             egui::Grid::new("arp-chord")
                 .num_columns(2)
@@ -736,7 +736,7 @@ impl CadenceApp {
                 });
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "PATTERN"));
+            ui.label(theme::kicker_text(pal, "Pattern"));
             ui.add_space(theme::GAP_XS);
             egui::Grid::new("arp-pattern")
                 .num_columns(2)
@@ -891,7 +891,7 @@ impl CadenceApp {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
                         theme::strong_text("Cadence")
-                            .size(theme::TEXT_HEADING + 4.0)
+                            .size(theme::TEXT_HEADING)
                             .color(pal.text),
                     );
                     ui.label(RichText::new("A focused songwriting studio").color(pal.text_dim));
@@ -919,7 +919,7 @@ impl CadenceApp {
                 .color(pal.text_faint),
             );
             ui.add_space(theme::GAP_M);
-            ui.label(theme::kicker_text(pal, "CREDITS"));
+            ui.label(theme::kicker_text(pal, "Credits"));
             ui.add_space(theme::GAP_XS);
             for line in [
                 "Barlow Semi Condensed — SIL Open Font License 1.1",
@@ -1045,7 +1045,7 @@ impl CadenceApp {
             header(ui, pal, "PREFERENCES", "Cadence settings");
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "APPEARANCE"));
+            ui.label(theme::kicker_text(pal, "Appearance"));
             ui.add_space(theme::GAP_XS);
             let options: Vec<theme::Segment<'_, theme::ThemeChoice>> = theme::ThemeChoice::ALL
                 .iter()
@@ -1054,7 +1054,7 @@ impl CadenceApp {
             theme::segmented(ui, pal, &mut theme_pick, &options, theme::CONTROL_M, None);
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "AUDIO OUTPUT"));
+            ui.label(theme::kicker_text(pal, "Audio output"));
             ui.add_space(theme::GAP_XS);
             let shown = current_device
                 .clone()
@@ -1086,12 +1086,12 @@ impl CadenceApp {
             ui.add(egui::Label::new(RichText::new(note).small().color(pal.text_faint)).truncate());
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "MIDI INPUT"));
+            ui.label(theme::kicker_text(pal, "MIDI input"));
             ui.add_space(theme::GAP_XS);
             midi_pick = midi_input_picker(ui, pal, &midi_pref, midi_ports.as_ref(), COMBO_W);
             ui.add_space(theme::GAP_M);
 
-            ui.label(theme::kicker_text(pal, "UPDATES"));
+            ui.label(theme::kicker_text(pal, "Updates"));
             ui.add_space(theme::GAP_XS);
             ui.checkbox(&mut auto, "Check for updates automatically");
             theme::hint(
@@ -1367,8 +1367,14 @@ fn modal(id: &str, pal: Palette) -> egui::Modal {
         .frame(
             Frame::new()
                 .fill(pal.panel)
-                .stroke(Stroke::new(1.0f32, pal.border))
-                .corner_radius(theme::RADIUS_L as u8 + 2)
+                .stroke(Stroke::new(1.0f32, pal.control_border))
+                .corner_radius(theme::RADIUS_L as u8)
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 0,
+                    spread: 0,
+                    color: Color32::from_black_alpha(120),
+                })
                 .inner_margin(Margin::same(20)),
         )
 }
@@ -1411,9 +1417,15 @@ pub(super) fn show_dialog<T>(
     })
 }
 
-/// Kicker + title header shared by all dialogs.
+/// Dialog title, in the heading step. `kicker` (the old small-caps
+/// eyebrow) is not shown; it only stands in when there is no title.
 pub(super) fn header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
-    theme::section_header(ui, pal, kicker, title);
+    let text = if title.is_empty() { kicker } else { title };
+    ui.label(
+        theme::strong_text(text)
+            .size(theme::TEXT_HEADING)
+            .color(pal.text),
+    );
 }
 
 /// "just now", "5 minutes ago", "3 hours ago", "2 days ago" — relative, so no
@@ -1612,7 +1624,7 @@ use Keys::{Either, Menu, Mouse, Shortcut, Text};
 /// The Shortcuts page: the first three sections fill the left column.
 const SHORTCUT_SECTIONS: &[Section] = &[
     Section {
-        title: "TRANSPORT",
+        title: "Transport",
         rows: &[
             ("Play / pause", Shortcut(&super::SC_PLAY)),
             ("Return to start", Shortcut(&super::SC_HOME)),
@@ -1625,7 +1637,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "FILE",
+        title: "File",
         rows: &[
             (
                 "New song, blank or from a template",
@@ -1641,7 +1653,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "PIANO ROLL",
+        title: "Piano roll",
         rows: &[
             ("Note length 1/32 … 1 bar", Text("1 … 6")),
             ("Give the selected notes that length", Text("Shift+1 … 6")),
@@ -1657,7 +1669,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "EDITING",
+        title: "Editing",
         rows: &[
             ("Undo", Shortcut(&super::SC_UNDO)),
             ("Redo", Either(&super::SC_REDO, &super::SC_REDO_ALT)),
@@ -1681,7 +1693,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "VIEW & PANELS",
+        title: "View & panels",
         rows: &[
             ("Pattern editor", Shortcut(&super::SC_EDITOR)),
             ("Mixer", Shortcut(&super::SC_MIXER)),
@@ -1699,7 +1711,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "LIBRARY",
+        title: "Library",
         rows: &[
             (
                 "Add a sound as a new track",
@@ -1715,7 +1727,7 @@ const SHORTCUT_SECTIONS: &[Section] = &[
 
 /// Scrolling and zooming: the same in the arranger and both editors.
 const NAVIGATION: Section = Section {
-    title: "NAVIGATION",
+    title: "Navigation",
     rows: &[
         ("Scroll up and down", Mouse("Wheel")),
         ("Scroll left and right", Mouse("{shift}+wheel")),
@@ -1728,7 +1740,7 @@ const NAVIGATION: Section = Section {
 
 const ARRANGER_SECTIONS: &[Section] = &[
     Section {
-        title: "CLIPS",
+        title: "Clips",
         rows: &[
             ("Select a clip and show its pattern", Mouse("Click it")),
             (
@@ -1772,7 +1784,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "RULER & MARKERS",
+        title: "Ruler & markers",
         rows: &[
             (
                 "Move the playhead (snaps to beats)",
@@ -1792,7 +1804,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "CHORD LANE (BOTTOM OF THE RULER)",
+        title: "Chord lane (bottom of the ruler)",
         rows: &[
             ("Add the key's chord", Mouse("Click the lane")),
             ("Hear a chord on the selected track", Mouse("Hover a chord")),
@@ -1807,7 +1819,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "TRACKS",
+        title: "Tracks",
         rows: &[
             ("Select a track", Mouse("Click its header")),
             ("Reorder tracks", Mouse("Drag a header up or down")),
@@ -1821,7 +1833,7 @@ const ARRANGER_SECTIONS: &[Section] = &[
 
 const EDITOR_SECTIONS: &[Section] = &[
     Section {
-        title: "PIANO ROLL",
+        title: "Piano roll",
         rows: &[
             ("Draw a note (Note length, Snap)", Mouse("Click empty grid")),
             ("Draw a note as long as you drag", Mouse("Drag empty grid")),
@@ -1847,7 +1859,7 @@ const EDITOR_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "DRUM GRID",
+        title: "Drum grid",
         rows: &[
             ("Paint or erase steps", Mouse("Click or drag")),
             ("Accent: 100 → 70 → 40%", Mouse("{shift}+click a hit")),
@@ -1860,7 +1872,7 @@ const EDITOR_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "CHORD STRIP (MELODIC TRACKS)",
+        title: "Chord strip (melodic tracks)",
         rows: &[
             ("Open or close it", Mouse("Click Chords above the roll")),
             ("Hear a chord", Mouse("Hover a chord")),
@@ -1881,7 +1893,7 @@ const EDITOR_SECTIONS: &[Section] = &[
         ],
     },
     Section {
-        title: "PATTERNS",
+        title: "Patterns",
         rows: &[
             ("Switch pattern", Mouse("Click the pattern name")),
             ("Rename the pattern", Mouse("Double-click the pattern name")),
@@ -1900,7 +1912,7 @@ const EDITOR_SECTIONS: &[Section] = &[
 ];
 
 const MIXER_SECTIONS: &[Section] = &[Section {
-    title: "MIXER",
+    title: "Mixer",
     rows: &[
         ("Volume, pan, effect amount", Mouse("Drag a fader or knob")),
         ("Fine adjustment", Mouse("{shift}+drag / {alt}+wheel")),
@@ -1917,7 +1929,7 @@ const MIXER_SECTIONS: &[Section] = &[Section {
 }];
 
 const KEYBOARD_SECTIONS: &[Section] = &[Section {
-    title: "PLAYING FROM THE COMPUTER KEYBOARD",
+    title: "Playing from the computer keyboard",
     rows: &[
         ("White keys C D E F G A B", Text("Z X C V B N M")),
         ("Black keys C♯ D♯ F♯ G♯ A♯", Text("S D G H J")),
@@ -1968,7 +1980,11 @@ pub(super) fn split_gesture(text: &str) -> (Vec<Modifiers>, &str) {
 
 /// A titled group of `what → how` rows.
 fn help_section(ui: &mut Ui, pal: Palette, ctx: &Context, section: &Section) {
-    ui.label(theme::kicker_text(pal, section.title));
+    ui.label(
+        theme::strong_text(section.title)
+            .size(theme::TEXT_SMALL + 1.0)
+            .color(pal.text_dim),
+    );
     ui.add_space(theme::GAP_XS);
     let left = (ui.available_width() * 0.5).floor();
     ui.spacing_mut().item_spacing.y = theme::GAP_XS;
@@ -2077,15 +2093,14 @@ fn keycap(ui: &mut Ui, pal: Palette, key: &str) {
     let galley = ui.painter().layout_no_wrap(key.to_owned(), font, pal.text);
     let width = (galley.size().x + 12.0).max(22.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+    // A small hardware key: tonal cap on a hard 2 px bottom edge.
     let p = ui.painter();
-    p.rect(
-        rect,
-        theme::RADIUS_S,
-        pal.control,
-        Stroke::new(1.0f32, pal.control_border),
-        StrokeKind::Inside,
+    theme::paint_key(p, rect, theme::RADIUS_S, pal.control, pal.key_edge, 2.0);
+    p.galley(
+        rect.center() - galley.size() * 0.5 - vec2(0.0, 1.0),
+        galley,
+        pal.text,
     );
-    p.galley(rect.center() - galley.size() * 0.5, galley, pal.text);
 }
 
 /// The generated third-party notices (crates + bundled fonts), embedded at
