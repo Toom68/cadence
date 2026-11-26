@@ -49,22 +49,24 @@ Copy-Item (Join-Path $Root 'assets/fonts/DejaVu-LICENSE.txt') (Join-Path $Licens
 Copy-Item (Join-Path $Root 'packaging/README.txt') (Join-Path $Stage 'README.txt')
 Copy-Item (Join-Path $Root 'THIRD-PARTY-NOTICES.txt') (Join-Path $Stage 'THIRD-PARTY-NOTICES.txt')
 
-# The built-in General MIDI SoundFont ("Cadence GM.sf2" = GeneralUser GS, see
-# packaging/soundfont/README.md) goes in soundfonts\ next to Cadence.exe — in
-# the portable zip and, through the staged folder, the installer. Downloaded
-# once into .cache/soundfonts and SHA-256 verified; a checksum mismatch is
-# always fatal, a failed download only with REQUIRE_SOUNDFONT=1.
+# The built-in SoundFonts ("Cadence GM.sf2" = GeneralUser GS, and "Cadence
+# Harmonium.sf2" built from pinned recordings, see
+# packaging/soundfont/README.md) go in soundfonts\ next to Cadence.exe — in
+# the portable zip and, through the staged folder, the installer. Fetched or
+# built once into .cache/soundfonts and SHA-256 verified; a checksum mismatch
+# is always fatal, a failed download/build only with REQUIRE_SOUNDFONT=1.
 $SoundFonts = Join-Path $Stage 'soundfonts'
 $SoundFontStaged = $false
 try {
     & (Join-Path $PSScriptRoot 'fetch-soundfont.ps1') -Dest $SoundFonts
     Copy-Item (Join-Path $Root 'packaging/soundfont/GeneralUser-GS-LICENSE.txt') (Join-Path $Licenses 'GeneralUser-GS-LICENSE.txt')
+    Copy-Item (Join-Path $Root 'packaging/soundfont/Cadence-Harmonium-LICENSE.txt') (Join-Path $Licenses 'Cadence-Harmonium-LICENSE.txt')
     $SoundFontStaged = $true
 } catch {
     if ("$_" -match 'checksum mismatch' -or $env:REQUIRE_SOUNDFONT -eq '1') {
-        throw "Could not stage the General MIDI SoundFont: $_"
+        throw "Could not stage the built-in SoundFonts: $_"
     }
-    Write-Warning "Packaging WITHOUT the built-in General MIDI SoundFont (GM tracks will use fallback sounds): $_"
+    Write-Warning "Packaging WITHOUT the built-in SoundFonts (GM and harmonium tracks will use fallback sounds): $_"
     if (Test-Path $SoundFonts) { Remove-Item -Recurse -Force $SoundFonts }
 }
 
@@ -82,7 +84,7 @@ if ($Proc.ExitCode -ne 0) { throw "Cadence.exe --version failed with exit code $
 Get-Content $Out
 Remove-Item $Out
 
-# ...and finds its own copy of the GM SoundFont (isolated data dir; the staged
+# ...and finds its own copies of the built-in SoundFonts (isolated data dir; the staged
 # soundfonts folder means it never falls back to the repo's dev cache).
 if ($SoundFontStaged) {
     $Saved = @{}
@@ -97,10 +99,12 @@ if ($SoundFontStaged) {
         $Proc = Start-Process -FilePath $Exe -ArgumentList '--list-instruments' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $Out
         if ($Proc.ExitCode -ne 0) { throw "Cadence.exe --list-instruments failed with exit code $($Proc.ExitCode)" }
         $Listing = Get-Content -Raw $Out
-        if ($Listing -notmatch [regex]::Escape('Cadence GM (built-in)')) {
-            throw "the packaged Cadence.exe does not list the built-in SoundFont:`n$Listing"
+        foreach ($Want in 'Cadence GM (built-in)', 'Cadence Harmonium (built-in)') {
+            if ($Listing -notmatch [regex]::Escape($Want)) {
+                throw "the packaged Cadence.exe does not list ${Want}:`n$Listing"
+            }
+            Write-Host "Built-in SoundFont: $Want OK"
         }
-        Write-Host 'Built-in SoundFont: OK'
     } finally {
         if (Test-Path $Out) { Remove-Item $Out }
         if (Test-Path $SmokeData) { Remove-Item -Recurse -Force $SmokeData }

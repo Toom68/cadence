@@ -5,9 +5,10 @@
 ;        /DRepoRoot=<repo> [/DRequireSoundFont=1] packaging\windows\cadence.iss
 ;
 ; The staged folder holds soundfonts\Cadence GM.sf2 (the built-in General
-; MIDI SoundFont, GeneralUser GS, see packaging/soundfont/README.md); [Files]
-; installs it with everything else. /DRequireSoundFont=1 (CI) refuses to
-; build an installer without it.
+; MIDI SoundFont, GeneralUser GS) and soundfonts\Cadence Harmonium.sf2 (the
+; sampled harmonium), see packaging/soundfont/README.md; [Files] installs
+; them with everything else. /DRequireSoundFont=1 (CI) refuses to build an
+; installer without either.
 ;
 ; Per-user install into %LOCALAPPDATA%\Programs\Cadence: no admin prompt,
 ; ever, so the in-app updater can run a newer setup silently. The AppId
@@ -29,6 +30,9 @@
 #ifdef RequireSoundFont
   #if !FileExists(SourceDir + "\soundfonts\Cadence GM.sf2")
     #error The built-in SoundFont is missing from the staged app (soundfonts\Cadence GM.sf2); run scripts\windows-package.ps1
+  #endif
+  #if !FileExists(SourceDir + "\soundfonts\Cadence Harmonium.sf2")
+    #error The built-in harmonium SoundFont is missing from the staged app (soundfonts\Cadence Harmonium.sf2); run scripts\windows-package.ps1
   #endif
 #endif
 

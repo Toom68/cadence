@@ -19,7 +19,8 @@ scripts/mac-package.sh                            # dist/Cadence.app + .zip (+ .
 pwsh scripts/windows-package.ps1                  # dist/Cadence-<ver>-windows-x64/Cadence.exe + .zip + -setup.exe (Inno Setup 6; REQUIRE_INSTALLER=1 in CI)
 scripts/windows-cross-package.sh                  # same zip via x86_64-pc-windows-gnu on macOS/Linux (needs mingw-w64 + rustup target)
 scripts/release.sh X.Y.Z "what changed"           # bump + fmt/clippy/test + commit "X.Y.Z: ..."; prints the push/tag commands
-scripts/fetch-soundfont.sh                        # download + SHA-256-verify the bundled GM SoundFont into .cache/soundfonts (packaging; REQUIRE_SOUNDFONT=1 in CI)
+scripts/fetch-soundfont.sh                        # download + SHA-256-verify the bundled GM SoundFont and build the harmonium into .cache/soundfonts (packaging; REQUIRE_SOUNDFONT=1 in CI)
+python3 scripts/build-harmonium-sf2.py [--check]  # build "Cadence Harmonium.sf2" from pinned recordings (stdlib only, deterministic, pinned SHA-256)
 ```
 
 Parallel git worktrees must not share one `CARGO_TARGET_DIR`: every worktree builds `cadence-studio`
@@ -63,7 +64,7 @@ and `update.rs` tests use inline fixtures signed by a throwaway key.
 | `src/midi_in.rs` | hardware MIDI controller input (midir): pure parsing/sustain/connection planning + a background port thread; headless `CadenceApp` never opens it |
 | `src/persistence.rs` | atomic `.cadence` save/load (20 MB cap), crash-recovery autosave, `data_dir()` |
 | `src/packs.rs` | JSON instrument packs: schema types, validation, install, catalog |
-| `src/font.rs` | SoundFont (`.sf2`) instruments: user font dir, GM program names, catalog |
+| `src/font.rs` | SoundFont (`.sf2`) instruments: built-in fonts (`Cadence GM`, `Cadence Harmonium`), user font dir, GM program names, catalog |
 | `src/gui/` | egui UI (`CadenceApp`) |
 | `src/update.rs` | signed in-app updates: manifest, minisign check, system-curl download, installer hand-off (GUI side: `src/gui/updates.rs`) |
 | `packaging/` | buyer `README.txt`, Inno Setup script `windows/cadence.iss`, `update-key.pub`, release-notes template |

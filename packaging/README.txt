@@ -31,8 +31,9 @@ First run
 Launch Cadence and the built-in demo song (Afterglow) opens ready to play —
 press Space. Sampled General MIDI instruments (pianos, guitars, strings,
 drums...) are built in: pick "Cadence GM (built-in)" in a track's Sound menu
-or the Instruments tab. Songs are .cadence files; your work autosaves for crash
-recovery in your user data folder.
+or the Instruments tab. A real sampled harmonium is built in too: add
+"Harmonium" from the Instruments tab or the Add track list. Songs are .cadence
+files; your work autosaves for crash recovery in your user data folder.
 
 Contents of this package
 ------------------------
@@ -41,10 +42,13 @@ Contents of this package
   THIRD-PARTY-NOTICES.txt     licenses for every Rust crate and bundled font
   soundfonts/                 Cadence GM.sf2, the built-in General MIDI
                               SoundFont (GeneralUser GS by S. Christian
-                              Collins), and its license (inside
+                              Collins); Cadence Harmonium.sf2, a sampled
+                              harmonium (recorded by Donya Quick, samples by
+                              Nicholaus P. Brosowsky / tonejs-instruments,
+                              CC BY 3.0); and their licenses (inside
                               Cadence.app/Contents/Resources on macOS)
-  licenses/                   the Inter, DejaVu and GeneralUser GS license
-                              texts
+  licenses/                   the Inter, DejaVu, GeneralUser GS and
+                              harmonium license texts
   EULA.txt                    the end-user license (when present)
 
 In the app, Help > About Cadence > "Third-Party Notices" shows the same

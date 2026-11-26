@@ -1,4 +1,5 @@
-# Download (once) and verify the General MIDI SoundFont Cadence ships with.
+# Download (once) and verify the SoundFonts Cadence ships with: the General
+# MIDI font "Cadence GM.sf2" and the sampled "Cadence Harmonium.sf2".
 # PowerShell twin of scripts/fetch-soundfont.sh (Windows packaging / CI).
 #
 # Usage:  pwsh scripts/fetch-soundfont.ps1 [-Dest DIR]
@@ -6,8 +7,11 @@
 # Reads the pinned URL and SHA-256 from packaging/soundfont/pin.txt, keeps a
 # verified copy in the cache folder ($env:CADENCE_SOUNDFONT_CACHE, default
 # .cache/soundfonts in the repo — gitignored) as "Cadence GM.sf2" next to its
-# license text, and, given -Dest, copies both there. A checksum mismatch is
-# always fatal (the bad download is deleted). Throws on any failure.
+# license text, then builds "Cadence Harmonium.sf2" there with
+# scripts/build-harmonium-sf2.py (needs Python 3: python3, python or py -3).
+# Given -Dest, copies both fonts and their license texts there. A checksum
+# mismatch is always fatal (the bad download is deleted; the message says
+# "checksum mismatch"). Throws on any failure.
 param([string]$Dest = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -66,9 +70,39 @@ if ((Test-Path -LiteralPath $Font) -and ((Get-Sha256 $Font) -eq $Sha256)) {
 }
 Copy-Item -LiteralPath $License -Destination (Join-Path $Cache (Split-Path -Leaf $License)) -Force
 
+# The harmonium is built from pinned recordings, not downloaded as one file;
+# the script verifies every source and the result against the pin.
+$HPinFile = Join-Path $Root 'packaging/soundfont/harmonium-pin.txt'
+$HPin = @{}
+foreach ($line in Get-Content $HPinFile) {
+    if ($line -match '^([A-Z0-9_]+)=(.*)$') { $HPin[$Matches[1]] = $Matches[2].Trim() }
+}
+foreach ($key in 'HARMONIUM_FILE', 'HARMONIUM_LICENSE') {
+    if (-not $HPin.ContainsKey($key) -or -not $HPin[$key]) { throw "$key missing from $HPinFile" }
+}
+$HFile = $HPin['HARMONIUM_FILE']
+$HFont = Join-Path $Cache $HFile
+$HLicense = Join-Path $Root "packaging/soundfont/$($HPin['HARMONIUM_LICENSE'])"
+$Python = $null
+$PyArgs = @()
+foreach ($Candidate in 'python3', 'python', 'py') {
+    if (-not (Get-Command $Candidate -ErrorAction SilentlyContinue)) { continue }
+    $CandidateArgs = @(if ($Candidate -eq 'py') { '-3' })
+    # Skips the Microsoft Store "python3" alias and Python 2.
+    & $Candidate @CandidateArgs -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) { $Python = $Candidate; $PyArgs = $CandidateArgs; break }
+}
+if (-not $Python) { throw "Python 3 is needed to build $HFile (scripts/build-harmonium-sf2.py)" }
+& $Python @PyArgs (Join-Path $Root 'scripts/build-harmonium-sf2.py') --out $HFont
+if ($LASTEXITCODE -eq 3) { throw "Harmonium SoundFont checksum mismatch (scripts/build-harmonium-sf2.py exited 3)" }
+if ($LASTEXITCODE -ne 0) { throw "could not build $HFile (scripts/build-harmonium-sf2.py exited $LASTEXITCODE)" }
+Copy-Item -LiteralPath $HLicense -Destination (Join-Path $Cache (Split-Path -Leaf $HLicense)) -Force
+
 if ($Dest) {
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
     Copy-Item -LiteralPath $Font -Destination (Join-Path $Dest $File) -Force
     Copy-Item -LiteralPath $License -Destination (Join-Path $Dest (Split-Path -Leaf $License)) -Force
-    Write-Host "Staged $File into $Dest"
+    Copy-Item -LiteralPath $HFont -Destination (Join-Path $Dest $HFile) -Force
+    Copy-Item -LiteralPath $HLicense -Destination (Join-Path $Dest (Split-Path -Leaf $HLicense)) -Force
+    Write-Host "Staged $File and $HFile into $Dest"
 }

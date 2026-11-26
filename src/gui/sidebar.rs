@@ -14,7 +14,10 @@ use super::theme::{
     TEXT_BODY, TEXT_SMALL, TEXT_TITLE,
 };
 use super::{ops, CadenceApp, Focus, StatusKind, Tab};
-use crate::font::{gm_program_catalog, FontInfo, GM_PROGRAM_NAMES};
+use crate::font::{
+    featured_sound, gm_program_catalog, is_gm_font, FontInfo, BUILTIN_FONT_NAME, FEATURED_SOUNDS,
+    GM_PROGRAM_NAMES,
+};
 use crate::model::{
     create_track, note_name, ArpDirection, ArpRate, ArpSettings, FontRef, Instrument, Track,
     MAX_ARP_OCTAVES, MAX_GLIDE_SECONDS, MIN_ARP_GATE,
@@ -427,12 +430,18 @@ impl QuickSound {
         match self {
             Self::BuiltIn(i) => i.description().to_owned(),
             Self::Preset(p) => format!("{}\n\n{}", p.description, preset_summary(p)),
-            Self::Font(f) => format!(
-                "{}\n\n{} · from {}",
-                f.program_name(),
-                gm_family(f.program),
-                f.name
-            ),
+            Self::Font(f) => match featured_sound(&f.name) {
+                Some(sound) => format!(
+                    "{}\n\n{}\n{} · from {}",
+                    sound.label, sound.description, sound.credit, f.name
+                ),
+                None => format!(
+                    "{}\n\n{} · from {}",
+                    f.program_name(),
+                    gm_family(f.program),
+                    f.name
+                ),
+            },
         }
     }
 
@@ -474,16 +483,15 @@ impl QuickPicks {
 /// real-instrument sound each, in catalog order.
 const QUICK_FONT_PROGRAMS: [u8; 3] = [0, 24, 40];
 
-/// Hover text for a font row: the built-in font says where it comes from.
+/// Hover text for a font row: the built-in fonts say where they come from.
 fn font_tooltip(fonts: &crate::font::FontLibrary, info: &FontInfo) -> String {
-    if fonts.is_builtin(&info.name) {
-        format!(
-            "Built-in General MIDI SoundFont (GeneralUser GS by S. Christian Collins) · \
-             ships with Cadence, so songs using it play anywhere · {} presets",
-            info.presets
-        )
-    } else {
-        format!("SoundFont · {} presets", info.presets)
+    match crate::font::builtin_font_blurb(&info.name).filter(|_| fonts.is_builtin(&info.name)) {
+        Some(blurb) => format!(
+            "{blurb} · ships with Cadence, so songs using it play anywhere · {} preset{}",
+            info.presets,
+            plural(info.presets)
+        ),
+        None => format!("SoundFont · {} presets", info.presets),
     }
 }
 
@@ -740,7 +748,8 @@ impl CadenceApp {
 
         let query = self.library_filter.trim().to_lowercase();
         let bank = self.library_bank.clone();
-        let view = library_view(ui.ctx(), &self.catalog, &bank, &query);
+        let lib_fonts = LibFonts::of(&self.fonts);
+        let view = library_view(ui.ctx(), &self.catalog, &bank, &query, &lib_fonts);
         let mut action = None;
         let list_rect = ui.available_rect_before_wrap();
         let list = egui::ScrollArea::vertical()
@@ -801,13 +810,20 @@ impl CadenceApp {
         ui.spacing_mut().item_spacing.y = GAP_XS;
         let mut font_name = String::new();
         if *bank == LibraryBank::Font {
-            let fonts: Vec<FontInfo> = self.fonts.fonts.clone();
+            // The GM program list belongs to a General MIDI font; single-
+            // instrument built-ins (the harmonium) are rows of their own.
+            let fonts: Vec<FontInfo> = self.fonts.gm_fonts().cloned().collect();
             if fonts.is_empty() {
-                // No .sf2 installed: a slim hint card pointing at the folder.
+                // No GM .sf2 installed: a slim hint card pointing at the
+                // folder, above any single-instrument fonts.
                 self.fonts_hint_card(ui, pal);
-                return false;
+                if self.fonts.featured_sounds().is_empty() {
+                    return false;
+                }
+                ui.add_space(GAP_XS);
+            } else {
+                font_name = self.font_chooser(ui, pal, &fonts);
             }
-            font_name = self.font_chooser(ui, pal, &fonts);
         }
 
         let w = ui.available_width();
@@ -952,6 +968,36 @@ impl CadenceApp {
                             }
                         })
                     }
+                    LibItem::Featured(i) => {
+                        let sound = &FEATURED_SOUNDS[i];
+                        let font = FontRef::new(sound.font, sound.program);
+                        let out = library_row(
+                            ui,
+                            pal,
+                            &RowSpec {
+                                name: sound.label,
+                                description: sound.description,
+                                color: theme::rgb(FONT_COLOR),
+                                badge: Some("FONT"),
+                                can_add: !full,
+                                id: row_id,
+                            },
+                            || {
+                                format!(
+                                    "{}\n\n{} · from {} (built-in)\n\nDouble-click to add, or drag onto the arrangement.",
+                                    sound.description, sound.credit, sound.font
+                                )
+                            },
+                            || QuickSound::Font(font.clone()),
+                        );
+                        out.act.map(|add| {
+                            if add {
+                                LibraryAction::AddFont(font.clone())
+                            } else {
+                                LibraryAction::AuditionFont(font.clone())
+                            }
+                        })
+                    }
                 };
                 if out.is_some() {
                     *action = out;
@@ -1004,7 +1050,7 @@ impl CadenceApp {
                 Icon::Folder,
                 "Open SoundFonts folder",
                 CONTROL_M,
-                if self.fonts.has_builtin() {
+                if self.fonts.is_builtin(BUILTIN_FONT_NAME) {
                     "Cadence GM is built in. Drop more .sf2 files into this folder; they appear in the Sound menu and here within a couple of seconds"
                 } else {
                     "Drop .sf2 files into this folder; they appear in the Sound menu and here within a couple of seconds"
@@ -1537,20 +1583,27 @@ impl CadenceApp {
             used_preset.push(p.id.clone());
             presets.push(QuickSound::Preset(Box::new(p.clone())));
         }
-        // Iconic GM programs from an installed SoundFont — the font the song
-        // already uses when it has one, else the first installed font.
-        let font_name = used_font
-            .first()
-            .map(|f| f.name.clone())
-            .or_else(|| self.fonts.fonts.first().map(|i| i.name.clone()));
-        let fonts = font_name
+        // The single-instrument built-ins (the sampled harmonium) lead the
+        // group, unless the song already has them under recents...
+        let mut fonts: Vec<QuickSound> = self
+            .fonts
+            .featured_sounds()
             .into_iter()
-            .flat_map(|name| {
-                QUICK_FONT_PROGRAMS
-                    .iter()
-                    .map(move |program| QuickSound::Font(FontRef::new(name.clone(), *program)))
-            })
+            .filter(|sound| !used_font.iter().any(|f| f.name == sound.font))
+            .map(|sound| QuickSound::Font(FontRef::new(sound.font, sound.program)))
             .collect();
+        // ...then iconic GM programs from an installed General MIDI font —
+        // the one the song already uses when it has one, else the first.
+        let font_name = used_font
+            .iter()
+            .find(|f| is_gm_font(&f.name))
+            .map(|f| f.name.clone())
+            .or_else(|| self.fonts.gm_fonts().next().map(|i| i.name.clone()));
+        fonts.extend(font_name.into_iter().flat_map(|name| {
+            QUICK_FONT_PROGRAMS
+                .iter()
+                .map(move |program| QuickSound::Font(FontRef::new(name.clone(), *program)))
+        }));
         QuickPicks {
             recent,
             builtins,
@@ -1841,7 +1894,7 @@ impl CadenceApp {
     /// plus a warning when a font file failed to load.
     fn soundfonts_row(&mut self, ui: &mut Ui, pal: Palette) {
         let dir = crate::font::user_fonts_dir();
-        let builtin = if self.fonts.has_builtin() {
+        let builtin = if self.fonts.is_builtin(BUILTIN_FONT_NAME) {
             "Cadence GM (General MIDI) is built in. Add more SoundFonts: d"
         } else {
             "D"
@@ -2380,7 +2433,9 @@ impl CadenceApp {
                     .font
                     .as_ref()
                     .filter(|f| f.name == info.name)
-                    .map_or(0, |f| f.program);
+                    .map_or(featured_sound(&info.name).map_or(0, |f| f.program), |f| {
+                        f.program
+                    });
                 *pick = Some(FontPick::Assign(FontRef::new(info.name.clone(), program)));
             }
         }
@@ -2418,6 +2473,10 @@ impl CadenceApp {
         let Some(font) = track.font.clone() else {
             return;
         };
+        if !is_gm_font(&font.name) {
+            // A single-instrument font plays the same sound on every program.
+            return;
+        }
         let pal = self.palette();
         let id = track.id;
         let mut pick = None;
@@ -2516,6 +2575,47 @@ enum LibItem {
     Preset(usize),
     /// GM program number and name.
     Font(u8, &'static str),
+    /// Index into [`FEATURED_SOUNDS`]: a single-instrument built-in font.
+    Featured(usize),
+}
+
+/// What the installed SoundFonts add to the library view: the installed
+/// [`FEATURED_SOUNDS`] (by index) and whether a General MIDI font is there
+/// to list programs for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LibFonts {
+    featured: Vec<usize>,
+    gm: bool,
+}
+
+impl LibFonts {
+    fn of(fonts: &crate::font::FontLibrary) -> Self {
+        LibFonts {
+            featured: FEATURED_SOUNDS
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| fonts.has_font(f.font))
+                .map(|(i, _)| i)
+                .collect(),
+            gm: fonts.gm_fonts().next().is_some(),
+        }
+    }
+
+    /// The featured rows matching `query` (see [`font_rows`] for the rules).
+    fn featured_rows(&self, query: &str) -> Vec<LibItem> {
+        self.featured
+            .iter()
+            .filter(|&&i| {
+                let f = &FEATURED_SOUNDS[i];
+                query.is_empty()
+                    || f.label.to_lowercase().contains(query)
+                    || f.description.to_lowercase().contains(query)
+                    || f.keywords.contains(query)
+                    || f.font.to_lowercase().contains(query)
+            })
+            .map(|&i| LibItem::Featured(i))
+            .collect()
+    }
 }
 
 /// A collapsible group of library rows: the built-ins, one pack bank, or one
@@ -2536,6 +2636,7 @@ struct LibraryView {
     stamp: u64,
     bank: LibraryBank,
     query: String,
+    fonts: LibFonts,
     sections: Vec<Section>,
 }
 
@@ -2551,10 +2652,33 @@ fn catalog_stamp(catalog: &PackCatalog) -> u64 {
     h.finish()
 }
 
-fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64) -> LibraryView {
+fn build_view(
+    catalog: &PackCatalog,
+    bank: &LibraryBank,
+    query: &str,
+    stamp: u64,
+    fonts: &LibFonts,
+) -> LibraryView {
     let mut sections: Vec<Section> = Vec::new();
+    let featured = |sections: &mut Vec<Section>| {
+        let items = fonts.featured_rows(query);
+        if !items.is_empty() {
+            sections.push(Section {
+                key: "featured".to_owned(),
+                title: "SAMPLED".to_owned(),
+                count: items.len(),
+                items,
+            });
+        }
+    };
     if *bank == LibraryBank::Font {
-        for (family, programs) in font_rows(query) {
+        featured(&mut sections);
+        let families = if fonts.gm {
+            font_rows(query)
+        } else {
+            Vec::new()
+        };
+        for (family, programs) in families {
             sections.push(Section {
                 key: format!("font:{family}"),
                 title: family.to_uppercase(),
@@ -2574,6 +2698,9 @@ fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64
                 count: builtins.len(),
                 items: builtins.into_iter().map(LibItem::BuiltIn).collect(),
             });
+        }
+        if *bank == LibraryBank::All {
+            featured(&mut sections);
         }
         let mut last_ns: Option<&str> = None;
         for i in presets {
@@ -2597,6 +2724,7 @@ fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64
         stamp,
         bank: bank.clone(),
         query: query.to_owned(),
+        fonts: fonts.clone(),
         sections,
     }
 }
@@ -2608,15 +2736,17 @@ fn library_view(
     catalog: &PackCatalog,
     bank: &LibraryBank,
     query: &str,
+    fonts: &LibFonts,
 ) -> Arc<LibraryView> {
     let stamp = catalog_stamp(catalog);
     let id = Id::new(LIBRARY_CACHE);
     if let Some(view) = ctx.data(|d| d.get_temp::<Arc<LibraryView>>(id)) {
-        if view.stamp == stamp && view.bank == *bank && view.query == query {
+        if view.stamp == stamp && view.bank == *bank && view.query == query && view.fonts == *fonts
+        {
             return view;
         }
     }
-    let view = Arc::new(build_view(catalog, bank, query, stamp));
+    let view = Arc::new(build_view(catalog, bank, query, stamp, fonts));
     ctx.data_mut(|d| d.insert_temp(id, view.clone()));
     view
 }
@@ -2633,6 +2763,7 @@ fn library_item_id(base: Id, item: &LibItem, catalog: &PackCatalog) -> Id {
         LibItem::BuiltIn(inst) => base.with(("library-row", inst.name())),
         LibItem::Preset(i) => base.with(("library-row", &catalog.instruments[*i].id)),
         LibItem::Font(program, _) => base.with(("library-row", "font", program)),
+        LibItem::Featured(i) => base.with(("library-row", "featured", i)),
     }
 }
 
@@ -4007,11 +4138,121 @@ mod tests {
         assert!(rig.panel_width() > 200.0);
     }
 
+    /// Library font state with a General MIDI font and no featured sounds
+    /// (the GM program bank lists all 128 programs).
+    fn gm_only() -> LibFonts {
+        LibFonts {
+            featured: Vec::new(),
+            gm: true,
+        }
+    }
+
+    #[test]
+    fn library_view_offers_the_harmonium_when_installed() {
+        use crate::font::HARMONIUM_FONT_NAME;
+        let cat = catalog(&["a.one"]);
+        let mut library = crate::font::FontLibrary::empty();
+        assert_eq!(LibFonts::of(&library), LibFonts::default());
+        library.fonts.push(FontInfo {
+            name: HARMONIUM_FONT_NAME.to_owned(),
+            key: crate::font::font_key(HARMONIUM_FONT_NAME),
+            presets: 1,
+        });
+        let harmonium_only = LibFonts::of(&library);
+        assert_eq!(harmonium_only.featured, [0]);
+        assert!(!harmonium_only.gm, "the harmonium is not a GM bank");
+        // All: its own SAMPLED section right after the built-ins.
+        let v = build_view(&cat, &LibraryBank::All, "", 0, &harmonium_only);
+        let titles: Vec<&str> = v.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["BUILT-IN", "SAMPLED", "PACK · A"]);
+        assert_eq!(v.sections[1].items, [LibItem::Featured(0)]);
+        // Search finds it by name and by kind of instrument.
+        for q in ["harmonium", "reed", "drone", "sampled"] {
+            let v = build_view(&cat, &LibraryBank::All, q, 0, &harmonium_only);
+            assert!(
+                v.sections.iter().any(|s| s.items == [LibItem::Featured(0)]),
+                "{q}"
+            );
+        }
+        assert!(
+            build_view(&cat, &LibraryBank::All, "trumpet", 0, &harmonium_only)
+                .sections
+                .is_empty()
+        );
+        // SoundFont bank: only the harmonium without a GM font...
+        let v = build_view(&cat, &LibraryBank::Font, "", 0, &harmonium_only);
+        assert_eq!(v.sections.len(), 1);
+        assert_eq!(v.sections[0].items, [LibItem::Featured(0)]);
+        // ...and first, above the 16 GM families, with one.
+        library.fonts.push(FontInfo {
+            name: BUILTIN_FONT_NAME.to_owned(),
+            key: crate::font::font_key(BUILTIN_FONT_NAME),
+            presets: 287,
+        });
+        let both = LibFonts::of(&library);
+        assert!(both.gm);
+        let v = build_view(&cat, &LibraryBank::Font, "", 0, &both);
+        assert_eq!(v.sections.len(), 17);
+        assert_eq!(v.sections[0].title, "SAMPLED");
+        // Built-in and pack banks stay as they were.
+        let v = build_view(&cat, &LibraryBank::BuiltIn, "", 0, &both);
+        assert_eq!(v.sections.len(), 1);
+        // A font change rebuilds the cached view.
+        let ctx = egui::Context::default();
+        let a = library_view(&ctx, &cat, &LibraryBank::All, "", &gm_only());
+        let b = library_view(&ctx, &cat, &LibraryBank::All, "", &both);
+        assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn quick_picks_lead_with_the_harmonium() {
+        use crate::font::{HARMONIUM_FONT_NAME, HARMONIUM_PROGRAM};
+        let mut app = app();
+        // Harmonium alone: just its row (no GM programs to spotlight).
+        install_font(&mut app, HARMONIUM_FONT_NAME);
+        let picks = app.quick_picks();
+        assert_eq!(picks.fonts.len(), 1);
+        assert!(matches!(
+            &picks.fonts[0],
+            QuickSound::Font(f) if f.name == HARMONIUM_FONT_NAME && f.program == HARMONIUM_PROGRAM
+        ));
+        assert_eq!(picks.fonts[0].name(), "Harmonium");
+        // With the GM font too: the harmonium, then GM programs from the GM
+        // font (never from the harmonium, even though it is listed first).
+        install_font(&mut app, BUILTIN_FONT_NAME);
+        let picks = app.quick_picks();
+        let names: Vec<&str> = picks.fonts.iter().map(QuickSound::name).collect();
+        assert_eq!(
+            names,
+            [
+                "Harmonium",
+                "Acoustic Grand Piano",
+                "Acoustic Guitar (nylon)",
+                "Violin"
+            ]
+        );
+        assert!(picks.fonts[1..]
+            .iter()
+            .all(|s| matches!(s, QuickSound::Font(f) if f.name == BUILTIN_FONT_NAME)));
+        // Adding it makes a Harmonium track on the harmonium font, which
+        // then moves to recents instead of being offered twice.
+        app.add_font_track(&FontRef::new(HARMONIUM_FONT_NAME, HARMONIUM_PROGRAM));
+        let track = app.project.tracks.last().unwrap();
+        assert_eq!(track.sound_name(), "Harmonium");
+        assert_eq!(
+            track.font,
+            Some(FontRef::new(HARMONIUM_FONT_NAME, HARMONIUM_PROGRAM))
+        );
+        let picks = app.quick_picks();
+        assert_eq!(picks.recent[0].name(), "Harmonium");
+        assert!(picks.fonts.iter().all(|s| s.name() != "Harmonium"));
+    }
+
     #[test]
     fn library_view_groups_sections_and_caches() {
         let cat = catalog(&["a.one", "a.two", "b.three", "a.four"]);
         // All: built-ins first, then one section per consecutive pack run.
-        let v = build_view(&cat, &LibraryBank::All, "", catalog_stamp(&cat));
+        let v = build_view(&cat, &LibraryBank::All, "", catalog_stamp(&cat), &gm_only());
         let titles: Vec<&str> = v.sections.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["BUILT-IN", "PACK · A", "PACK · B", "PACK · A"]);
         let counts: Vec<usize> = v.sections.iter().map(|s| s.count).collect();
@@ -4021,30 +4262,32 @@ mod tests {
             .iter()
             .all(|s| s.count == s.items.len() && !s.items.is_empty()));
         // Bank filters keep their own single section.
-        let v = build_view(&cat, &LibraryBank::Pack("b".into()), "", 0);
+        let v = build_view(&cat, &LibraryBank::Pack("b".into()), "", 0, &gm_only());
         assert_eq!(v.sections.len(), 1);
         assert_eq!(v.sections[0].items, [LibItem::Preset(2)]);
         // The SoundFont bank groups the 128 GM programs under 16 families.
-        let v = build_view(&cat, &LibraryBank::Font, "", 0);
+        let v = build_view(&cat, &LibraryBank::Font, "", 0, &gm_only());
         assert_eq!(v.sections.len(), 16);
         assert_eq!(v.sections.iter().map(|s| s.count).sum::<usize>(), 128);
         // No hits: no sections (the empty state shows instead).
-        assert!(build_view(&cat, &LibraryBank::All, "zzzz-nothing", 0)
-            .sections
-            .is_empty());
+        assert!(
+            build_view(&cat, &LibraryBank::All, "zzzz-nothing", 0, &gm_only())
+                .sections
+                .is_empty()
+        );
 
         // The cache hands out the same view until something it depends on
         // changes.
         let ctx = egui::Context::default();
-        let a = library_view(&ctx, &cat, &LibraryBank::All, "");
-        let b = library_view(&ctx, &cat, &LibraryBank::All, "");
+        let a = library_view(&ctx, &cat, &LibraryBank::All, "", &gm_only());
+        let b = library_view(&ctx, &cat, &LibraryBank::All, "", &gm_only());
         assert!(Arc::ptr_eq(&a, &b), "unchanged inputs reuse the view");
-        let c = library_view(&ctx, &cat, &LibraryBank::All, "one");
+        let c = library_view(&ctx, &cat, &LibraryBank::All, "one", &gm_only());
         assert!(!Arc::ptr_eq(&b, &c), "a new query rebuilds");
-        let d = library_view(&ctx, &cat, &LibraryBank::BuiltIn, "one");
+        let d = library_view(&ctx, &cat, &LibraryBank::BuiltIn, "one", &gm_only());
         assert!(!Arc::ptr_eq(&c, &d), "a new bank rebuilds");
         let cat2 = catalog(&["a.one", "a.two"]);
-        let e = library_view(&ctx, &cat2, &LibraryBank::BuiltIn, "one");
+        let e = library_view(&ctx, &cat2, &LibraryBank::BuiltIn, "one", &gm_only());
         assert!(!Arc::ptr_eq(&d, &e), "a changed catalog rebuilds");
     }
 

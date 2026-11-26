@@ -47,6 +47,7 @@ Run these on a release build of the machine you ship. **Windows has had a first 
 - [ ] Save / Save As / unsaved-changes dialog (Save · Don't Save · Cancel; Esc cancels); reopen restores the project.
 - [ ] Export WAV and Export Stems produce playable files honoring mute/solo; Export/Import MIDI round-trips.
 - [ ] Import Audio File stages a WAV onto an audio lane; Import Sample creates a `sample.*` preset; Import Instrument Pack + Reload pick up a new pack (~2 s rescan).
+- [ ] Harmonium: a fresh install lists "Cadence Harmonium (built-in)"; the library's SAMPLED **Harmonium** row (and quick add's first SOUNDFONT row) adds a "Harmonium" track that sustains held chords without clicks or pulsing.
 - [ ] SoundFont bank: a fresh install lists "Cadence GM (built-in)" and its 128 GM programs play with no setup (macOS and Windows installer + portable zip); drop another `.sf2` in the font folder → it appears alongside; a missing font falls back to the preset sound.
 - [ ] Help → Shortcuts & Tips (F1) table matches the real shortcuts; About shows version and font credits (Inter, DejaVu Sans).
 - [ ] View → Theme: Graphite / Midnight / Paper recolor the whole app and persist across relaunch.

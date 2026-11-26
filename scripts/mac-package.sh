@@ -59,11 +59,12 @@ cp assets/fonts/DejaVu-LICENSE.txt "$APP/Contents/Resources/licenses/DejaVu-LICE
 # Buyer-facing files live inside the bundle's Resources (the zip contains
 # only Cadence.app). EULA.txt ships when the owner provides one at repo root.
 cp packaging/README.txt "$APP/Contents/Resources/README.txt"
-# The built-in General MIDI SoundFont ("Cadence GM.sf2" = GeneralUser GS, see
-# packaging/soundfont/README.md): downloaded once into .cache/soundfonts,
-# SHA-256 verified, never committed. Without network a dev build warns and
-# ships without it; REQUIRE_SOUNDFONT=1 (CI) makes that fatal, and a checksum
-# mismatch is always fatal.
+# The built-in SoundFonts ("Cadence GM.sf2" = GeneralUser GS, and "Cadence
+# Harmonium.sf2" built from pinned recordings, see
+# packaging/soundfont/README.md): fetched/built once into .cache/soundfonts,
+# SHA-256 verified, never committed. Without network (or python3) a dev
+# build warns and ships without them; REQUIRE_SOUNDFONT=1 (CI) makes that
+# fatal, and a checksum mismatch is always fatal.
 SOUNDFONT_DIR="$APP/Contents/Resources/soundfonts"
 SOUNDFONT_STAGED=0
 set +e
@@ -73,12 +74,13 @@ set -e
 if [ "$fetch_status" -eq 0 ]; then
   SOUNDFONT_STAGED=1
   cp packaging/soundfont/GeneralUser-GS-LICENSE.txt "$APP/Contents/Resources/licenses/GeneralUser-GS-LICENSE.txt"
+  cp packaging/soundfont/Cadence-Harmonium-LICENSE.txt "$APP/Contents/Resources/licenses/Cadence-Harmonium-LICENSE.txt"
 elif [ "$fetch_status" -eq 3 ] || [ "${REQUIRE_SOUNDFONT:-0}" = "1" ]; then
-  echo "error: could not stage the General MIDI SoundFont (scripts/fetch-soundfont.sh exited $fetch_status)" >&2
+  echo "error: could not stage the built-in SoundFonts (scripts/fetch-soundfont.sh exited $fetch_status)" >&2
   exit 1
 else
   rm -rf "$SOUNDFONT_DIR"
-  echo "warning: packaging WITHOUT the built-in General MIDI SoundFont (download failed); GM tracks will use fallback sounds" >&2
+  echo "warning: packaging WITHOUT the built-in SoundFonts (download/build failed); GM and harmonium tracks will use fallback sounds" >&2
 fi
 cp THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 if [ -f EULA.txt ]; then
@@ -118,7 +120,7 @@ codesign --verify --deep --strict "$APP"
 
 # Smoke test: the bundled binary runs and reports its version.
 "$APP/Contents/MacOS/$BIN_NAME" --version
-# ...and finds its own copy of the GM SoundFont (an isolated data dir keeps the
+# ...and finds its own copies of the built-in SoundFonts (an isolated data dir keeps the
 # packager's own fonts and packs out of it; the bundle never falls back to the
 # repo's dev cache once it has a soundfonts folder).
 if [ "$SOUNDFONT_STAGED" = "1" ]; then
@@ -126,13 +128,15 @@ if [ "$SOUNDFONT_STAGED" = "1" ]; then
   LISTING="$(env -u CADENCE_SOUNDFONT_DIR -u CADENCE_FONTS_DIR -u CADENCE_PACKS_DIR \
     CADENCE_DATA_DIR="$SMOKE_DATA" "$APP/Contents/MacOS/$BIN_NAME" --list-instruments)"
   rm -rf "$SMOKE_DATA"
-  case "$LISTING" in
-    *"Cadence GM (built-in)"*) echo "Built-in SoundFont: OK" ;;
-    *)
-      echo "error: the packaged app does not list the built-in SoundFont" >&2
-      exit 1
-      ;;
-  esac
+  for want in "Cadence GM (built-in)" "Cadence Harmonium (built-in)"; do
+    case "$LISTING" in
+      *"$want"*) echo "Built-in SoundFont: $want OK" ;;
+      *)
+        echo "error: the packaged app does not list $want" >&2
+        exit 1
+        ;;
+    esac
+  done
 fi
 
 BASE="Cadence-$VERSION-macos-$ARCH"

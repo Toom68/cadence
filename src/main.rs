@@ -474,15 +474,25 @@ fn list_instruments() {
     let fonts = font::load_library();
     println!("SoundFont instruments ({}):", fonts.fonts.len());
     for info in &fonts.fonts {
+        let plays = match font::featured_sound(&info.name) {
+            Some(sound) => format!("plays {}", sound.label),
+            None => "GM programs 0-127".to_owned(),
+        };
         println!(
-            "  {:<32} {} presets, GM programs 0-127",
+            "  {:<32} {} preset{}, {plays}",
             fonts.display_name(&info.name),
-            info.presets
+            info.presets,
+            if info.presets == 1 { "" } else { "s" }
         );
     }
-    if !fonts.has_builtin() {
+    let missing: Vec<&str> = font::BUILTIN_FONT_NAMES
+        .into_iter()
+        .filter(|name| !fonts.is_builtin(name))
+        .collect();
+    if !missing.is_empty() {
         println!(
-            "  (no built-in SoundFont found; searched: {})",
+            "  (built-in SoundFont not found: {}; searched: {})",
+            missing.join(", "),
             fonts
                 .bundled_dirs
                 .iter()
