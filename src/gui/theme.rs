@@ -55,7 +55,8 @@
 //!   layout panels are square
 //! - toolbars: [`TOOLBAR_H`] 40 tall, [`TOOLBAR_GAP`] 4 between items
 //! - type scale: [`TEXT_SMALL`] 12, [`TEXT_BODY`] 14, [`TEXT_TITLE`] 16,
-//!   [`TEXT_HEADING`] 20; readouts [`TEXT_MONO`] 13 and [`TEXT_DISPLAY`] 20
+//!   [`TEXT_HEADING`] 20; readouts [`TEXT_MONO`] 13 and [`TEXT_DISPLAY`] 20;
+//!   [`TEXT_MICRO`] 11 only for labels painted inside tight lanes
 //!
 //! # Typography
 //!
@@ -622,6 +623,9 @@ pub const TEXT_BODY: f32 = 14.0;
 pub const TEXT_SMALL: f32 = 12.0;
 /// Inline captions use the small step (no separate eyebrow size any more).
 pub const TEXT_KICKER: f32 = TEXT_SMALL;
+/// Painted labels inside tight lanes only (clip names, ruler chips, lane
+/// tags) — never for running UI text.
+pub const TEXT_MICRO: f32 = 11.0;
 /// IBM Plex Mono for inline numeric readouts (tabular digits).
 pub const TEXT_MONO: f32 = 13.0;
 /// IBM Plex Mono Medium for the big transport readout.

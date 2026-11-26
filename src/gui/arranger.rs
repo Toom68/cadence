@@ -167,11 +167,13 @@ fn loop_clear_rect(band: Rect) -> Rect {
     Rect::from_center_size(pos2(band.right() - 7.0, band.center().y), vec2(s, s))
 }
 
-/// Subtle tints cycled across the section bands between markers: four
-/// palette hues at ~4% alpha, translucent enough to read as a wash in every
-/// theme.
+/// Subtle tints cycled across the section bands between markers: a faint
+/// neutral wash on every other section, translucent in every theme.
 fn section_band_tints(pal: Palette) -> [Color32; 4] {
-    [pal.warn, pal.link, pal.accent, pal.danger].map(|c| c.gamma_multiply(0.045))
+    // Alternating neutral washes: sections read as bands of the same
+    // material, not a rainbow.
+    let wash = pal.text.gamma_multiply(0.035);
+    [wash, Color32::TRANSPARENT, wash, Color32::TRANSPARENT]
 }
 
 /// Step ranges of the section bands painted between consecutive markers:
@@ -1001,8 +1003,8 @@ impl CadenceApp {
         p.text(
             pos2(full.left() + theme::GAP_M + 2.0, corner.center().y),
             Align2::LEFT_CENTER,
-            "TRACKS",
-            theme::strong_font(ui, theme::TEXT_KICKER),
+            "Tracks",
+            theme::body_font(theme::TEXT_SMALL),
             pal.text_faint,
         );
         p.hline(full.x_range(), grid.top(), Stroke::new(1.0_f32, pal.border));
@@ -1097,6 +1099,9 @@ impl CadenceApp {
                     });
                     tb.separator();
                     tb.labeled("Length", 76.0, |ui| {
+                        // Numbers read in the mono face.
+                        ui.style_mut().override_font_id =
+                            Some(theme::mono_font(theme::TEXT_MONO - 1.0));
                         let mut bars = self.project.bars;
                         let resp = ui.add_sized(
                             vec2(ui.available_width(), theme::CONTROL_M),
@@ -3450,7 +3455,7 @@ impl CadenceApp {
                 clip.center(),
                 Align2::CENTER_CENTER,
                 format!("Add {}", sound.name()),
-                FontId::proportional(11.5),
+                theme::body_font(theme::TEXT_SMALL),
                 pal.text,
             );
         }
@@ -3857,10 +3862,10 @@ impl CadenceApp {
                 pos2(r.left() + 4.0, r.top() + 2.0),
                 Align2::LEFT_TOP,
                 match param {
-                    AutomationLane::Volume => "VOL",
-                    AutomationLane::Pan => "PAN",
+                    AutomationLane::Volume => "Vol",
+                    AutomationLane::Pan => "Pan",
                 },
-                FontId::proportional(9.0),
+                theme::body_font(theme::TEXT_MICRO - 1.0),
                 pal.text_faint,
             );
             let points = track
@@ -3970,15 +3975,15 @@ impl CadenceApp {
                 } else {
                     pal.text_faint
                 };
-                p.rect_filled(band, 2.0, c.gamma_multiply(0.5));
-                p.rect_stroke(band, 2.0, Stroke::new(1.0_f32, c), StrokeKind::Inside);
+                p.rect_filled(band, 1.0, c.gamma_multiply(0.5));
+                p.rect_stroke(band, 1.0, Stroke::new(1.0_f32, c), StrokeKind::Inside);
                 let ink = theme::ink_on(theme::mix(pal.panel, c, 0.5));
                 if band.width() > 40.0 {
                     p.text(
                         pos2(band.left() + 4.0, band.center().y),
                         Align2::LEFT_CENTER,
                         format!("{}–{}", bar_number(a), bar_number_end(b)),
-                        theme::body_font(9.0),
+                        theme::mono_font(9.0),
                         ink,
                     );
                 }
@@ -3999,14 +4004,15 @@ impl CadenceApp {
         for y in [lane.bottom(), chords.top()] {
             p.hline(ruler.x_range(), y, Stroke::new(1.0_f32, pal.border_soft));
         }
-        // "END" sits right of the song-end line in the number strip; bar
+        // "end" sits right of the song-end line in the number strip; bar
         // labels that would touch it are skipped so the two never collide.
         let end = tl.x(song_steps);
-        let end_font = theme::strong_font(ui, 9.0);
-        let end_galley = p.layout_no_wrap("END".to_owned(), end_font, pal.danger);
+        // The song end is a plain mark, not an alarm: red is for errors.
+        let end_font = theme::mono_font(9.0);
+        let end_galley = p.layout_no_wrap("end".to_owned(), end_font, pal.text_dim);
         let end_rect =
             Align2::LEFT_CENTER.anchor_size(pos2(end + 4.0, strip.center().y), end_galley.size());
-        let label_font = theme::body_font(theme::TEXT_SMALL);
+        let label_font = theme::mono_font(10.0);
         let every = bar_label_every(tl.pps) as i64;
         let b0 = (tl.step(ruler.left()).max(0.0) / 16.0).floor() as i64;
         let b1 = (tl.step(ruler.right()) / 16.0).ceil() as i64;
@@ -4048,9 +4054,9 @@ impl CadenceApp {
             p.vline(
                 end,
                 strip.top()..=ruler.bottom(),
-                Stroke::new(1.5_f32, pal.danger.gamma_multiply(0.7)),
+                Stroke::new(1.5_f32, pal.text_dim),
             );
-            p.galley(end_rect.min, end_galley, pal.danger);
+            p.galley(end_rect.min, end_galley, pal.text_dim);
         }
         let marker = tl.x(self.transport.start_marker);
         if (self.transport.start_marker - self.transport.position).abs() > 0.01 {
@@ -4303,12 +4309,13 @@ impl CadenceApp {
                     pal.accent,
                 );
             }
+            // The track's color as a tape-label tab.
             p.rect_filled(
                 Rect::from_min_max(
                     pos2(lane.left() + 7.0, lane.top() + 6.0),
                     pos2(lane.left() + 11.0, lane.bottom() - 6.0),
                 ),
-                2.0,
+                1.0,
                 if audible {
                     color
                 } else {
@@ -4318,7 +4325,7 @@ impl CadenceApp {
             p.hline(
                 r.x_range(),
                 r.bottom() - 0.5,
-                Stroke::new(1.0_f32, pal.border_soft),
+                Stroke::new(1.0_f32, pal.border),
             );
             // Mute / Solo: the mixer's chips (same size, colors, tooltips).
             let chip = vec2(theme::CONTROL_S, theme::CONTROL_S);
@@ -4357,7 +4364,7 @@ impl CadenceApp {
                 p.galley(pos2(text_left, top), name, name_ink);
             }
             // The automation strip's bottom band of the header carries the
-            // lane picker (VOL/PAN chips) and a close button — it is only
+            // lane picker (Vol/Pan chips) and a close button — it is only
             // painted while the track's strip is open.
             if let Some(param) = self.arranger.auto_lanes.get(&id).copied() {
                 let strip = Rect::from_min_max(pos2(r.left(), lane.bottom()), r.max);
@@ -4365,8 +4372,8 @@ impl CadenceApp {
                 p.text(
                     pos2(strip.left() + 18.0, strip.center().y),
                     Align2::LEFT_CENTER,
-                    "AUTOMATION",
-                    theme::strong_font(&hui, theme::TEXT_KICKER),
+                    "Automation",
+                    theme::body_font(theme::TEXT_MICRO),
                     pal.text_faint,
                 );
                 let chip = vec2(32.0, 18.0);
@@ -4375,8 +4382,8 @@ impl CadenceApp {
                     vec2(18.0, 18.0),
                 );
                 for (chip_i, (kind, label)) in [
-                    (AutomationLane::Volume, "VOL"),
-                    (AutomationLane::Pan, "PAN"),
+                    (AutomationLane::Volume, "Vol"),
+                    (AutomationLane::Pan, "Pan"),
                 ]
                 .into_iter()
                 .enumerate()
@@ -4650,7 +4657,7 @@ fn chord_lane_rect(ruler: Rect) -> Rect {
 
 /// Font of the marker and chord pill labels.
 fn chip_font() -> FontId {
-    theme::body_font(theme::TEXT_KICKER)
+    theme::body_font(theme::TEXT_MICRO)
 }
 
 /// Width of `text` in the pill font.
@@ -4866,7 +4873,7 @@ fn paint_clip_overlay(
         cp.line_segment([a, c], fade_guide);
     }
     // Loop badge in the strip, clear of the right fade corner.
-    let font = theme::body_font(theme::TEXT_KICKER);
+    let font = theme::body_font(theme::TEXT_MICRO);
     let mut badge_w = 0.0;
     if loops > 1 && r.width() > 56.0 {
         let label = format!("×{loops}");
@@ -4973,7 +4980,7 @@ fn paint_clip(
         (Some(_), _) if r.width() > 60.0 && inner.height() > 8.0 => {
             let g = cp.layout_no_wrap(
                 "Empty".to_owned(),
-                theme::body_font(theme::TEXT_KICKER),
+                theme::body_font(theme::TEXT_MICRO),
                 pal.text_faint,
             );
             cp.galley(inner.center() - g.size() * 0.5, g, pal.text_faint);
@@ -5109,7 +5116,7 @@ fn paint_audio_clip(
     // gets a centered "missing file" tag in the content area — the clip
     // still exists, but plays and exports as silence.
     if missing && inner.is_positive() {
-        let font = theme::body_font(theme::TEXT_KICKER);
+        let font = theme::body_font(theme::TEXT_MICRO);
         let g = cp.layout_no_wrap("missing file".to_owned(), font, theme::ink_on(pal.danger));
         let tag = Rect::from_center_size(inner.center(), g.size() + vec2(10.0, 5.0));
         if tag.width() < inner.width() {
