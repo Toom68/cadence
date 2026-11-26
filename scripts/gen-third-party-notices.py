@@ -6,8 +6,8 @@ the license texts found in the local cargo registry sources (deduplicated —
 crates sharing an identical license text are grouped), then appends the
 licenses of the fonts bundled inside the binary (Inter, DejaVu, and egui's
 embedded fallback fonts whose license texts live in assets/fonts/egui-licenses/)
-and of the General MIDI SoundFont the release packages ship
-(packaging/soundfont/).
+and of the SoundFonts the release packages ship (the General MIDI font and
+the sampled harmonium, packaging/soundfont/).
 
 Run from the repo root:  python scripts/gen-third-party-notices.py
 Writes THIRD-PARTY-NOTICES.txt at the repo root. No network access needed —
@@ -449,6 +449,10 @@ BUNDLED_SOUNDFONTS = [
     ("Cadence GM.sf2 — GeneralUser GS v2.0.3 by S. Christian Collins",
      "GeneralUser GS License v2.0",
      ROOT / "packaging/soundfont/GeneralUser-GS-LICENSE.txt"),
+    ("Cadence Harmonium.sf2 — harmonium samples by Donya Quick (recording, CC0 1.0) "
+     "and Nicholaus P. Brosowsky / tonejs-instruments (edits)",
+     "Creative Commons Attribution 3.0 (CC BY 3.0)",
+     ROOT / "packaging/soundfont/Cadence-Harmonium-LICENSE.txt"),
 ]
 
 
@@ -629,16 +633,19 @@ def main():
         lines.append("")
 
     lines.append("-" * 72)
-    lines.append("BUNDLED SOUNDFONT")
+    lines.append("BUNDLED SOUNDFONTS")
     lines.append("-" * 72)
     lines.append("")
     lines.append(
-        "The release packages include a General MIDI SoundFont in their"
+        "The release packages include two SoundFonts in their soundfonts"
     )
     lines.append(
-        "soundfonts folder (the built-in \"Cadence GM\" instrument font). Its"
+        "folder: a General MIDI font (the built-in \"Cadence GM\" instrument"
     )
-    lines.append("license text is reproduced below.")
+    lines.append(
+        "font) and a sampled harmonium (\"Cadence Harmonium\"). Their license"
+    )
+    lines.append("texts and attributions are reproduced below.")
     lines.append("")
     for label, lic, path in BUNDLED_SOUNDFONTS:
         lines.append(f"### {label} — {lic}")

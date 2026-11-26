@@ -2,7 +2,8 @@
 # Cross-build the Windows x64 portable archive on macOS or Linux.
 #
 # Produces:
-#   dist/Cadence-<version>-windows-x64/Cadence.exe (+ soundfonts/Cadence GM.sf2)
+#   dist/Cadence-<version>-windows-x64/Cadence.exe (+ soundfonts/Cadence GM.sf2
+#   and soundfonts/Cadence Harmonium.sf2)
 #   dist/Cadence-<version>-windows-x64.zip
 #
 # Requirements (this script installs nothing):
@@ -78,7 +79,7 @@ cp assets/fonts/DejaVu-LICENSE.txt "$STAGE/licenses/DejaVu-LICENSE.txt"
 # Buyer-facing files: README, third-party notices, and the EULA when the
 # owner has provided one at the repo root.
 cp packaging/README.txt "$STAGE/README.txt"
-# The built-in General MIDI SoundFont in soundfonts/ next to Cadence.exe (see
+# The built-in SoundFonts (GM + harmonium) in soundfonts/ next to Cadence.exe (see
 # scripts/mac-package.sh): a checksum mismatch is fatal, a failed download only
 # with REQUIRE_SOUNDFONT=1.
 set +e
@@ -87,12 +88,13 @@ fetch_status=$?
 set -e
 if [ "$fetch_status" -eq 0 ]; then
   cp packaging/soundfont/GeneralUser-GS-LICENSE.txt "$STAGE/licenses/GeneralUser-GS-LICENSE.txt"
+  cp packaging/soundfont/Cadence-Harmonium-LICENSE.txt "$STAGE/licenses/Cadence-Harmonium-LICENSE.txt"
 elif [ "$fetch_status" -eq 3 ] || [ "${REQUIRE_SOUNDFONT:-0}" = "1" ]; then
-  echo "error: could not stage the General MIDI SoundFont (scripts/fetch-soundfont.sh exited $fetch_status)" >&2
+  echo "error: could not stage the built-in SoundFonts (scripts/fetch-soundfont.sh exited $fetch_status)" >&2
   exit 1
 else
   rm -rf "$STAGE/soundfonts"
-  echo "warning: packaging WITHOUT the built-in General MIDI SoundFont (download failed)" >&2
+  echo "warning: packaging WITHOUT the built-in SoundFonts (download/build failed)" >&2
 fi
 cp THIRD-PARTY-NOTICES.txt "$STAGE/THIRD-PARTY-NOTICES.txt"
 if [ -f EULA.txt ]; then

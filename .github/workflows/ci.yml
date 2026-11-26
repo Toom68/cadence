@@ -58,33 +58,40 @@ jobs:
           cargo run --release --locked -- --render-demo target/demo.wav
           test -s target/demo.wav
 
-      # The built-in General MIDI SoundFont ("Cadence GM.sf2", GeneralUser GS;
-      # packaging/soundfont/README.md). Never committed: fetched from the URL
-      # pinned in packaging/soundfont/pin.txt, SHA-256 verified (a mismatch
-      # fails the job), cached across runs by the pin's hash. Packaging below
-      # runs with REQUIRE_SOUNDFONT=1, so no release can ship without it.
-      - name: Cache the built-in SoundFont
+      # The built-in SoundFonts (packaging/soundfont/README.md), never
+      # committed: "Cadence GM.sf2" (GeneralUser GS) is fetched from the URL
+      # pinned in packaging/soundfont/pin.txt; "Cadence Harmonium.sf2" is
+      # built by scripts/build-harmonium-sf2.py (Python 3, preinstalled on
+      # the runners) from the recordings pinned in harmonium-pin.txt, and must
+      # reproduce the pinned SHA-256. Every hash is verified (a mismatch fails
+      # the job); both are cached across runs by the pins' hashes. Packaging
+      # below runs with REQUIRE_SOUNDFONT=1, so no release can ship without them.
+      - name: Cache the built-in SoundFonts
         uses: actions/cache@v6
         with:
-          path: .cache/soundfonts
-          key: soundfont-${{ hashFiles('packaging/soundfont/pin.txt') }}
+          path: |
+            .cache/soundfonts
+            .cache/soundfont-src
+          key: soundfont-${{ hashFiles('packaging/soundfont/pin.txt', 'packaging/soundfont/harmonium-pin.txt') }}
 
-      - name: Fetch the built-in SoundFont
+      - name: Fetch the built-in SoundFonts
         if: runner.os == 'macOS'
         run: scripts/fetch-soundfont.sh
 
-      - name: Fetch the built-in SoundFont
+      - name: Fetch the built-in SoundFonts
         if: runner.os == 'Windows'
         shell: pwsh
         run: scripts/fetch-soundfont.ps1
 
-      # The normal test run never depends on the font; this re-runs the
-      # ignored real-font tests against the exact file that ships.
-      - name: Test with the built-in SoundFont
+      # The normal test run never depends on the fonts; this re-runs the
+      # ignored real-font tests against the exact files that ship.
+      - name: Test with the built-in SoundFonts
         shell: bash
         env:
           CADENCE_TEST_FONT: ${{ github.workspace }}/.cache/soundfonts/Cadence GM.sf2
-        run: cargo test --locked --test fonts -- --ignored
+        run: |
+          cargo test --locked --test fonts -- --ignored
+          cargo test --locked --test harmonium_font -- --ignored
 
       - name: Package macOS app
         if: runner.os == 'macOS'
@@ -121,7 +128,7 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP 'cadence-install'
           $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/norelaunch=1',"/DIR=$dir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
-          foreach ($f in 'Cadence.exe','unins000.exe','README.txt','THIRD-PARTY-NOTICES.txt','soundfonts\Cadence GM.sf2','licenses\GeneralUser-GS-LICENSE.txt') {
+          foreach ($f in 'Cadence.exe','unins000.exe','README.txt','THIRD-PARTY-NOTICES.txt','soundfonts\Cadence GM.sf2','soundfonts\Cadence Harmonium.sf2','licenses\GeneralUser-GS-LICENSE.txt','licenses\Cadence-Harmonium-LICENSE.txt') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "installed copy is missing $f" }
           }
           $out = Join-Path $env:RUNNER_TEMP 'version.txt'
