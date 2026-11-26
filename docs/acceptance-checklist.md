@@ -47,7 +47,7 @@ Run these on a release build of the machine you ship. **Windows has had a first 
 - [ ] Export WAV and Export Stems produce playable files honoring mute/solo; Export/Import MIDI round-trips.
 - [ ] Import Audio File stages a WAV onto an audio lane; Import Sample creates a `sample.*` preset; Import Instrument Pack + Reload pick up a new pack (~2 s rescan).
 - [ ] SoundFont bank: a fresh install lists "Cadence GM (built-in)" and its 128 GM programs play with no setup (macOS and Windows installer + portable zip); drop another `.sf2` in the font folder → it appears alongside; a missing font falls back to the preset sound.
-- [ ] Help → Shortcuts & Tips (F1) table matches the real shortcuts; About shows version and font credits (Inter, DejaVu Sans).
+- [ ] Help → Shortcuts & Tips (F1) table matches the real shortcuts; About shows version and font credits (Barlow Semi Condensed, IBM Plex Mono, DejaVu Sans).
 - [ ] View → Theme: Graphite / Midnight / Paper recolor the whole app and persist across relaunch.
 
 ### Install & update (~3 min, once the release key is set up)

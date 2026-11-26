@@ -922,7 +922,8 @@ impl CadenceApp {
             ui.label(theme::kicker_text(pal, "CREDITS"));
             ui.add_space(theme::GAP_XS);
             for line in [
-                "Inter — SIL Open Font License 1.1",
+                "Barlow Semi Condensed — SIL Open Font License 1.1",
+                "IBM Plex Mono — SIL Open Font License 1.1",
                 "DejaVu Sans — Bitstream Vera / DejaVu license",
                 "Built with Rust, egui and eframe, CPAL, rustysynth, midly and hound",
             ] {

@@ -229,4 +229,4 @@ tools/instrument-packs/  agent guide for authoring new packs as pure JSON
 
 Everything runs in-process: the GUI drives the audio engine through a shared `Project`, playback renders on the CPAL callback, and file I/O stays on the UI thread's worker paths. Full details in [docs/architecture.md](docs/architecture.md).
 
-UI fonts: [Inter](https://rsms.me/inter/) 4.1 (SIL Open Font License 1.1) and [DejaVu Sans](https://dejavu-fonts.github.io/) 2.37 for symbols (Bitstream Vera license), bundled in `assets/fonts/` with their license texts.
+UI fonts: [Barlow Semi Condensed](https://github.com/jpt/barlow) 1.422 (Regular, Medium; SIL Open Font License 1.1) for text, [IBM Plex Mono](https://github.com/IBM/plex) 2.005 (Regular, Medium; SIL Open Font License 1.1) for numeric readouts, and [DejaVu Sans](https://dejavu-fonts.github.io/) 2.37 for symbols (Bitstream Vera license), bundled in `assets/fonts/` with their license texts.

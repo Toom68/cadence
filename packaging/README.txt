@@ -43,8 +43,8 @@ Contents of this package
                               SoundFont (GeneralUser GS by S. Christian
                               Collins), and its license (inside
                               Cadence.app/Contents/Resources on macOS)
-  licenses/                   the Inter, DejaVu and GeneralUser GS license
-                              texts
+  licenses/                   the Barlow, IBM Plex Mono, DejaVu and
+                              GeneralUser GS license texts
   EULA.txt                    the end-user license (when present)
 
 In the app, Help > About Cadence > "Third-Party Notices" shows the same
