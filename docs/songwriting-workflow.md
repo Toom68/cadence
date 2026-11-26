@@ -26,10 +26,10 @@ The transport bar holds the project-level controls:
 
 The left **sidebar** has two tabs — **Instruments** (the library) and **Track** (the selected track's inspector) — and collapses to a 40 px icon rail. In the library:
 
-- The **Library** header folds the list and shows the track count (`n / 32 tracks`). Each sound is a card with a color bar, name, one-line description and a badge (KIT / PACK / FONT); its play button auditions the sound, **+** adds it as a track, double-click adds too, and cards drag straight onto the arranger lanes.
+- The **Library** header folds the list and shows the track count (`n / 32 tracks`). Each sound is one row of a plain list — a small color chip, name, one-line description and a quiet kit / pack / font tag; hovering a row shows ▶ to audition the sound and **+** to add it as a track, double-click adds too, and rows drag straight onto the arranger lanes.
 - A **search** field ("Search sounds…") and a **bank chooser** filter the list — All, Built-in, one section per installed pack, and the SoundFont bank's 16 GM families. **Reset** appears only while a filter is active; sections collapse, and stay open while searching.
 - The footer has **Import pack…**, **Reload** and a folder button (open the packs folder); the SoundFont bank plays the built-in General MIDI font **Cadence GM (built-in)** out of the box and offers **Open SoundFonts folder** for more — drop `.sf2` files there and they appear within a couple of seconds (**Add a SoundFont…** appears only if no font is available at all).
-- The built-in sampled **Harmonium** has its own row (SAMPLED section of the All and SoundFont banks; search "harmonium", "reed" or "drone") and leads quick add's SOUNDFONT group.
+- The built-in sampled **Harmonium** has its own row (Sampled section of the All and SoundFont banks; search "harmonium", "reed" or "drone") and leads quick add's SOUNDFONT group.
 - The Track tab's **Add track** button opens the same grouped chooser inline (IN THIS SONG / BUILT-IN / PACKS / SOUNDFONT); **Track → Add Track** does it from the menu, including an **Audio Track** lane for imported WAV clips.
 
 Up to 32 tracks per song. Each track has a name, color, sound, volume, pan, mute/solo, effects and an output route. A new track starts with one empty pattern and a clip at the start of the song. Reorder, duplicate or delete tracks from the inspector's MANAGE section, the header's right-click menu, or the **Track** menu.

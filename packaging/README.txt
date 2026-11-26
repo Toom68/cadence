@@ -47,8 +47,8 @@ Contents of this package
                               Nicholaus P. Brosowsky / tonejs-instruments,
                               CC BY 3.0); and their licenses (inside
                               Cadence.app/Contents/Resources on macOS)
-  licenses/                   the Inter, DejaVu, GeneralUser GS and
-                              harmonium license texts
+  licenses/                   the Barlow, IBM Plex Mono, DejaVu, GeneralUser GS
+                              and harmonium license texts
   EULA.txt                    the end-user license (when present)
 
 In the app, Help > About Cadence > "Third-Party Notices" shows the same

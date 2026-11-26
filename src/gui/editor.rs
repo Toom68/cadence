@@ -2914,7 +2914,7 @@ impl CadenceApp {
             .into_iter()
             .find(|k| *k as f32 * 16.0 * pps >= 44.0)
             .unwrap_or(16);
-        let font = theme::body_font(10.5);
+        let font = theme::mono_font(10.0);
         let b0 = (roll.step(roll.ruler.left()).max(0.0) / 16.0).floor() as i64;
         let b1 = (roll.step(roll.ruler.right()) / 16.0).ceil() as i64;
         for b in b0..=b1.min((len as i64 + 15) / 16) {
@@ -2964,8 +2964,8 @@ impl CadenceApp {
         p.text(
             pos2(labels.left() + 10.0, labels.center().y),
             Align2::LEFT_CENTER,
-            "VEL",
-            theme::strong_font(ui, theme::TEXT_KICKER),
+            "Vel",
+            theme::body_font(theme::TEXT_MICRO),
             pal.text_faint,
         );
         p.rect_filled(roll.vel, 0.0, pal.canvas_alt);
@@ -5054,7 +5054,7 @@ impl CadenceApp {
             .filter_map(|&i| kb_pitches.get(i).copied())
             .collect();
         let name_font = theme::body_font(12.0);
-        let key_font = theme::strong_font(ui, theme::TEXT_KICKER);
+        let key_font = theme::mono_font(theme::TEXT_MICRO - 1.0);
         let mut preview = None;
         let (r0, r1) = g.visible_rows();
         for (row, &(pitch, name)) in rows.iter().enumerate().take(r1).skip(r0) {
@@ -5147,8 +5147,8 @@ impl CadenceApp {
         let len = ops::pattern(track, pid).map_or(16, |p| p.length);
         let p = ui.painter_at(g.ruler);
         p.rect_filled(g.ruler, 0.0, pal.panel);
-        let bar_font = theme::strong_font(ui, 10.5);
-        let beat_font = theme::body_font(10.0);
+        let bar_font = theme::readout_font(ui, 10.0);
+        let beat_font = theme::mono_font(9.5);
         let s0 = g.step(g.ruler.left()).max(0.0).floor() as u32;
         let s1 = (g.step(g.ruler.right()).ceil().max(0.0) as u32).min(len);
         for s in s0..s1 {
@@ -5469,24 +5469,27 @@ fn key_badge(p: &Painter, center: Pos2, key: &str, font: FontId, under: Color32)
     p.galley(rect.center() - galley.size() * 0.5, galley, ink);
 }
 
-/// "● Recording" pill for the Keyboard-tab toolbar.
+/// "Recording" indicator for the Keyboard-tab toolbar: a lit panel lamp
+/// (square orange LED and label), the armed state's signal color.
 fn record_badge(ui: &mut Ui, pal: Palette, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, theme::CONTROL_S), Sense::hover());
     let p = ui.painter();
-    p.rect(
+    p.rect_filled(
         rect,
-        theme::CONTROL_S * 0.5,
-        pal.danger.gamma_multiply(0.12),
-        Stroke::new(1.0_f32, pal.danger),
-        StrokeKind::Inside,
+        theme::RADIUS_S,
+        theme::mix(pal.panel, pal.accent, 0.12),
     );
-    p.circle_filled(pos2(rect.left() + 12.0, rect.center().y), 4.0, pal.danger);
+    p.rect_filled(
+        Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), vec2(7.0, 7.0)),
+        1.0,
+        pal.accent,
+    );
     p.text(
         pos2(rect.left() + 22.0, rect.center().y),
         Align2::LEFT_CENTER,
         text,
         theme::strong_font(ui, theme::TEXT_SMALL),
-        pal.danger,
+        pal.accent,
     );
     resp
 }
@@ -5505,18 +5508,8 @@ fn chord_chip(ui: &mut Ui, pal: Palette, caption: &str, title: &str, width: f32)
         } else {
             pal.control
         };
-        let border = if resp.hovered() {
-            pal.accent
-        } else {
-            pal.control_border
-        };
-        ui.painter().rect(
-            rect,
-            theme::RADIUS_M,
-            fill,
-            Stroke::new(1.0_f32, border),
-            StrokeKind::Inside,
-        );
+        // A raised key: tonal body and a hard bottom edge, no outline.
+        theme::paint_key(ui.painter(), rect, theme::RADIUS_M, fill, pal.key_edge, 1.0);
         let room = rect.width() - 10.0;
         theme::paint_elided(
             ui,

@@ -90,16 +90,17 @@ pub const DRUMS: [(u8, &str); 8] = [
     (51, "Ride"),
 ];
 
-/// Track colour palette (lime, periwinkle, coral, amber, teal, rose, sky, lavender).
+/// Track colour palette: muted "tape label" hues (coral, sage, ochre, steel
+/// blue, slate violet, rose, teal, lavender), one per built-in instrument.
 pub const TRACK_COLORS: [[u8; 3]; 8] = [
-    [255, 132, 104],
-    [186, 230, 94],
-    [242, 192, 110],
-    [112, 189, 242],
-    [152, 162, 255],
-    [239, 145, 181],
-    [94, 214, 190],
-    [196, 166, 255],
+    [222, 120, 96],
+    [168, 190, 104],
+    [218, 178, 104],
+    [116, 166, 200],
+    [140, 150, 200],
+    [208, 134, 158],
+    [100, 180, 164],
+    [170, 150, 204],
 ];
 
 /// Built-in synthesized instruments. Serialized in lowercase (`"drums"`, `"piano"`, ...).

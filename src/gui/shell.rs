@@ -34,8 +34,8 @@ pub(super) const MENU_H: f32 = 28.0;
 pub(super) const STATUS_H: f32 = 24.0;
 /// Every menu is exactly this wide, so the bar never jumps between menus.
 const MENU_W: f32 = 296.0;
-/// Height of the draggable gap between the arranger and the editor.
-const HANDLE_H: f32 = 12.0;
+/// Height of the draggable rail between the arranger and the editor.
+const HANDLE_H: f32 = 8.0;
 /// Height of the bottom tab strip card (tabs row + rule + card outline).
 const TABS_H: f32 = 44.0;
 
@@ -237,10 +237,12 @@ impl Toast {
     }
 }
 
+/// Ink of a status message: quiet for info, plain for success, amber for
+/// warnings and red only for errors.
 fn kind_color(pal: Palette, kind: StatusKind) -> Color32 {
     match kind {
-        StatusKind::Info => pal.text_faint,
-        StatusKind::Success => pal.accent,
+        StatusKind::Info => pal.text_dim,
+        StatusKind::Success => pal.text,
         StatusKind::Warning => pal.warn,
         StatusKind::Error => pal.danger,
     }
@@ -347,7 +349,11 @@ fn paint_menu_row(
         } else {
             pal.text_disabled
         };
-        let galley = p.layout_no_wrap(hint.to_owned(), theme::body_font(12.0), hint_ink);
+        let galley = p.layout_no_wrap(
+            hint.to_owned(),
+            theme::body_font(theme::TEXT_SMALL),
+            hint_ink,
+        );
         let pos = pos2(
             rect.right() - right_pad - galley.size().x,
             rect.center().y - galley.size().y * 0.5,
@@ -408,7 +414,7 @@ fn menu_sep(ui: &mut Ui, pal: Palette) {
             pos2(rect.right() - theme::GAP_S, rect.bottom()),
         ),
         0.0,
-        pal.border_soft,
+        pal.border,
     );
     ui.add_space(theme::GAP_XS);
 }
@@ -1008,10 +1014,10 @@ impl CadenceApp {
 
     pub(super) fn status_bar(&mut self, ctx: &Context) {
         let pal = self.palette();
+        // The panel's separator line is the seam above it.
         let frame = Frame::new()
             .fill(pal.bg)
-            .inner_margin(Margin::symmetric(12, 0))
-            .stroke(Stroke::new(1.0_f32, pal.border_soft));
+            .inner_margin(Margin::symmetric(12, 0));
         let panel = egui::TopBottomPanel::bottom("status_bar")
             .exact_height(STATUS_H)
             .frame(frame)
@@ -1050,18 +1056,16 @@ impl CadenceApp {
         let _ = panel;
     }
 
-    /// The last message with its severity dot.
+    /// The last message, its severity carried by the ink alone (no dots).
     fn status_left(&self, ui: &mut Ui, pal: Palette) {
         ui.spacing_mut().item_spacing.x = theme::GAP_S;
         let (kind, text) = match &self.status {
             Some(s) => (s.kind, s.text.as_str()),
-            None => (StatusKind::Info, "Ready · Press F1 for shortcuts"),
+            None => (StatusKind::Info, "Press F1 for shortcuts"),
         };
-        theme::color_dot(ui, kind_color(pal, kind), 8.0);
-        let ink = match (&self.status, kind) {
-            (None, _) => pal.text_faint,
-            (_, StatusKind::Info) => pal.text_dim,
-            _ => pal.text,
+        let ink = match &self.status {
+            None => pal.text_faint,
+            Some(_) => kind_color(pal, kind),
         };
         ui.add(
             egui::Label::new(RichText::new(text).size(theme::TEXT_SMALL + 1.0).color(ink))
@@ -1083,14 +1087,13 @@ impl CadenceApp {
                 .size()
                 .x
         };
-        let dot = 8.0;
         let pad = ui.spacing().button_padding.x;
 
         // What each item needs, measured before anything is drawn.
         let audio = self.status_audio();
         let (audio_w, device_w) = match &audio {
             StatusAudio::Ready { text, device, .. } => (
-                dot + 2.0 * sp + 2.0 * pad + text_w(ui, text),
+                sp + 2.0 * pad + text_w(ui, text),
                 if device.is_empty() {
                     0.0
                 } else {
@@ -1100,13 +1103,12 @@ impl CadenceApp {
             StatusAudio::Off { .. } => (
                 theme::text_button_width(ui, "Retry audio", theme::CONTROL_S)
                     + text_w(ui, "No audio output")
-                    + dot
-                    + 3.0 * sp,
+                    + 2.0 * sp,
                 0.0,
             ),
         };
         let autosave_w = if self.autosave_failures > 0 {
-            theme::GAP_M + text_w(ui, "Autosave paused") + dot + 2.0 * sp
+            theme::GAP_M + text_w(ui, "Autosave paused") + sp
         } else {
             0.0
         };
@@ -1153,7 +1155,7 @@ impl CadenceApp {
                     format!("{text} · {device}")
                 };
                 let room = text_w(ui, &text) + fit.device;
-                let label = theme::elide(ui, &full, font.clone(), Color32::PLACEHOLDER, room);
+                let label = theme::elide(ui, &full, font.clone(), color, room);
                 let tip = if !device.is_empty() && (label.elided || fit.device <= 0.0) {
                     format!("Output: {device}\n{tip}")
                 } else {
@@ -1187,15 +1189,13 @@ impl CadenceApp {
                 })
                 .response
                 .on_hover_text(tip);
-                theme::color_dot(ui, color, dot);
             }
             StatusAudio::Off { tip } => {
                 if theme::text_button(ui, pal, "Retry audio", theme::CONTROL_S, &tip).clicked() {
                     self.retry_audio(true);
                 }
-                ui.label(small("No audio output".to_owned(), pal.text_dim))
+                ui.label(small("No audio output".to_owned(), pal.danger))
                     .on_hover_text("Editing, saving and WAV export still work");
-                theme::color_dot(ui, pal.danger, dot);
             }
         }
         if self.autosave_failures > 0 {
@@ -1204,9 +1204,8 @@ impl CadenceApp {
                 "Crash-recovery autosave could not be written; Cadence retries automatically. Save the song to keep your work safe meanwhile.\n\n{}",
                 self.autosave_error.as_deref().unwrap_or_default()
             );
-            ui.label(small("Autosave paused".to_owned(), pal.text))
+            ui.label(small("Autosave paused".to_owned(), pal.warn))
                 .on_hover_text(tip);
-            theme::color_dot(ui, pal.warn, dot);
         }
         self.update_status_item(ui, pal, fit.short_update);
         if fit.summary {
@@ -1215,12 +1214,13 @@ impl CadenceApp {
         }
         if let Some((label, p)) = export {
             ui.add_space(theme::GAP_M);
-            ui.label(small(label, pal.accent));
+            ui.label(small(label, pal.text));
             ui.add(
                 egui::ProgressBar::new(p)
                     .desired_width(fit.export_bar)
-                    .desired_height(8.0)
-                    .fill(pal.accent),
+                    .desired_height(6.0)
+                    .corner_radius(0.0)
+                    .fill(pal.text_dim),
             );
         }
     }
@@ -1243,7 +1243,7 @@ impl CadenceApp {
         let (color, text, tip) = match &self.transport.engine_error {
             Some(e) => (pal.danger, "Audio error", e.clone()),
             None => (
-                pal.accent,
+                pal.text_dim,
                 "Audio ready",
                 format!(
                     "{} note{} playing",
@@ -1307,15 +1307,16 @@ impl CadenceApp {
             ctx.style()
                 .visuals
                 .popup_shadow
-                .as_shape(rect, theme::RADIUS_L),
+                .as_shape(rect, theme::RADIUS_M),
         );
         painter.rect(
             rect,
-            theme::RADIUS_L,
+            theme::RADIUS_M,
             pal.raised,
-            Stroke::new(1.0_f32, theme::mix(pal.border, color, 0.6)),
+            Stroke::new(1.0_f32, pal.control_border),
             StrokeKind::Inside,
         );
+
         let inner = rect.shrink2(pad);
         theme::paint_icon(
             &painter,
@@ -1350,12 +1351,9 @@ impl CadenceApp {
 
     pub(super) fn central(&mut self, ctx: &Context) {
         let pal = self.palette();
-        let frame = Frame::new().fill(pal.bg).inner_margin(Margin {
-            left: 8,
-            right: 8,
-            top: 6,
-            bottom: 6,
-        });
+        // Panels sit edge to edge: no outer margin, a 1 px seam around each
+        // panel and a narrow rail between arranger and editor.
+        let frame = Frame::new().fill(pal.bg).inner_margin(Margin::ZERO);
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             if self.project.tracks.is_empty() {
                 self.empty_state(ui);
@@ -1415,38 +1413,34 @@ impl CadenceApp {
 
             ui.scope_builder(UiBuilder::new().max_rect(arranger), |ui| {
                 ui.set_clip_rect(arranger.intersect(ui.clip_rect()));
-                theme::card(pal)
-                    .inner_margin(Margin::same(0))
-                    .show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        self.arranger_ui(ui);
-                    });
+                panel_frame(pal).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.arranger_ui(ui);
+                });
             });
             paint_split_handle(ui, pal, handle, hot, resp.dragged());
             ui.scope_builder(UiBuilder::new().max_rect(editor), |ui| {
                 ui.set_clip_rect(editor.intersect(ui.clip_rect()));
-                theme::card(pal)
-                    .inner_margin(Margin::same(0))
-                    .show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        // The pattern editor's toolbars start right under the
-                        // tab strip; the other tabs keep the usual gap.
-                        let gap = ui.spacing().item_spacing.y;
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        self.bottom_tabs(ui);
-                        if ui.available_height() < 48.0 {
-                            return;
-                        }
-                        if self.tab != Tab::Editor {
-                            ui.add_space(gap);
-                            ui.spacing_mut().item_spacing.y = gap;
-                        }
-                        match self.tab {
-                            Tab::Editor => self.editor_ui(ui),
-                            Tab::Mixer => self.mixer_ui(ui),
-                            Tab::Keys => self.keys_ui(ui),
-                        }
-                    });
+                panel_frame(pal).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    // The pattern editor's toolbars start right under the
+                    // tab strip; the other tabs keep the usual gap.
+                    let gap = ui.spacing().item_spacing.y;
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    self.bottom_tabs(ui);
+                    if ui.available_height() < 48.0 {
+                        return;
+                    }
+                    if self.tab != Tab::Editor {
+                        ui.add_space(gap);
+                        ui.spacing_mut().item_spacing.y = gap;
+                    }
+                    match self.tab {
+                        Tab::Editor => self.editor_ui(ui),
+                        Tab::Mixer => self.mixer_ui(ui),
+                        Tab::Keys => self.keys_ui(ui),
+                    }
+                });
             });
         });
     }
@@ -1528,7 +1522,7 @@ impl CadenceApp {
             });
         let r = ui.cursor();
         ui.painter()
-            .hline(r.x_range(), r.top(), Stroke::new(1.0_f32, pal.border_soft));
+            .hline(r.x_range(), r.top(), Stroke::new(1.0_f32, pal.border));
         if let Some(target) = toggle {
             self.shell.split.toggle(target);
         } else if tabs_clicked && mode == PanelMode::ArrangerMax {
@@ -1541,7 +1535,7 @@ impl CadenceApp {
 
     pub(super) fn empty_state(&mut self, ui: &mut Ui) {
         let pal = self.palette();
-        let card = theme::card(pal).show(ui, |ui| {
+        let card = panel_frame(pal).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.22).max(16.0));
@@ -1585,7 +1579,7 @@ impl CadenceApp {
         {
             ui.painter().rect_stroke(
                 card.response.rect.shrink(1.0),
-                theme::RADIUS_L,
+                0.0,
                 Stroke::new(1.5_f32, pal.accent),
                 StrokeKind::Inside,
             );
@@ -1695,20 +1689,38 @@ fn fit_status(budget: f32, w: &StatusWidths) -> StatusFit {
 /// Smallest window the layout is designed for (see `main.rs`).
 pub(super) const MIN_WINDOW: Vec2 = vec2(1100.0, 760.0);
 
-/// The divider between arranger and editor: a grip pill that lights up when
-/// the pointer is near, with a faint rule across the gap while it is.
+/// Frame of a layout panel (arranger, editor): square, flat, a 1 px seam.
+fn panel_frame(pal: Palette) -> Frame {
+    Frame::new()
+        .fill(pal.panel)
+        .stroke(Stroke::new(1.0_f32, pal.border))
+        .inner_margin(Margin::ZERO)
+}
+
+/// The rail between arranger and editor: a short grip of three ridges that
+/// brightens when the pointer is near, with a rule across while dragging.
 fn paint_split_handle(ui: &Ui, pal: Palette, rect: Rect, hot: bool, dragging: bool) {
     let painter = ui.painter();
     let center = rect.center();
-    if hot {
-        painter.rect_filled(
-            Rect::from_center_size(center, vec2(rect.width(), 2.0)),
-            1.0,
-            theme::mix(pal.bg, pal.accent, if dragging { 0.7 } else { 0.4 }),
+    if dragging {
+        painter.hline(
+            rect.x_range(),
+            center.y.round() + 0.5,
+            Stroke::new(1.0_f32, pal.control_border),
         );
     }
-    let pill = Rect::from_center_size(center, vec2(if hot { 48.0 } else { 36.0 }, 4.0));
-    painter.rect_filled(pill, 2.0, if hot { pal.accent } else { pal.control_border });
+    let ink = if hot {
+        pal.text_dim
+    } else {
+        pal.control_border
+    };
+    for dx in [-6.0, 0.0, 6.0] {
+        painter.vline(
+            (center.x + dx).round() + 0.5,
+            (center.y - 2.0)..=(center.y + 2.0),
+            Stroke::new(1.0_f32, ink),
+        );
+    }
 }
 
 #[cfg(test)]

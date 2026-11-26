@@ -4,21 +4,42 @@
 //! look. There is no global theme state: GUI code reads the [`Palette`] once
 //! per frame (`CadenceApp::palette`) and passes it to the free helpers below.
 //!
+//! # Look: warm hardware
+//!
+//! Vintage studio gear rather than a web dashboard: honest flat materials,
+//! few colors that each mean something, dense enough for a DAW.
+//! - Panels sit edge to edge on 1 px seams (`border`); no floating cards,
+//!   no gradients, no glows, no soft shadows. Depth comes from tonal steps
+//!   and the hard bottom edge (`key_edge`) of raised keys.
+//! - One signal color, `accent` (tape orange): record/armed, the one primary
+//!   action of an area, selection/focus and the playhead. Meters stay
+//!   functional green → amber → red. Everything else is cream on graphite.
+//! - Secondary actions are flat (no body until hovered); toggles are
+//!   hardware keys — unlit (tonal body, secondary ink) or lit (accent ink and
+//!   an indicator bar); tabs are flat with an accent underline.
+//! - Numbers read from recessed LCD windows ([`lcd_readout`]) in mono.
+//! - Labels are plain sentence-case captions in `text_dim`, inline, and only
+//!   where needed; no small-caps eyebrows and no status dots.
+//!
 //! # Themes and color tokens
 //!
-//! [`ThemeChoice`] (Graphite — default, Midnight, Paper) resolves to a
-//! [`Palette`]. Use tokens, never literal colors:
+//! [`ThemeChoice`] (Graphite — default, Midnight (cool slate), Paper)
+//! resolves to a [`Palette`]. Use tokens, never literal colors:
 //!
 //! | token | use |
 //! |---|---|
 //! | `bg`, `bg_deep`, `panel`, `raised` | surfaces, darkest to most raised |
 //! | `canvas`, `canvas_alt`, `grid_faint`, `grid_beat`, `grid_bar` | timeline / editor grids |
-//! | `inset` | sunken grooves and readouts |
-//! | `control`, `control_hover`, `control_active`, `control_border` | button bodies |
-//! | `border`, `border_soft` | separators and card outlines |
-//! | `text`, `text_dim`, `text_faint` | primary / secondary / caption text, all ≥ 4.5:1 |
+//! | `inset` | sunken grooves and wells |
+//! | `lcd`, `lcd_ink`, `lcd_dim` | recessed readout windows and their digits |
+//! | `control`, `control_hover`, `control_active` | key bodies and hover fills |
+//! | `key_edge` | hard bottom edge of raised keys |
+//! | `control_border` | outline of input fields (text edits, check boxes) |
+//! | `border`, `border_soft` | 1 px seams between panels / inside them |
+//! | `text`, `text_dim`, `text_faint` | primary / secondary / faint text, all ≥ 4.5:1 |
 //! | `text_disabled` | disabled ink, ≥ 3:1 on `panel`, `raised` and `control` |
-//! | `accent`, `link`, `danger`, `warn`, `selection_bg` | state colors |
+//! | `accent` | the signal color (see above) |
+//! | `link`, `danger`, `warn`, `selection_bg` | links/marquee, errors, warnings, selection fill |
 //! | `mixer.*` ([`MixerPalette`]) | the mixing desk: strips, wells, meters, fader caps |
 //!
 //! Text on a saturated fill uses [`ink_on`]; [`mix`], [`rgb`],
@@ -30,26 +51,35 @@
 //! - control heights: [`CONTROL_S`] 24, [`CONTROL_M`] 28 (default), [`CONTROL_L`] 32
 //! - icon boxes: [`ICON_S`] 14, [`ICON_M`] 16, [`ICON_L`] 18
 //! - gaps: [`GAP_XS`] 4, [`GAP_S`] 8, [`GAP_M`] 12, [`GAP_L`] 16, [`GAP_XL`] 24
-//! - radii: [`RADIUS_S`] 4 (chips), [`RADIUS_M`] 6 (controls), [`RADIUS_L`] 10 (cards)
+//! - radii: [`RADIUS_S`] 2 (chips, clips), [`RADIUS_M`] 3 (controls), [`RADIUS_L`] 3 (windows);
+//!   layout panels are square
 //! - toolbars: [`TOOLBAR_H`] 40 tall, [`TOOLBAR_GAP`] 4 between items
-//! - text sizes: [`TEXT_HEADING`] 18, [`TEXT_TITLE`] 14, [`TEXT_BODY`] 13,
-//!   [`TEXT_SMALL`] 11, [`TEXT_KICKER`] 10
+//! - type scale: [`TEXT_SMALL`] 12, [`TEXT_BODY`] 14, [`TEXT_TITLE`] 16,
+//!   [`TEXT_HEADING`] 20; readouts [`TEXT_MONO`] 13 and [`TEXT_DISPLAY`] 20;
+//!   [`TEXT_MICRO`] 11 only for labels painted inside tight lanes
 //!
 //! # Typography
 //!
-//! The UI font is Inter 4.1 (`assets/fonts`, SIL OFL 1.1): Regular for the
-//! proportional family and SemiBold as the named family [`strong_family`].
-//! egui's default fonts stay behind both as fallbacks (emoji), then DejaVu
-//! Sans 2.37 as the last resort for symbols none of them has (▸ ▾ ♭ ♯ ✕ ⋯);
-//! monospace stays Hack (with the same last resort). [`apply`] installs the fonts and the
-//! text styles and returns `true` once the fonts are live (they activate one
-//! pass after they are requested — until then every "strong" style quietly
-//! uses the regular family, so nothing can panic on a fresh `Context`).
+//! Two OFL families (`assets/fonts`, with their license texts), two weights
+//! each. UI text is Barlow Semi Condensed 1.422 (Regular for the
+//! proportional family, Medium as the named family [`strong_family`]).
+//! Numbers — time, tempo, swing, dB, bars, values — are IBM Plex Mono 2.005
+//! (Regular as egui's monospace family, Medium as [`mono_strong_family`] for
+//! the big readouts), so digits are tabular and never jitter. egui's
+//! default fonts stay behind both as fallbacks (emoji), then DejaVu Sans
+//! 2.37 as the last resort for symbols none of them has (▸ ▾ ♭ ♯ ✕ ⋯).
+//! [`apply`] installs the fonts and the text styles and returns `true` once
+//! the fonts are live (they activate one pass after they are requested —
+//! until then every named style quietly uses the regular family, so nothing
+//! can panic on a fresh `Context`).
 //!
-//! - `ui.label(theme::strong_text("Song timeline"))` — SemiBold body text
-//! - `ui.label(theme::kicker_text(pal, "TEMPO"))` — small tracked caps label
-//! - `theme::strong_font(ui, 12.0)` / `theme::body_font(12.0)` — `FontId`s for painters
-//! - `theme::kicker()`, `theme::display()`, `theme::strong()` — named `TextStyle`s
+//! - `ui.label(theme::strong_text("Song timeline"))` — Medium body text
+//! - `ui.label(theme::kicker_text(pal, "Tempo"))` — inline sentence-case caption
+//! - `ui.label(theme::readout_text("120.0"))` — tabular mono at body size
+//! - `theme::lcd_readout(ui, pal, "120.0", "bpm", 13.0, 84.0, CONTROL_M)` — recessed readout
+//! - `theme::strong_font(ui, 12.0)` / `theme::body_font(12.0)` / `theme::mono_font(12.0)` /
+//!   `theme::readout_font(ui, 20.0)` — `FontId`s for painters
+//! - `theme::kicker()`, `theme::display()`, `theme::strong()`, `theme::readout()` — named `TextStyle`s
 //!
 //! # Icons
 //!
@@ -70,21 +100,23 @@
 //! # Widgets
 //!
 //! Buttons (`size`/`height` are the tokens above; disabled states stay legible):
-//! - `theme::icon_button(ui, pal, Icon::Loop, CONTROL_M, looping, pal.accent, "Loop (L)")`
+//! - `theme::icon_button(ui, pal, Icon::Loop, CONTROL_M, looping, pal.accent, "Loop (L)")` — flat; lit when active
 //! - `theme::ghost_icon_button(ui, pal, Icon::Close, CONTROL_S, "Close")` — no body until hovered
 //! - `theme::icon_label_button(ui, pal, Icon::Marker, "Marker", CONTROL_M, "Add a marker")`
 //! - `theme::text_button(ui, pal, "Fill", CONTROL_M, "Fill the pattern")`
 //! - `theme::toggle_button(ui, pal, "Chords", on, CONTROL_M, "Show the chord lane")`
 //! - `theme::icon_toggle_button(ui, pal, Icon::Follow, "Follow", on, CONTROL_M, "Follow the playhead")`
 //! - `theme::chip(ui, pal, "M", muted, pal.danger, vec2(24.0, 24.0), "Mute")` — fixed size, own ON color
-//! - `theme::primary_button(ui, pal, "Save")`, `theme::secondary_button(ui, "Cancel")`
-//! - `theme::play_button(ui, pal, playing, 44.0)`
+//! - `theme::primary_button(ui, pal, "Save")` (solid orange key, one per area),
+//!   `theme::secondary_button(ui, "Cancel")` (unlit key)
+//! - `theme::play_button(ui, pal, playing, 44.0)` — square transport key
+//! - `theme::paint_key(painter, rect, RADIUS_M, fill, pal.key_edge, 1.0)` — a key body for custom widgets
 //! - `theme::shortcut_tip(ui.ctx(), "Undo", &SC_UNDO)` — "Undo (Ctrl+Z)" / "Undo (⌘Z)"
 //!
 //! Choices and values:
 //! - `theme::segmented(ui, pal, &mut tab, &[Segment::new(Tab::Editor, "Pattern Editor"),
-//!   Segment::new(Tab::Mixer, "Mixer")], CONTROL_M, None)` — tab strips and small enums
-//! - `theme::slider(ui, pal, &mut swing, 0.0..=0.6, 120.0)` — thin track, accent fill, round handle
+//!   Segment::new(Tab::Mixer, "Mixer")], CONTROL_M, None)` — flat tabs, accent underline
+//! - `theme::slider(ui, pal, &mut swing, 0.0..=0.6, 120.0)` — thin groove, neutral fill, square cap
 //!   (`slider_with` adds a custom color and a double-click default)
 //! - `theme::combo("snap", "Bar", 96.0).show_ui(ui, |ui| { .. })` — combo box with a chevron
 //! - `theme::knob(..)`, `theme::meter(..)`, `theme::scrollbar(..)`
@@ -97,9 +129,10 @@
 //! Structure:
 //! - `theme::toolbar(ui, pal, "arranger", |tb| { .. })` — overflow-safe toolbar row, see [`Toolbar`]
 //! - `theme::panel_header(ui, pal, "Mixer", |ui| { /* trailing controls, right to left */ })`
-//! - `theme::section_header(ui, pal, "ARRANGEMENT", "Song timeline")`
+//! - `theme::section_header(ui, pal, "Arrangement", "Song timeline")` — the title only
 //! - `theme::empty_state(ui, pal, Icon::Note, "No clips yet", "Double-click a lane to add one.", Some("Add clip"))`
-//! - `theme::card(pal)`, `theme::divider_v(ui, pal, 24.0)`, `theme::color_dot(ui, color, 8.0)`
+//! - `theme::card(pal)` (flat framed block, not for layout panels), `theme::divider_v(ui, pal, 24.0)`,
+//!   `theme::color_dot(ui, color, 8.0)` (square swatch)
 //!
 //! # Developer gallery
 //!
@@ -158,8 +191,16 @@ pub struct Palette {
     pub grid_faint: Color32,
     pub grid_beat: Color32,
     pub grid_bar: Color32,
-    /// Sunken groove color (fader/meter tracks, inset displays).
+    /// Sunken groove color (fader/meter tracks, recessed wells).
     pub inset: Color32,
+    /// Hard bottom edge under raised keys (transport keys, chips).
+    pub key_edge: Color32,
+    /// Recessed "LCD" readout window (position, tempo, swing, level).
+    pub lcd: Color32,
+    /// Readout digits on `lcd` (warm amber-cream).
+    pub lcd_ink: Color32,
+    /// Units and secondary readout text on `lcd`.
+    pub lcd_dim: Color32,
     /// Primary text.
     pub text: Color32,
     /// Secondary text (≥ 4.5:1 on every surface and on `control`).
@@ -168,9 +209,10 @@ pub struct Palette {
     pub text_faint: Color32,
     /// Disabled text and icons (≥ 3:1 on `panel`, `raised` and `control`).
     pub text_disabled: Color32,
-    /// Primary accent (play button, playhead, selection, meters).
+    /// The one signal color: record/armed, the primary action of an area,
+    /// selection/focus and the playhead. Nothing else.
     pub accent: Color32,
-    /// Secondary accent (links, marquee, secondary toggles).
+    /// Links and the marquee (a quiet steel blue).
     pub link: Color32,
     /// Error / clipping color.
     pub danger: Color32,
@@ -244,195 +286,214 @@ const fn c(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+// Warm hardware: off-black body, graphite panels, cream ink, hairline seams
+// and one tape-orange signal color (record/armed, the primary action of an
+// area, selection/focus, the playhead). Meters stay green → amber → red.
 const GRAPHITE: Palette = Palette {
-    bg: c(19, 18, 17),
-    bg_deep: c(17, 16, 15),
-    panel: c(29, 27, 25),
-    raised: c(38, 36, 33),
-    control: c(52, 49, 45),
-    control_hover: c(64, 60, 55),
-    control_active: c(76, 71, 65),
-    control_border: c(78, 73, 66),
-    border: c(60, 56, 51),
-    border_soft: c(44, 41, 38),
-    canvas: c(23, 22, 20),
-    canvas_alt: c(27, 26, 24),
-    grid_faint: c(36, 34, 31),
-    grid_beat: c(46, 43, 39),
-    grid_bar: c(68, 63, 57),
-    inset: c(22, 21, 19),
-    text: c(237, 232, 224),
-    text_dim: c(178, 171, 161),
-    text_faint: c(148, 142, 133),
-    text_disabled: c(130, 124, 116),
-    accent: c(198, 243, 107),
-    link: c(154, 167, 255),
-    danger: c(255, 122, 102),
-    warn: c(255, 196, 92),
-    selection_bg: c(76, 94, 42),
+    bg: c(21, 19, 17),
+    bg_deep: c(15, 13, 11),
+    panel: c(31, 28, 25),
+    raised: c(42, 38, 34),
+    control: c(52, 47, 42),
+    control_hover: c(62, 56, 50),
+    control_active: c(74, 67, 60),
+    control_border: c(78, 71, 64),
+    border: c(58, 52, 46),
+    border_soft: c(44, 40, 36),
+    canvas: c(24, 22, 19),
+    canvas_alt: c(28, 25, 22),
+    grid_faint: c(36, 33, 29),
+    grid_beat: c(46, 42, 37),
+    grid_bar: c(70, 63, 56),
+    inset: c(16, 14, 12),
+    key_edge: c(12, 11, 9),
+    lcd: c(12, 11, 9),
+    lcd_ink: c(242, 214, 168),
+    lcd_dim: c(150, 132, 104),
+    text: c(237, 230, 216),
+    text_dim: c(176, 167, 152),
+    text_faint: c(150, 142, 129),
+    text_disabled: c(130, 122, 111),
+    accent: c(246, 124, 44),
+    link: c(134, 170, 190),
+    danger: c(250, 98, 92),
+    warn: c(232, 176, 64),
+    selection_bg: c(78, 46, 26),
     mixer: MixerPalette {
-        panel: c(30, 29, 27),
-        strip: c(42, 40, 37),
-        strip_hi: c(48, 46, 42),
-        master: c(50, 48, 44),
-        border: c(64, 61, 56),
-        border_soft: c(53, 51, 47),
-        well: c(21, 20, 18),
-        control: c(57, 54, 50),
-        control_hover: c(68, 65, 59),
-        control_active: c(80, 76, 69),
-        arc: c(36, 34, 31),
-        tick: c(92, 88, 81),
-        select: c(92, 88, 80),
-        text: c(232, 227, 219),
-        text_dim: c(178, 172, 162),
-        text_faint: c(158, 152, 143),
-        meter_low: c(84, 196, 104),
-        meter_mid: c(240, 198, 72),
-        meter_high: c(242, 88, 70),
+        panel: c(21, 19, 17),
+        strip: c(33, 30, 27),
+        strip_hi: c(40, 36, 32),
+        master: c(44, 40, 35),
+        border: c(58, 52, 46),
+        border_soft: c(46, 42, 37),
+        well: c(12, 11, 9),
+        control: c(52, 47, 42),
+        control_hover: c(62, 56, 50),
+        control_active: c(74, 67, 60),
+        arc: c(40, 36, 32),
+        tick: c(96, 88, 79),
+        select: c(96, 62, 40),
+        text: c(237, 230, 216),
+        text_dim: c(176, 167, 152),
+        text_faint: c(150, 142, 129),
+        meter_low: c(110, 186, 100),
+        meter_mid: c(232, 176, 64),
+        meter_high: c(240, 96, 72),
         meter_clip: c(255, 84, 72),
-        meter_off: c(34, 33, 30),
-        meter_peak: c(238, 234, 226),
-        cap_body: c(190, 187, 180),
-        cap_hi: c(234, 231, 224),
-        cap_line: c(118, 115, 108),
-        cap_edge: c(92, 89, 83),
-        pan: c(148, 170, 255),
-        mute: c(255, 112, 100),
-        solo: c(255, 188, 84),
+        meter_off: c(30, 28, 25),
+        meter_peak: c(237, 230, 216),
+        cap_body: c(200, 192, 178),
+        cap_hi: c(236, 229, 216),
+        cap_line: c(110, 102, 92),
+        cap_edge: c(80, 74, 66),
+        pan: c(206, 192, 166),
+        mute: c(250, 98, 92),
+        solo: c(232, 176, 64),
     },
 };
 
+// Cool slate: the same hardware, anodised blue-grey instead of graphite,
+// with the same orange signal color.
 const MIDNIGHT: Palette = Palette {
-    bg: c(13, 16, 24),
-    bg_deep: c(9, 11, 17),
-    panel: c(20, 24, 35),
-    raised: c(28, 33, 47),
-    control: c(40, 47, 66),
-    control_hover: c(52, 60, 83),
-    control_active: c(64, 74, 100),
-    control_border: c(70, 80, 107),
-    border: c(57, 66, 89),
-    border_soft: c(43, 50, 69),
-    canvas: c(16, 19, 29),
-    canvas_alt: c(21, 25, 36),
-    grid_faint: c(31, 36, 51),
-    grid_beat: c(43, 50, 69),
-    grid_bar: c(66, 76, 102),
-    inset: c(18, 22, 32),
-    text: c(229, 235, 245),
-    text_dim: c(162, 172, 193),
-    text_faint: c(133, 143, 165),
-    text_disabled: c(113, 123, 146),
-    accent: c(190, 242, 120),
-    link: c(164, 178, 255),
-    danger: c(255, 128, 108),
-    warn: c(255, 199, 102),
-    selection_bg: c(56, 76, 44),
+    bg: c(17, 19, 22),
+    bg_deep: c(12, 13, 16),
+    panel: c(25, 28, 32),
+    raised: c(34, 38, 43),
+    control: c(44, 49, 55),
+    control_hover: c(54, 60, 67),
+    control_active: c(66, 73, 81),
+    control_border: c(72, 80, 89),
+    border: c(50, 56, 63),
+    border_soft: c(37, 41, 47),
+    canvas: c(20, 22, 26),
+    canvas_alt: c(24, 27, 31),
+    grid_faint: c(32, 36, 41),
+    grid_beat: c(42, 47, 53),
+    grid_bar: c(64, 71, 80),
+    inset: c(13, 15, 18),
+    key_edge: c(9, 10, 12),
+    lcd: c(9, 11, 13),
+    lcd_ink: c(222, 228, 214),
+    lcd_dim: c(128, 138, 132),
+    text: c(226, 230, 234),
+    text_dim: c(162, 170, 179),
+    text_faint: c(138, 147, 157),
+    text_disabled: c(118, 127, 137),
+    accent: c(246, 124, 44),
+    link: c(140, 178, 206),
+    danger: c(250, 102, 96),
+    warn: c(230, 180, 76),
+    selection_bg: c(72, 48, 34),
     mixer: MixerPalette {
-        panel: c(18, 22, 32),
-        strip: c(30, 35, 50),
-        strip_hi: c(36, 42, 59),
-        master: c(38, 44, 62),
-        border: c(60, 69, 93),
-        border_soft: c(47, 55, 75),
-        well: c(11, 14, 22),
-        control: c(45, 53, 74),
-        control_hover: c(57, 66, 90),
-        control_active: c(69, 79, 106),
-        arc: c(25, 30, 43),
-        tick: c(84, 95, 124),
-        select: c(80, 92, 124),
-        text: c(229, 235, 245),
-        text_dim: c(166, 176, 197),
-        text_faint: c(142, 152, 174),
-        meter_low: c(84, 200, 116),
-        meter_mid: c(240, 200, 80),
-        meter_high: c(244, 92, 76),
+        panel: c(17, 19, 22),
+        strip: c(27, 30, 35),
+        strip_hi: c(33, 37, 42),
+        master: c(36, 40, 46),
+        border: c(50, 56, 63),
+        border_soft: c(40, 45, 51),
+        well: c(9, 11, 13),
+        control: c(44, 49, 55),
+        control_hover: c(54, 60, 67),
+        control_active: c(66, 73, 81),
+        arc: c(34, 38, 44),
+        tick: c(86, 95, 106),
+        select: c(86, 62, 46),
+        text: c(226, 230, 234),
+        text_dim: c(162, 170, 179),
+        text_faint: c(142, 151, 161),
+        meter_low: c(108, 188, 112),
+        meter_mid: c(230, 180, 76),
+        meter_high: c(240, 100, 78),
         meter_clip: c(255, 88, 78),
-        meter_off: c(24, 29, 41),
-        meter_peak: c(232, 238, 248),
-        cap_body: c(184, 190, 202),
-        cap_hi: c(228, 233, 243),
-        cap_line: c(110, 118, 134),
-        cap_edge: c(84, 92, 108),
-        pan: c(164, 178, 255),
-        mute: c(255, 120, 104),
-        solo: c(255, 196, 96),
+        meter_off: c(24, 27, 31),
+        meter_peak: c(226, 230, 234),
+        cap_body: c(190, 196, 202),
+        cap_hi: c(228, 232, 236),
+        cap_line: c(104, 112, 120),
+        cap_edge: c(76, 84, 92),
+        pan: c(176, 194, 210),
+        mute: c(250, 102, 96),
+        solo: c(230, 180, 76),
     },
 };
 
+// Cream paper panels and ink, the orange deepened so it still reads as text
+// on paper; the readouts and the mixer's wells stay dark like a console.
 const PAPER: Palette = Palette {
-    bg: c(243, 240, 233),
-    bg_deep: c(233, 228, 217),
-    panel: c(250, 247, 240),
-    raised: c(255, 252, 246),
-    control: c(233, 227, 215),
-    control_hover: c(221, 214, 200),
-    control_active: c(203, 195, 179),
-    control_border: c(186, 177, 161),
-    border: c(207, 199, 185),
-    border_soft: c(221, 214, 201),
-    canvas: c(236, 231, 220),
-    canvas_alt: c(229, 223, 210),
-    grid_faint: c(218, 211, 197),
-    grid_beat: c(198, 189, 171),
-    grid_bar: c(165, 154, 132),
-    inset: c(217, 210, 197),
-    text: c(43, 38, 31),
-    text_dim: c(76, 69, 59),
-    text_faint: c(94, 87, 76),
-    text_disabled: c(128, 120, 107),
-    accent: c(184, 76, 44),
-    link: c(52, 88, 158),
-    danger: c(188, 42, 40),
-    warn: c(146, 92, 10),
-    selection_bg: c(240, 224, 200),
+    bg: c(229, 221, 206),
+    bg_deep: c(246, 242, 233),
+    panel: c(239, 232, 218),
+    raised: c(246, 241, 231),
+    control: c(218, 209, 192),
+    control_hover: c(207, 197, 179),
+    control_active: c(192, 181, 162),
+    control_border: c(168, 157, 140),
+    border: c(204, 195, 179),
+    border_soft: c(219, 211, 196),
+    canvas: c(234, 227, 213),
+    canvas_alt: c(227, 219, 204),
+    grid_faint: c(216, 208, 192),
+    grid_beat: c(196, 186, 168),
+    grid_bar: c(160, 148, 128),
+    inset: c(222, 214, 199),
+    key_edge: c(176, 166, 149),
+    lcd: c(38, 34, 29),
+    lcd_ink: c(244, 214, 164),
+    lcd_dim: c(160, 140, 110),
+    text: c(38, 33, 27),
+    text_dim: c(86, 76, 64),
+    text_faint: c(96, 87, 75),
+    text_disabled: c(120, 110, 97),
+    accent: c(174, 64, 10),
+    link: c(40, 88, 124),
+    danger: c(176, 36, 36),
+    warn: c(134, 86, 8),
+    selection_bg: c(240, 214, 190),
     // A light desk with dark wells, like a hardware console: the fader slots
     // and meter windows stay dark so lit segments read the same in every theme.
     mixer: MixerPalette {
-        panel: c(232, 227, 216),
-        strip: c(247, 243, 235),
-        strip_hi: c(253, 250, 244),
-        master: c(255, 252, 246),
-        border: c(196, 188, 173),
-        border_soft: c(214, 207, 193),
-        well: c(48, 44, 38),
-        control: c(233, 227, 215),
-        control_hover: c(221, 214, 200),
-        control_active: c(203, 195, 179),
-        arc: c(212, 205, 192),
-        tick: c(150, 142, 128),
-        select: c(222, 206, 180),
-        text: c(43, 38, 31),
-        text_dim: c(76, 69, 59),
-        text_faint: c(94, 87, 76),
-        meter_low: c(96, 204, 112),
-        meter_mid: c(240, 198, 72),
-        meter_high: c(242, 88, 70),
+        panel: c(229, 221, 206),
+        strip: c(242, 236, 223),
+        strip_hi: c(247, 243, 234),
+        master: c(249, 245, 237),
+        border: c(196, 186, 170),
+        border_soft: c(214, 206, 191),
+        well: c(44, 40, 34),
+        control: c(226, 218, 203),
+        control_hover: c(214, 205, 188),
+        control_active: c(198, 188, 170),
+        arc: c(210, 202, 187),
+        tick: c(146, 136, 120),
+        select: c(232, 204, 176),
+        text: c(38, 33, 27),
+        text_dim: c(86, 76, 64),
+        text_faint: c(96, 87, 75),
+        meter_low: c(110, 196, 104),
+        meter_mid: c(236, 186, 70),
+        meter_high: c(242, 96, 72),
         meter_clip: c(255, 84, 72),
-        meter_off: c(66, 61, 54),
-        meter_peak: c(244, 240, 232),
-        cap_body: c(250, 247, 240),
+        meter_off: c(64, 59, 52),
+        meter_peak: c(244, 238, 228),
+        cap_body: c(248, 244, 236),
         cap_hi: c(255, 255, 255),
-        cap_line: c(120, 113, 102),
-        cap_edge: c(96, 89, 78),
-        pan: c(52, 88, 158),
-        mute: c(188, 42, 40),
-        solo: c(150, 96, 12),
+        cap_line: c(118, 110, 98),
+        cap_edge: c(92, 84, 72),
+        pan: c(40, 88, 124),
+        mute: c(176, 36, 36),
+        solo: c(134, 86, 8),
     },
 };
 
 /// The selectable UI themes, in menu order. [`ThemeChoice::Graphite`] is the
-/// default: warm near-black with the lime accent.
+/// default: warm graphite with the tape-orange signal color.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeChoice {
-    /// Warm near-black with a lime accent (the original Cadence look).
+    /// Warm graphite hardware with a tape-orange signal color.
     #[default]
     Graphite,
-    /// Cool navy dark theme.
+    /// Cool slate dark (blue-grey anodised panels, same orange).
     Midnight,
-    /// Warm off-white light theme.
+    /// Warm cream paper light theme.
     Paper,
 }
 
@@ -460,9 +521,9 @@ impl ThemeChoice {
     /// One-line description shown in the theme menu.
     pub fn description(self) -> &'static str {
         match self {
-            Self::Graphite => "Warm dark · lime accent",
-            Self::Midnight => "Cool navy dark",
-            Self::Paper => "Warm paper light",
+            Self::Graphite => "Warm graphite · tape orange",
+            Self::Midnight => "Cool slate dark",
+            Self::Paper => "Cream paper light",
         }
     }
 
@@ -503,18 +564,19 @@ impl ThemeChoice {
 /// eframe storage key for the selected theme.
 pub const STORAGE_KEY: &str = "ui.theme";
 
-/// Accent colors offered for tracks (song data — deliberately theme-independent).
+/// Accent colors offered for tracks (song data — deliberately theme-independent):
+/// muted, warm "tape label" colors rather than neon.
 pub const TRACK_PALETTE: [[u8; 3]; 10] = [
-    [198, 243, 107],
-    [154, 167, 255],
-    [255, 122, 102],
-    [255, 196, 92],
-    [110, 214, 200],
-    [232, 132, 214],
-    [126, 200, 255],
-    [255, 158, 196],
-    [180, 150, 255],
-    [140, 226, 140],
+    [226, 132, 74],
+    [212, 178, 92],
+    [150, 178, 112],
+    [104, 168, 160],
+    [124, 156, 192],
+    [160, 140, 186],
+    [204, 128, 136],
+    [222, 110, 92],
+    [176, 170, 104],
+    [204, 182, 146],
 ];
 
 // ----- size and spacing tokens -----------------------------------------------
@@ -540,24 +602,34 @@ pub const GAP_M: f32 = 12.0;
 pub const GAP_L: f32 = 16.0;
 pub const GAP_XL: f32 = 24.0;
 
-/// Corner radius of chips and other small bodies.
-pub const RADIUS_S: f32 = 4.0;
-/// Corner radius of controls.
-pub const RADIUS_M: f32 = 6.0;
-/// Corner radius of cards and panels.
-pub const RADIUS_L: f32 = 10.0;
+/// Corner radius of chips, clips and other small bodies.
+pub const RADIUS_S: f32 = 2.0;
+/// Corner radius of controls (keys, fields, menus).
+pub const RADIUS_M: f32 = 3.0;
+/// Corner radius of windows and the few framed blocks; panels themselves
+/// are square and sit edge to edge on 1 px seams.
+pub const RADIUS_L: f32 = 3.0;
 
 /// Height of a [`toolbar`] row.
 pub const TOOLBAR_H: f32 = 40.0;
 /// Gap between neighbouring [`toolbar`] items.
 pub const TOOLBAR_GAP: f32 = 4.0;
 
-/// Text sizes (points) tuned for Inter.
-pub const TEXT_HEADING: f32 = 18.0;
-pub const TEXT_TITLE: f32 = 14.0;
-pub const TEXT_BODY: f32 = 13.0;
-pub const TEXT_SMALL: f32 = 11.0;
-pub const TEXT_KICKER: f32 = 10.0;
+/// The type scale (points), tuned for Barlow Semi Condensed: four clearly
+/// separated steps and two weights (Regular, Medium).
+pub const TEXT_HEADING: f32 = 20.0;
+pub const TEXT_TITLE: f32 = 16.0;
+pub const TEXT_BODY: f32 = 14.0;
+pub const TEXT_SMALL: f32 = 12.0;
+/// Inline captions use the small step (no separate eyebrow size any more).
+pub const TEXT_KICKER: f32 = TEXT_SMALL;
+/// Painted labels inside tight lanes only (clip names, ruler chips, lane
+/// tags) — never for running UI text.
+pub const TEXT_MICRO: f32 = 11.0;
+/// IBM Plex Mono for inline numeric readouts (tabular digits).
+pub const TEXT_MONO: f32 = 13.0;
+/// IBM Plex Mono Medium for the big transport readout.
+pub const TEXT_DISPLAY: f32 = 20.0;
 
 // ----- color helpers ---------------------------------------------------------
 
@@ -619,25 +691,37 @@ pub fn ink_on(fill: Color32) -> Color32 {
 
 // ----- typography ------------------------------------------------------------
 
-const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
-const INTER_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
+const BARLOW_REGULAR: &[u8] = include_bytes!("../../assets/fonts/BarlowSemiCondensed-Regular.ttf");
+const BARLOW_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/BarlowSemiCondensed-Medium.ttf");
+const PLEX_MONO_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
+const PLEX_MONO_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf");
 /// Symbol coverage none of the other fonts has (geometric shapes, music
 /// signs, dingbats, math operators).
 const DEJAVU_SANS: &[u8] = include_bytes!("../../assets/fonts/DejaVuSans.ttf");
 
 static STRONG_FAMILY: LazyLock<FontFamily> = LazyLock::new(|| FontFamily::Name("Strong".into()));
+static MONO_STRONG_FAMILY: LazyLock<FontFamily> =
+    LazyLock::new(|| FontFamily::Name("MonoStrong".into()));
 static KICKER_STYLE: LazyLock<TextStyle> = LazyLock::new(|| TextStyle::Name("Kicker".into()));
 static DISPLAY_STYLE: LazyLock<TextStyle> = LazyLock::new(|| TextStyle::Name("Display".into()));
 static STRONG_STYLE: LazyLock<TextStyle> = LazyLock::new(|| TextStyle::Name("Strong".into()));
+static READOUT_STYLE: LazyLock<TextStyle> = LazyLock::new(|| TextStyle::Name("Readout".into()));
 
-/// The SemiBold family (`FontFamily::Name("Strong")`). Only bound once
+/// The Medium family (`FontFamily::Name("Strong")`). Only bound once
 /// [`apply`] has returned `true`; painters should use [`strong_font`], which
 /// falls back to the regular family until then.
 pub fn strong_family() -> FontFamily {
     STRONG_FAMILY.clone()
 }
 
-/// Small tracked caps label style ("TEMPO").
+/// The IBM Plex Mono Medium family (`FontFamily::Name("MonoStrong")`) for
+/// the large readouts; painters should use [`readout_font`].
+pub fn mono_strong_family() -> FontFamily {
+    MONO_STRONG_FAMILY.clone()
+}
+
+/// Inline caption style: small, regular, sentence case (the old tracked
+/// small-caps "kicker" is gone; the name stays for the call sites).
 pub fn kicker() -> TextStyle {
     KICKER_STYLE.clone()
 }
@@ -647,22 +731,30 @@ pub fn display() -> TextStyle {
     DISPLAY_STYLE.clone()
 }
 
-/// SemiBold body text style.
+/// Medium-weight body text style.
 pub fn strong() -> TextStyle {
     STRONG_STYLE.clone()
 }
 
-/// Kicker label text: small, tracked, in `text_faint`.
-pub fn kicker_text(pal: Palette, text: &str) -> RichText {
-    RichText::new(text)
-        .text_style(kicker())
-        .extra_letter_spacing(0.5)
-        .color(pal.text_faint)
+/// Body-size tabular readout style (tempo, swing, dB, bars).
+pub fn readout() -> TextStyle {
+    READOUT_STYLE.clone()
 }
 
-/// SemiBold text for headings, titles and emphasized labels.
+/// Inline caption text: small, regular, in the secondary tone. Write the
+/// text in sentence case ("Tempo", "Audio output"); it is shown as given.
+pub fn kicker_text(pal: Palette, text: &str) -> RichText {
+    RichText::new(text).text_style(kicker()).color(pal.text_dim)
+}
+
+/// Medium-weight text for headings, titles and emphasized labels.
 pub fn strong_text(text: impl Into<String>) -> RichText {
     RichText::new(text).text_style(strong())
+}
+
+/// Tabular mono text for a numeric readout at body size.
+pub fn readout_text(text: impl Into<String>) -> RichText {
+    RichText::new(text).text_style(readout())
 }
 
 /// Regular UI font at `size`.
@@ -670,7 +762,12 @@ pub fn body_font(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
-/// SemiBold UI font at `size` for painters. Safe on any `Ui`: resolves to the
+/// Tabular mono font (IBM Plex Mono Regular) at `size`, for numbers.
+pub fn mono_font(size: f32) -> FontId {
+    FontId::monospace(size)
+}
+
+/// Medium UI font at `size` for painters. Safe on any `Ui`: resolves to the
 /// regular family while the bundled fonts are not live yet.
 pub fn strong_font(ui: &Ui, size: f32) -> FontId {
     let family = ui
@@ -681,14 +778,29 @@ pub fn strong_font(ui: &Ui, size: f32) -> FontId {
     FontId::new(size, family)
 }
 
-/// The font set: Inter first, then every egui default font as a fallback
-/// (emoji), then DejaVu Sans for the remaining symbols; plus the SemiBold
-/// [`strong_family`]. Monospace keeps Hack first.
+/// IBM Plex Mono Medium at `size` for large readouts. Safe on any `Ui`:
+/// resolves to the regular monospace family until the fonts are live.
+pub fn readout_font(ui: &Ui, size: f32) -> FontId {
+    let family = ui
+        .style()
+        .text_styles
+        .get(&*DISPLAY_STYLE)
+        .map_or(FontFamily::Monospace, |font| font.family.clone());
+    FontId::new(size, family)
+}
+
+/// The font set. Proportional: Barlow Semi Condensed first, then every egui
+/// default font as a fallback (emoji), then DejaVu Sans for the remaining
+/// symbols; [`strong_family`] puts Barlow Medium in front of that.
+/// Monospace: IBM Plex Mono first, then egui's (Hack, emoji), then DejaVu;
+/// [`mono_strong_family`] puts Plex Mono Medium in front.
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     for (name, data) in [
-        ("Inter", INTER_REGULAR),
-        ("Inter-SemiBold", INTER_SEMIBOLD),
+        ("Barlow", BARLOW_REGULAR),
+        ("Barlow-Medium", BARLOW_MEDIUM),
+        ("PlexMono", PLEX_MONO_REGULAR),
+        ("PlexMono-Medium", PLEX_MONO_MEDIUM),
         ("DejaVuSans", DEJAVU_SANS),
     ] {
         fonts
@@ -697,17 +809,20 @@ pub fn font_definitions() -> FontDefinitions {
     }
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     let fallbacks = proportional.clone();
-    proportional.insert(0, "Inter".to_owned());
+    proportional.insert(0, "Barlow".to_owned());
     proportional.push("DejaVuSans".to_owned());
-    let mut strong = vec!["Inter-SemiBold".to_owned(), "Inter".to_owned()];
+    let mut strong = vec!["Barlow-Medium".to_owned(), "Barlow".to_owned()];
     strong.extend(fallbacks);
     strong.push("DejaVuSans".to_owned());
     fonts.families.insert(strong_family(), strong);
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .push("DejaVuSans".to_owned());
+    let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
+    let mono_fallbacks = monospace.clone();
+    monospace.insert(0, "PlexMono".to_owned());
+    monospace.push("DejaVuSans".to_owned());
+    let mut mono_strong = vec!["PlexMono-Medium".to_owned(), "PlexMono".to_owned()];
+    mono_strong.extend(mono_fallbacks);
+    mono_strong.push("DejaVuSans".to_owned());
+    fonts.families.insert(mono_strong_family(), mono_strong);
     fonts
 }
 
@@ -741,25 +856,27 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         ctx.request_repaint();
     }
     ctx.set_theme(egui::Theme::from_dark_mode(choice.dark_mode()));
+    ctx.data_mut(|d| d.insert_temp(active_theme_id(), choice));
     ctx.all_styles_mut(|style| {
         use FontFamily::{Monospace, Proportional};
-        let semibold = if fonts_live {
-            strong_family()
+        let (medium, mono_medium) = if fonts_live {
+            (strong_family(), mono_strong_family())
         } else {
-            Proportional
+            (Proportional, Monospace)
         };
         style.text_styles = [
             (
                 TextStyle::Heading,
-                FontId::new(TEXT_HEADING, semibold.clone()),
+                FontId::new(TEXT_HEADING, medium.clone()),
             ),
             (TextStyle::Body, FontId::new(TEXT_BODY, Proportional)),
             (TextStyle::Button, FontId::new(TEXT_BODY, Proportional)),
             (TextStyle::Small, FontId::new(TEXT_SMALL, Proportional)),
-            (TextStyle::Monospace, FontId::new(12.5, Monospace)),
-            (kicker(), FontId::new(TEXT_KICKER, semibold.clone())),
-            (display(), FontId::new(21.0, Monospace)),
-            (strong(), FontId::new(TEXT_BODY, semibold)),
+            (TextStyle::Monospace, FontId::new(TEXT_MONO, Monospace)),
+            (kicker(), FontId::new(TEXT_KICKER, Proportional)),
+            (display(), FontId::new(TEXT_DISPLAY, mono_medium)),
+            (strong(), FontId::new(TEXT_BODY, medium)),
+            (readout(), FontId::new(TEXT_MONO, Monospace)),
         ]
         .into();
         let s = &mut style.spacing;
@@ -767,11 +884,11 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         s.button_padding = vec2(10.0, 4.0);
         s.interact_size = vec2(36.0, CONTROL_M);
         s.slider_width = 120.0;
-        s.slider_rail_height = 4.0;
+        s.slider_rail_height = 2.0;
         s.combo_width = 120.0;
-        s.menu_margin = Margin::same(6);
-        s.window_margin = Margin::same(18);
-        s.icon_width = 16.0;
+        s.menu_margin = Margin::same(4);
+        s.window_margin = Margin::same(16);
+        s.icon_width = 14.0;
         s.icon_spacing = 6.0;
         style.interaction.tooltip_delay = 0.35;
 
@@ -785,21 +902,22 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         v.window_fill = pal.raised;
         v.extreme_bg_color = pal.bg_deep;
         v.faint_bg_color = pal.raised;
-        v.code_bg_color = pal.control;
-        v.window_stroke = Stroke::new(1.0_f32, pal.border);
-        v.window_corner_radius = CornerRadius::same(12);
-        v.menu_corner_radius = CornerRadius::same(8);
+        v.code_bg_color = pal.inset;
+        v.window_stroke = Stroke::new(1.0_f32, pal.control_border);
+        v.window_corner_radius = CornerRadius::same(RADIUS_L as u8);
+        v.menu_corner_radius = CornerRadius::same(RADIUS_M as u8);
+        // No soft shadows: windows and menus sit on a hard 2–3 px drop edge.
         v.window_shadow = Shadow {
-            offset: [0, 10],
-            blur: 28,
+            offset: [0, 3],
+            blur: 0,
             spread: 0,
-            color: Color32::from_black_alpha(140),
+            color: Color32::from_black_alpha(110),
         };
         v.popup_shadow = Shadow {
-            offset: [0, 6],
-            blur: 16,
+            offset: [0, 2],
+            blur: 0,
             spread: 0,
-            color: Color32::from_black_alpha(120),
+            color: Color32::from_black_alpha(90),
         };
         v.hyperlink_color = pal.link;
         v.warn_fg_color = pal.warn;
@@ -807,7 +925,8 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         v.selection.bg_fill = pal.selection_bg;
         v.selection.stroke = Stroke::new(1.0_f32, pal.accent);
         v.slider_trailing_fill = true;
-        v.handle_shape = egui::style::HandleShape::Circle;
+        v.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.5 };
+        v.striped = false;
         // Disabled egui widgets fade toward the surface; keep their labels
         // at 3:1 or better (see `disabled_fade_keeps_labels_legible`).
         v.disabled_alpha = DISABLED_ALPHA;
@@ -816,9 +935,11 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = pal.panel;
         w.noninteractive.weak_bg_fill = pal.panel;
-        w.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.border_soft);
+        w.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.border);
         w.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text_dim);
         w.noninteractive.corner_radius = radius;
+        // Plain egui buttons are flat keys: a tonal body, no outline. Inputs
+        // (text edits, check boxes) keep a hairline so they read as fields.
         w.inactive.bg_fill = pal.control;
         w.inactive.weak_bg_fill = pal.control;
         w.inactive.bg_stroke = Stroke::new(1.0_f32, pal.control_border);
@@ -826,7 +947,7 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         w.inactive.corner_radius = radius;
         w.hovered.bg_fill = pal.control_hover;
         w.hovered.weak_bg_fill = pal.control_hover;
-        w.hovered.bg_stroke = Stroke::new(1.0_f32, mix(pal.control_border, pal.text, 0.3));
+        w.hovered.bg_stroke = Stroke::new(1.0_f32, mix(pal.control_border, pal.text, 0.25));
         w.hovered.fg_stroke = Stroke::new(1.5_f32, pal.text);
         w.hovered.corner_radius = radius;
         w.hovered.expansion = 0.0;
@@ -843,6 +964,18 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice) -> bool {
         w.open.corner_radius = radius;
     });
     fonts_live
+}
+
+fn active_theme_id() -> egui::Id {
+    egui::Id::new("cadence.theme.active")
+}
+
+/// The palette [`apply`] last installed on `ctx` (Graphite before that), for
+/// helpers that are not handed one.
+pub fn active_palette(ctx: &egui::Context) -> Palette {
+    ctx.data(|d| d.get_temp::<ThemeChoice>(active_theme_id()))
+        .unwrap_or_default()
+        .palette()
 }
 
 /// Opacity egui applies to everything inside a disabled `Ui`.
@@ -1709,44 +1842,65 @@ fn solid_fill(color: Color32, hovered: bool, down: bool) -> (Color32, Color32) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ButtonColors {
     fill: Color32,
+    /// Full outline (only disabled toggles still draw one).
     border: Color32,
+    /// Hard bottom edge: the dark key edge under a raised key, or the lit
+    /// indicator bar of a switched-on toggle. `TRANSPARENT` for flat buttons.
+    edge: Color32,
     ink: Color32,
 }
 
+/// Height of a key's bottom edge and of a lit toggle's indicator bar.
+const KEY_EDGE: f32 = 1.0;
+const LED_BAR: f32 = 2.0;
+
 /// The one place button colors are decided, for every state and theme.
+///
+/// - `Off` + `ghost`: a flat button — no body at rest, a tonal fill on hover/press.
+/// - `Off`: an unlit hardware key — tonal body with a hard dark bottom edge.
+/// - `Tint(c)`: a lit key — faint tint, ink and indicator bar in `c`.
+/// - `Solid(c)`: a solid key in `c` (the one primary action of an area).
 fn button_colors(pal: Palette, press: Press, on: OnStyle, ghost: bool) -> ButtonColors {
     if !press.enabled {
-        // A dimmed but present body; ink stays ≥ 3:1 against it.
+        // A dimmed but present key; ink stays ≥ 3:1 against it.
         let fill = mix(pal.control, pal.panel, 0.45);
-        let border = mix(pal.control_border, pal.panel, 0.5);
         return match on {
             OnStyle::Off if ghost => ButtonColors {
                 fill: Color32::TRANSPARENT,
                 border: Color32::TRANSPARENT,
+                edge: Color32::TRANSPARENT,
                 ink: pal.text_disabled,
             },
             OnStyle::Off => ButtonColors {
                 fill,
-                border,
+                border: Color32::TRANSPARENT,
+                edge: pal.key_edge,
                 ink: pal.text_disabled,
             },
             OnStyle::Tint(color) | OnStyle::Solid(color) => ButtonColors {
                 fill,
-                border: mix(border, color, 0.45),
+                border: Color32::TRANSPARENT,
+                edge: mix(pal.key_edge, color, 0.45),
                 ink: pal.text_disabled,
             },
         };
     }
+    let tonal = if press.down {
+        pal.control_active
+    } else if press.hovered {
+        pal.control_hover
+    } else {
+        pal.control
+    };
     match on {
         OnStyle::Off if ghost => ButtonColors {
-            fill: if press.down {
-                pal.control_active
-            } else if press.hovered {
-                pal.control_hover
+            fill: if press.down || press.hovered {
+                tonal
             } else {
                 Color32::TRANSPARENT
             },
             border: Color32::TRANSPARENT,
+            edge: Color32::TRANSPARENT,
             ink: if press.hovered || press.down {
                 pal.text
             } else {
@@ -1754,31 +1908,23 @@ fn button_colors(pal: Palette, press: Press, on: OnStyle, ghost: bool) -> Button
             },
         },
         OnStyle::Off => ButtonColors {
-            fill: if press.down {
-                pal.control_active
-            } else if press.hovered {
-                pal.control_hover
-            } else {
-                pal.control
-            },
-            border: if press.hovered || press.down {
-                mix(pal.control_border, pal.text, 0.3)
-            } else {
-                pal.control_border
-            },
+            fill: tonal,
+            border: Color32::TRANSPARENT,
+            edge: pal.key_edge,
             ink: pal.text,
         },
         OnStyle::Tint(color) => {
             let amount = if press.down {
-                0.34
+                0.16
             } else if press.hovered {
-                0.28
+                0.12
             } else {
-                0.2
+                0.08
             };
             ButtonColors {
-                fill: mix(pal.raised, color, amount),
-                border: mix(pal.raised, color, 0.65),
+                fill: mix(pal.control, color, amount),
+                border: Color32::TRANSPARENT,
+                edge: color,
                 ink: color,
             }
         }
@@ -1786,10 +1932,36 @@ fn button_colors(pal: Palette, press: Press, on: OnStyle, ghost: bool) -> Button
             let (fill, ink) = solid_fill(color, press.hovered, press.down);
             ButtonColors {
                 fill,
-                border: fill,
+                border: Color32::TRANSPARENT,
+                edge: mix(color, Color32::BLACK, 0.4),
                 ink,
             }
         }
+    }
+}
+
+/// Paints a flat key: `fill` with a hard `edge` along the bottom (no
+/// gradients, no shadow). `edge_h` is the edge height in points.
+pub fn paint_key(
+    painter: &Painter,
+    rect: Rect,
+    radius: f32,
+    fill: Color32,
+    edge: Color32,
+    edge_h: f32,
+) {
+    if edge != Color32::TRANSPARENT && edge_h > 0.0 {
+        painter.rect_filled(rect, radius, edge);
+        let body = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - edge_h));
+        let r = CornerRadius {
+            nw: radius as u8,
+            ne: radius as u8,
+            sw: 0,
+            se: 0,
+        };
+        painter.rect_filled(body, r, fill);
+    } else if fill != Color32::TRANSPARENT {
+        painter.rect_filled(rect, radius, fill);
     }
 }
 
@@ -1800,12 +1972,18 @@ fn paint_button_body(
     radius: f32,
     colors: ButtonColors,
     focused: bool,
+    lit: bool,
 ) {
-    if colors.fill != Color32::TRANSPARENT || colors.border != Color32::TRANSPARENT {
-        painter.rect(
+    if lit {
+        // Lit toggle: tinted body, indicator bar along the bottom edge.
+        paint_key(painter, rect, radius, colors.fill, colors.edge, LED_BAR);
+    } else {
+        paint_key(painter, rect, radius, colors.fill, colors.edge, KEY_EDGE);
+    }
+    if colors.border != Color32::TRANSPARENT {
+        painter.rect_stroke(
             rect,
             radius,
-            colors.fill,
             Stroke::new(1.0_f32, colors.border),
             StrokeKind::Inside,
         );
@@ -1911,19 +2089,26 @@ fn paint_button(
     label: Option<Arc<Galley>>,
     on: OnStyle,
     ghost: bool,
+    ink: Option<Color32>,
 ) {
     if !ui.is_rect_visible(rect) {
         return;
     }
     let press = Press::of(resp, enabled);
-    let colors = button_colors(pal, press, on, ghost);
-    paint_button_body(painter, pal, rect, RADIUS_M, colors, press.focused);
+    let mut colors = button_colors(pal, press, on, ghost);
+    if let Some(ink) = ink {
+        if enabled && on == OnStyle::Off {
+            colors.ink = ink;
+        }
+    }
+    let lit = enabled && matches!(on, OnStyle::Tint(_));
+    paint_button_body(painter, pal, rect, RADIUS_M, colors, press.focused, lit);
     paint_button_content(painter, rect, icon, label, colors.ink);
 }
 
-/// Square button with a painted icon. `active` lights it in `accent`.
-/// Disabled (inside `add_enabled_ui(false, ..)`) it keeps a visible body and a
-/// legible icon.
+/// Square icon button. Flat at rest (a tonal fill only on hover/press);
+/// `active` lights it like a hardware key: `accent` icon, faint tint and an
+/// indicator bar along the bottom. Disabled it keeps a legible icon.
 ///
 /// `theme::icon_button(ui, pal, Icon::Loop, CONTROL_M, looping, pal.accent, "Loop (L)")`
 pub fn icon_button(
@@ -1954,9 +2139,68 @@ pub fn icon_button(
         Some(icon),
         None,
         on,
-        false,
+        !active,
+        None,
     );
     with_tooltip(resp, tooltip)
+}
+
+/// Square icon *key* (transport keys): always a raised key body with a hard
+/// bottom edge; `active` lights it (accent icon, tint, indicator bar).
+///
+/// `theme::key_icon_button(ui, pal, Icon::Loop, 32.0, looping, "Loop (L)")`
+pub fn key_icon_button(
+    ui: &mut Ui,
+    pal: Palette,
+    icon: Icon,
+    size: f32,
+    active: bool,
+    tooltip: &str,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, active, tooltip));
+    let on = if active {
+        OnStyle::Tint(pal.accent)
+    } else {
+        OnStyle::Off
+    };
+    let painter = unfaded_painter(ui);
+    paint_button(
+        ui,
+        &painter,
+        pal,
+        rect,
+        &resp,
+        enabled,
+        Some(icon),
+        None,
+        on,
+        false,
+        None,
+    );
+    with_tooltip(resp, tooltip)
+}
+
+/// Paints a transport-style key body into `rect` for a response the caller
+/// owns (custom glyphs such as the record dot). `lit` lights it in the accent.
+pub fn paint_key_body(ui: &Ui, pal: Palette, rect: Rect, resp: &Response, lit: bool) {
+    let press = Press::of(resp, ui.is_enabled());
+    let on = if lit {
+        OnStyle::Tint(pal.accent)
+    } else {
+        OnStyle::Off
+    };
+    let colors = button_colors(pal, press, on, false);
+    paint_button_body(
+        ui.painter(),
+        pal,
+        rect,
+        RADIUS_M,
+        colors,
+        press.focused,
+        lit,
+    );
 }
 
 /// Icon button without a resting body (list rows, panel headers); the body
@@ -1985,6 +2229,7 @@ pub fn ghost_icon_button(
         None,
         OnStyle::Off,
         true,
+        None,
     );
     with_tooltip(resp, tooltip)
 }
@@ -2007,10 +2252,12 @@ fn labelled_button(
         Some(on) => WidgetInfo::selected(WidgetType::Button, enabled, on, text),
         None => WidgetInfo::labeled(WidgetType::Button, enabled, text),
     });
-    let style = if on == Some(true) {
-        OnStyle::Solid(pal.accent)
-    } else {
-        OnStyle::Off
+    // Actions are flat (primary ink); toggles are keys: unlit = tonal body
+    // with secondary ink, lit = accent ink and indicator bar.
+    let (style, ghost, ink) = match on {
+        None => (OnStyle::Off, true, Some(pal.text)),
+        Some(false) => (OnStyle::Off, false, Some(pal.text_dim)),
+        Some(true) => (OnStyle::Tint(pal.accent), false, None),
     };
     let painter = unfaded_painter(ui);
     paint_button(
@@ -2023,7 +2270,8 @@ fn labelled_button(
         icon,
         Some(galley),
         style,
-        false,
+        ghost,
+        ink,
     );
     with_tooltip(resp, tooltip)
 }
@@ -2042,8 +2290,8 @@ pub fn icon_label_button(
     labelled_button(ui, pal, Some(icon), text, None, height, tooltip)
 }
 
-/// Text button in the standard control style (use [`primary_button`] for the
-/// one call to action of a dialog).
+/// Flat text button: label in primary ink, a tonal fill only on hover/press
+/// (use [`primary_button`] for the one call to action of an area).
 ///
 /// `theme::text_button(ui, pal, "Fill", CONTROL_M, "Fill the pattern")`
 pub fn text_button(ui: &mut Ui, pal: Palette, text: &str, height: f32, tooltip: &str) -> Response {
@@ -2057,8 +2305,8 @@ pub fn text_button_width(ui: &Ui, text: &str, height: f32) -> f32 {
     button_width(height, false, Some(&*galley))
 }
 
-/// Text toggle. OFF is a normal button body with a legible label; ON fills
-/// with the accent.
+/// Text toggle, read like a hardware key: OFF is an unlit key (tonal body,
+/// secondary ink); ON is lit (accent ink and indicator bar, no big fill).
 ///
 /// `theme::toggle_button(ui, pal, "Chords", show_chords, CONTROL_M, "Show the chord lane")`
 pub fn toggle_button(
@@ -2072,7 +2320,7 @@ pub fn toggle_button(
     labelled_button(ui, pal, None, text, Some(on), height, tooltip)
 }
 
-/// Icon + text toggle; ON fills with the accent.
+/// Icon + text toggle; ON lights it in the accent (see [`toggle_button`]).
 ///
 /// `theme::icon_toggle_button(ui, pal, Icon::Follow, "Follow", follow, CONTROL_M, "Follow the playhead")`
 pub fn icon_toggle_button(
@@ -2087,7 +2335,8 @@ pub fn icon_toggle_button(
     labelled_button(ui, pal, Some(icon), text, Some(on), height, tooltip)
 }
 
-/// The big round primary transport button.
+/// The play/pause transport key: a square hardware key with a clear
+/// triangle (pause bars while playing). Playing lights it in the accent.
 pub fn play_button(ui: &mut Ui, pal: Palette, playing: bool, size: f32) -> Response {
     let label = if playing {
         "Pause (Space)"
@@ -2096,11 +2345,23 @@ pub fn play_button(ui: &mut Ui, pal: Palette, playing: bool, size: f32) -> Respo
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, playing, label));
-    let (fill, ink) = solid_fill(pal.accent, resp.hovered(), resp.is_pointer_button_down_on());
-    ui.painter().circle_filled(rect.center(), size * 0.5, fill);
+    let press = Press::of(&resp, true);
+    let on = if playing {
+        OnStyle::Tint(pal.accent)
+    } else {
+        OnStyle::Off
+    };
+    let colors = button_colors(pal, press, on, false);
+    let painter = ui.painter();
+    paint_button_body(painter, pal, rect, RADIUS_M, colors, press.focused, playing);
     let icon = if playing { Icon::Pause } else { Icon::Play };
-    let ir = Rect::from_center_size(rect.center(), Vec2::splat((size * 0.4).round()));
-    paint_icon(ui.painter(), ir, icon, ink);
+    let ir = Rect::from_center_size(rect.center(), Vec2::splat((size * 0.42).round()));
+    paint_icon(
+        painter,
+        ir,
+        icon,
+        if playing { pal.accent } else { pal.text },
+    );
     resp.on_hover_text(label)
 }
 
@@ -2149,7 +2410,7 @@ pub fn paint_chip(
         colors.ink = pal.text_dim;
     }
     let painter = unfaded_painter(ui);
-    paint_button_body(&painter, pal, rect, RADIUS_S, colors, press.focused);
+    paint_button_body(&painter, pal, rect, RADIUS_S, colors, press.focused, false);
     // Chips have a fixed size: shrink the label (down to 9 pt), then cut it,
     // rather than let it spill out of the body.
     let room = (rect.width() - 6.0).max(4.0);
@@ -2161,7 +2422,8 @@ pub fn paint_chip(
     painter.galley(rect.center() - galley.size() * 0.5, galley, colors.ink);
 }
 
-/// Primary call-to-action button (filled accent, at least 88 px wide).
+/// Primary call-to-action key (solid accent, at least 88 px wide). At most
+/// one per area.
 pub fn primary_button(ui: &mut Ui, pal: Palette, text: &str) -> Response {
     let galley = label_galley(ui, text, strong_font(ui, TEXT_BODY));
     let width = (galley.size().x + 2.0 * button_pad(CONTROL_L))
@@ -2191,7 +2453,7 @@ pub fn solid_button(
         let press = Press::of(&resp, enabled);
         let colors = button_colors(pal, press, OnStyle::Solid(color), false);
         let painter = unfaded_painter(ui);
-        paint_button_body(&painter, pal, rect, RADIUS_M, colors, press.focused);
+        paint_button_body(&painter, pal, rect, RADIUS_M, colors, press.focused, false);
         let room = (rect.width() - 2.0 * GAP_S).max(4.0);
         let galley = elide(
             ui,
@@ -2205,8 +2467,31 @@ pub fn solid_button(
     with_tooltip(resp, tooltip)
 }
 
+/// Secondary dialog button (Cancel, Close): an unlit key, at least 88 px
+/// wide, next to the one [`primary_button`].
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
-    ui.add(egui::Button::new(text).min_size(vec2(88.0, CONTROL_L)))
+    let height = CONTROL_L;
+    let galley = label_galley(ui, text, button_font(height));
+    let width = button_width(height, false, Some(&*galley)).max(88.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    let pal = active_palette(ui.ctx());
+    let painter = unfaded_painter(ui);
+    paint_button(
+        ui,
+        &painter,
+        pal,
+        rect,
+        &resp,
+        enabled,
+        None,
+        Some(galley),
+        OnStyle::Off,
+        false,
+        None,
+    );
+    resp
 }
 
 // ----- segmented control -----------------------------------------------------
@@ -2244,6 +2529,8 @@ impl<'a, T> Segment<'a, T> {
 }
 
 /// Segmented control: one option of several, for tab strips and small enums.
+/// Drawn as flat tabs on a hairline; the selected tab is underlined in the
+/// accent (no filled pill).
 /// `width` `None` sizes each segment to its label; `Some(w)` divides `w`
 /// equally. The returned response is `changed()` when the selection moved.
 ///
@@ -2258,7 +2545,7 @@ pub fn segmented<T: Copy + PartialEq>(
     width: Option<f32>,
 ) -> Response {
     const INSET: f32 = 2.0;
-    let font = strong_font(ui, if height < 26.0 { 11.5 } else { 12.5 });
+    let font = segment_font(height);
     let pad = button_pad(height) + 2.0;
     let icon = icon_side(height) - 2.0;
     let galleys: Vec<Option<Arc<Galley>>> = options
@@ -2284,12 +2571,11 @@ pub fn segmented<T: Copy + PartialEq>(
     let visible = ui.is_rect_visible(rect);
     let painter = unfaded_painter(ui);
     if visible {
-        painter.rect(
-            rect,
-            RADIUS_M,
-            pal.inset,
-            Stroke::new(1.0_f32, pal.control_border),
-            StrokeKind::Inside,
+        // Flat tabs on a hairline baseline; the selected one is underlined.
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0_f32, pal.border),
         );
     }
     let mut x = rect.left() + INSET;
@@ -2316,26 +2602,38 @@ pub fn segmented<T: Copy + PartialEq>(
         }
         if visible {
             let press = Press::of(&seg_resp, enabled);
+            if press.hovered || press.down {
+                let fill = if press.down {
+                    pal.control_active
+                } else {
+                    pal.control_hover
+                };
+                painter.rect_filled(seg, RADIUS_S, fill);
+            }
             let ink = if !enabled {
                 pal.text_disabled
-            } else if selected {
-                let (fill, ink) = solid_fill(pal.accent, press.hovered, press.down);
-                painter.rect_filled(seg, RADIUS_M - INSET, fill);
-                ink
-            } else if press.hovered || press.down {
-                painter.rect_filled(seg, RADIUS_M - INSET, pal.control_hover);
+            } else if selected || press.hovered || press.down {
                 pal.text
             } else {
                 pal.text_dim
             };
-            if !enabled && selected {
-                painter.rect_filled(seg, RADIUS_M - INSET, mix(pal.control, pal.panel, 0.45));
+            if selected {
+                let bar = if enabled {
+                    pal.accent
+                } else {
+                    pal.text_disabled
+                };
+                let underline = Rect::from_min_max(
+                    pos2(seg.left() + 2.0, rect.bottom() - LED_BAR),
+                    pos2(seg.right() - 2.0, rect.bottom()),
+                );
+                painter.rect_filled(underline, 0.0, bar);
             }
             if press.focused {
                 painter.rect_stroke(
                     seg,
-                    RADIUS_M - INSET,
-                    Stroke::new(1.0_f32, pal.text),
+                    RADIUS_S,
+                    Stroke::new(1.0_f32, pal.accent),
                     StrokeKind::Inside,
                 );
             }
@@ -2370,10 +2668,19 @@ pub fn segmented<T: Copy + PartialEq>(
     resp
 }
 
+/// Label font of a [`segmented`] tab strip of `height`.
+fn segment_font(height: f32) -> FontId {
+    body_font(if height < 26.0 {
+        TEXT_SMALL + 1.0
+    } else {
+        TEXT_BODY
+    })
+}
+
 /// Width [`segmented`] takes with `width: None` — for reserving a toolbar
 /// slot (`tb.item(segmented_width(..), |ui| segmented(..))`).
 pub fn segmented_width<T>(ui: &Ui, options: &[Segment<'_, T>], height: f32) -> f32 {
-    let font = strong_font(ui, if height < 26.0 { 11.5 } else { 12.5 });
+    let font = segment_font(height);
     let pad = button_pad(height) + 2.0;
     let icon = icon_side(height) - 2.0;
     let segments: f32 = options
@@ -2397,7 +2704,7 @@ pub fn segmented_width<T>(ui: &Ui, options: &[Segment<'_, T>], height: f32) -> f
 
 // ----- slider, combo ---------------------------------------------------------
 
-/// Slider with a thin track, accent fill and a round handle. Drag or click to
+/// Slider with a thin groove, a neutral fill and a small square fader cap. Drag or click to
 /// set; hold Shift for fine control; arrow keys nudge while focused.
 ///
 /// `theme::slider(ui, pal, &mut swing, 0.0..=0.6, 120.0)`
@@ -2408,7 +2715,7 @@ pub fn slider<N: Numeric>(
     range: RangeInclusive<N>,
     width: f32,
 ) -> Response {
-    slider_with(ui, pal, value, range, width, pal.accent, None)
+    slider_with(ui, pal, value, range, width, pal.text_dim, None)
 }
 
 /// [`slider`] with a custom fill `color` and an optional `default` restored by
@@ -2434,8 +2741,8 @@ pub fn slider_with<N: Numeric>(
     );
     let enabled = ui.is_enabled();
     let track = Rect::from_min_max(
-        pos2(rect.left() + HANDLE, rect.center().y - 2.0),
-        pos2(rect.right() - HANDLE, rect.center().y + 2.0),
+        pos2(rect.left() + HANDLE, rect.center().y - 1.5),
+        pos2(rect.right() - HANDLE, rect.center().y + 1.5),
     );
     let before = value.to_f64();
     let mut v = before;
@@ -2482,7 +2789,15 @@ pub fn slider_with<N: Numeric>(
         let x = track.left() + track.width() * t;
         let hot = enabled && (resp.hovered() || resp.dragged() || resp.has_focus());
         let (groove, fill, handle) = if enabled {
-            (pal.control_border, color, pal.text)
+            (
+                pal.control_border,
+                color,
+                if hot {
+                    pal.text
+                } else {
+                    mix(pal.text_dim, pal.text, 0.5)
+                },
+            )
         } else {
             (
                 mix(pal.control_border, pal.panel, 0.5),
@@ -2490,19 +2805,22 @@ pub fn slider_with<N: Numeric>(
                 pal.text_disabled,
             )
         };
-        painter.rect_filled(track, 2.0, groove);
+        painter.rect_filled(track, 0.0, groove);
         if x > track.left() {
             painter.rect_filled(
                 Rect::from_min_max(track.min, pos2(x, track.bottom())),
-                2.0,
+                0.0,
                 fill,
             );
         }
-        let centre = pos2(x, rect.center().y);
-        if hot {
-            painter.circle_filled(centre, HANDLE + 3.0, color.gamma_multiply(0.3));
-        }
-        painter.circle_filled(centre, HANDLE, handle);
+        // A small fader cap: flat, square-cornered, with a centre line.
+        let cap = Rect::from_center_size(pos2(x, rect.center().y), vec2(HANDLE + 2.0, 14.0));
+        paint_key(&painter, cap, 1.0, handle, pal.key_edge, KEY_EDGE);
+        painter.vline(
+            x,
+            (cap.top() + 3.0)..=(cap.bottom() - 4.0),
+            Stroke::new(1.0_f32, pal.key_edge),
+        );
     }
     resp
 }
@@ -2584,24 +2902,88 @@ pub fn hint(ui: &mut Ui, pal: Palette, text: &str) {
 
 // ----- structure -------------------------------------------------------------
 
-/// Card-like frame used for panels inside the main layout.
+/// Flat framed block for the few places that still need one (dialog
+/// groups, popovers): a tonal step on a hairline seam, nearly square. Main
+/// layout panels do not use it — they sit edge to edge on 1 px seams.
 pub fn card(pal: Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(pal.raised)
-        .stroke(Stroke::new(1.0_f32, pal.border_soft))
-        .corner_radius(RADIUS_L as u8)
+        .stroke(Stroke::new(1.0_f32, pal.border))
+        .corner_radius(RADIUS_S as u8)
         .inner_margin(Margin::same(10))
 }
 
-/// Section header: small caps kicker over a title.
+/// Section header: the title alone, in the title step. The `kicker` (an old
+/// small-caps eyebrow) is only shown when there is no title.
 ///
-/// `theme::section_header(ui, pal, "ARRANGEMENT", "Song timeline")`
+/// `theme::section_header(ui, pal, "Arrangement", "Song timeline")`
 pub fn section_header(ui: &mut Ui, pal: Palette, kicker: &str, title: &str) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.label(kicker_text(pal, kicker));
-        ui.label(strong_text(title).size(TEXT_TITLE).color(pal.text));
-    });
+    let text = if title.is_empty() { kicker } else { title };
+    ui.label(strong_text(text).size(TEXT_TITLE).color(pal.text));
+}
+
+/// A recessed "LCD" readout window: dark inset, mono digits in warm ink.
+/// `value` is painted in IBM Plex Mono (Medium for `size` ≥ 16), `unit`
+/// (may be empty) after it in the dim readout ink. Returns the allocated
+/// response (hover/click sense only — wrap editable values yourself).
+///
+/// `theme::lcd_readout(ui, pal, "120.0", "bpm", 13.0, 84.0, CONTROL_M)`
+pub fn lcd_readout(
+    ui: &mut Ui,
+    pal: Palette,
+    value: &str,
+    unit: &str,
+    size: f32,
+    width: f32,
+    height: f32,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        paint_lcd(ui.painter(), pal, rect);
+        let font = if size >= 16.0 {
+            readout_font(ui, size)
+        } else {
+            mono_font(size)
+        };
+        let unit_g = (!unit.is_empty()).then(|| {
+            ui.painter()
+                .layout_no_wrap(unit.to_owned(), mono_font(TEXT_SMALL - 1.0), pal.lcd_dim)
+        });
+        let unit_w = unit_g.as_ref().map_or(0.0, |g| g.size().x + 4.0);
+        let room = (rect.width() - 12.0 - unit_w).max(4.0);
+        let galley = elide(ui, value, font, pal.lcd_ink, room);
+        let total = galley.size().x + unit_w;
+        let left = rect.center().x - total * 0.5;
+        let y = rect.center().y;
+        ui.painter().galley(
+            pos2(left, y - galley.size().y * 0.5),
+            galley.clone(),
+            pal.lcd_ink,
+        );
+        if let Some(g) = unit_g {
+            let base = y + galley.size().y * 0.5 - g.size().y - 1.0;
+            ui.painter()
+                .galley(pos2(left + galley.size().x + 4.0, base), g, pal.lcd_dim);
+        }
+    }
+    resp
+}
+
+/// Paints the recessed LCD window into `rect` (body plus a hard top shadow
+/// line, like a window cut into the panel).
+pub fn paint_lcd(painter: &Painter, pal: Palette, rect: Rect) {
+    painter.rect_filled(rect, RADIUS_S, pal.lcd);
+    painter.hline(
+        (rect.left() + 1.0)..=(rect.right() - 1.0),
+        rect.top() + 0.5,
+        Stroke::new(1.0_f32, Color32::from_black_alpha(140)),
+    );
+    painter.rect_stroke(
+        rect,
+        RADIUS_S,
+        Stroke::new(1.0_f32, pal.border),
+        StrokeKind::Outside,
+    );
 }
 
 /// Panel header row ([`CONTROL_L`] tall): a title on the left that truncates
@@ -2647,12 +3029,13 @@ pub fn empty_state(
     let mut clicked = false;
     ui.vertical_centered(|ui| {
         ui.spacing_mut().item_spacing.y = GAP_XS;
-        let (badge, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
-        ui.painter().circle(
-            badge.center(),
-            22.0,
-            pal.control,
-            Stroke::new(1.0_f32, pal.control_border),
+        let (badge, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+        ui.painter().rect(
+            badge,
+            RADIUS_M,
+            pal.inset,
+            Stroke::new(1.0_f32, pal.border),
+            StrokeKind::Inside,
         );
         paint_icon(
             ui.painter(),
@@ -2663,7 +3046,11 @@ pub fn empty_state(
         ui.add_space(GAP_XS);
         ui.label(strong_text(title).size(TEXT_TITLE).color(pal.text));
         if !hint.is_empty() {
-            ui.label(RichText::new(hint).size(12.0).color(pal.text_faint));
+            ui.label(
+                RichText::new(hint)
+                    .size(TEXT_SMALL + 1.0)
+                    .color(pal.text_dim),
+            );
         }
         if let Some(action) = action {
             ui.add_space(GAP_S);
@@ -2679,10 +3066,10 @@ pub fn divider_v(ui: &mut Ui, pal: Palette, height: f32) {
     ui.painter().rect_filled(rect, 0.0, pal.border);
 }
 
-/// Small rounded color dot.
+/// Small square color swatch (a tape-label chip, not a status dot).
 pub fn color_dot(ui: &mut Ui, color: Color32, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    ui.painter().circle_filled(rect.center(), size * 0.5, color);
+    ui.painter().rect_filled(rect.shrink(0.5), 1.0, color);
 }
 
 // ----- knob, meter, scrollbar ------------------------------------------------
@@ -2730,19 +3117,20 @@ pub fn knob(
         let a0 = std::f32::consts::PI * 0.75;
         let sweep = std::f32::consts::PI * 1.5;
         let active = resp.hovered() || resp.dragged();
-        p.circle_filled(
+        p.add(Shape::line(
+            arc_points(center, r, a0, a0 + sweep, 32),
+            Stroke::new(2.0_f32, pal.border),
+        ));
+        p.circle(
             center,
-            r,
+            r - 5.0,
             if active {
                 pal.control_hover
             } else {
                 pal.control
             },
+            Stroke::new(1.0_f32, pal.key_edge),
         );
-        p.add(Shape::line(
-            arc_points(center, r - 3.0, a0, a0 + sweep, 32),
-            Stroke::new(3.0_f32, pal.border_soft),
-        ));
         let (from, to) = if bipolar {
             (0.5f32.min(v), 0.5f32.max(v))
         } else {
@@ -2750,30 +3138,30 @@ pub fn knob(
         };
         if to - from > 0.005 {
             p.add(Shape::line(
-                arc_points(center, r - 3.0, a0 + sweep * from, a0 + sweep * to, 24),
-                Stroke::new(3.0_f32, color),
+                arc_points(center, r, a0 + sweep * from, a0 + sweep * to, 24),
+                Stroke::new(2.0_f32, color),
             ));
         }
         let a = a0 + sweep * v;
         p.line_segment(
             [
-                center + vec2(a.cos(), a.sin()) * (r * 0.25),
+                center + vec2(a.cos(), a.sin()) * (r * 0.2),
                 center + vec2(a.cos(), a.sin()) * (r - 6.0),
             ],
             Stroke::new(2.0_f32, pal.text),
         );
         p.text(
-            Pos2::new(center.x, rect.top() + size + 3.0),
+            Pos2::new(center.x, rect.top() + size + 2.0),
             Align2::CENTER_TOP,
             value_text,
-            FontId::proportional(11.0),
+            mono_font(TEXT_SMALL - 1.0),
             if active { pal.text } else { pal.text_dim },
         );
         p.text(
             Pos2::new(center.x, rect.top() + size + 16.0),
             Align2::CENTER_TOP,
             label,
-            FontId::proportional(10.0),
+            body_font(TEXT_SMALL - 1.0),
             pal.text_faint,
         );
     }
@@ -2784,17 +3172,18 @@ pub fn knob(
 
 /// Level meter (0..=1 amplitude) painted bottom-up or left-right.
 pub fn meter(p: &Painter, pal: Palette, rect: Rect, level: f32, vertical: bool) {
-    p.rect_filled(rect, 2.0, pal.inset);
+    p.rect_filled(rect, 0.0, pal.mixer.well);
     let level = level.clamp(0.0, 1.0);
     if level <= 0.0005 {
         return;
     }
+    // Functional colors: green, amber near the top, red at full scale.
     let color = if level > 0.97 {
-        pal.danger
+        pal.mixer.meter_clip
     } else if level > 0.8 {
-        pal.warn
+        pal.mixer.meter_mid
     } else {
-        pal.accent
+        pal.mixer.meter_low
     };
     let fill = if vertical {
         Rect::from_min_max(
@@ -2807,7 +3196,7 @@ pub fn meter(p: &Painter, pal: Palette, rect: Rect, level: f32, vertical: bool) 
             Pos2::new(rect.left() + rect.width() * level, rect.bottom()),
         )
     };
-    p.rect_filled(fill, 2.0, color);
+    p.rect_filled(fill, 0.0, color);
 }
 
 /// Thin custom scrollbar. Returns true while it is being dragged.
@@ -2826,7 +3215,7 @@ pub fn scrollbar(
     *offset = offset.clamp(0.0, max);
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let p = ui.painter();
-    p.rect_filled(rect, 4.0, pal.canvas);
+    p.rect_filled(rect, 0.0, pal.canvas);
     if max <= 0.0 {
         return false;
     }
@@ -2860,7 +3249,7 @@ pub fn scrollbar(
         )
     };
     let hot = resp.hovered() || resp.dragged();
-    p.rect_filled(thumb, 3.0, scrollbar_thumb(pal, hot));
+    p.rect_filled(thumb, RADIUS_S, scrollbar_thumb(pal, hot));
     resp.dragged()
 }
 
@@ -3106,14 +3495,19 @@ impl Toolbar<'_> {
             Some(on) => WidgetInfo::selected(WidgetType::Button, enabled, on, name),
             None => WidgetInfo::labeled(WidgetType::Button, enabled, name),
         });
-        let style = match (on, label.is_some()) {
-            (Some(true), true) => OnStyle::Solid(self.pal.accent),
-            (Some(true), false) => OnStyle::Tint(self.pal.accent),
-            _ => OnStyle::Off,
+        // Actions are flat; toggles are lit/unlit keys (see `labelled_button`).
+        let (style, ghost, ink) = match on {
+            None => (OnStyle::Off, true, label.is_some().then_some(self.pal.text)),
+            Some(false) => (OnStyle::Off, label.is_none(), None),
+            Some(true) => (OnStyle::Tint(self.pal.accent), false, None),
+        };
+        let ink = match (on, ink) {
+            (Some(false), _) if label.is_some() => Some(self.pal.text_dim),
+            (_, ink) => ink,
         };
         let painter = unfaded_painter(self.ui);
         paint_button(
-            self.ui, &painter, self.pal, rect, &resp, enabled, icon, label, style, false,
+            self.ui, &painter, self.pal, rect, &resp, enabled, icon, label, style, ghost, ink,
         );
         with_tooltip(resp, tooltip)
     }
@@ -3237,14 +3631,14 @@ impl Toolbar<'_> {
 
     /// Dim caption. Hidden when labels are collapsed.
     pub fn label(&mut self, text: &str) {
-        let galley = label_galley(self.ui, text, body_font(12.0));
+        let galley = label_galley(self.ui, text, body_font(TEXT_SMALL + 1.0));
         match self.slot(galley.size().x.ceil(), 0.0, CONTROL_M) {
             Slot::Row(rect) => {
                 let pos = pos2(rect.left(), rect.center().y - galley.size().y * 0.5);
                 self.ui.painter().galley(pos, galley, self.pal.text_dim);
             }
             Slot::Menu => {
-                self.ui.label(kicker_text(self.pal, &text.to_uppercase()));
+                self.ui.label(kicker_text(self.pal, text));
             }
             Slot::Skip => {}
         }
@@ -3265,7 +3659,7 @@ impl Toolbar<'_> {
         let galley = elide(
             self.ui,
             text,
-            body_font(12.0),
+            body_font(TEXT_SMALL + 1.0),
             self.pal.text_faint,
             room.floor(),
         );
@@ -3364,7 +3758,7 @@ impl Toolbar<'_> {
         add: impl FnOnce(&mut Ui) -> R,
     ) -> Option<R> {
         let enabled = self.take_enabled();
-        let galley = label_galley(self.ui, label, body_font(12.0));
+        let galley = label_galley(self.ui, label, body_font(TEXT_SMALL + 1.0));
         let label_w = galley.size().x.ceil() + ICON_TEXT_GAP;
         match self.slot(label_w + width, width, self.row.height()) {
             Slot::Row(rect) => {
@@ -3503,7 +3897,8 @@ pub fn toolbar(
                 Some(Icon::Menu),
                 None,
                 OnStyle::Off,
-                false,
+                true,
+                None,
             );
             let resp = resp.on_hover_text("More");
             egui::Popup::menu(&resp)
@@ -3719,7 +4114,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
             play_button(ui, pal, true, 40.0);
         },
     );
-    gallery_row(ui, pal, "LABEL BUTTONS · TOGGLES", |ui| {
+    gallery_row(ui, pal, "Label buttons · toggles", |ui| {
         icon_label_button(ui, pal, Icon::Marker, "Marker", CONTROL_M, "Add a marker");
         text_button(ui, pal, "Fill", CONTROL_M, "Fill the pattern");
         for (i, (label, icon)) in [("Chords", None), ("Follow", Some(Icon::Follow))]
@@ -3743,7 +4138,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
         primary_button(ui, pal, "Save");
         secondary_button(ui, "Cancel");
     });
-    gallery_row(ui, pal, "CHIPS", |ui| {
+    gallery_row(ui, pal, "Chips", |ui| {
         let small = vec2(CONTROL_S, CONTROL_S);
         for (i, (label, color)) in [("M", pal.danger), ("S", pal.warn)].into_iter().enumerate() {
             let on = state.toggles[2 + i];
@@ -3774,7 +4169,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
             chip(ui, pal, "S", true, pal.warn, small, "Solo");
         });
     });
-    gallery_row(ui, pal, "SEGMENTED", |ui| {
+    gallery_row(ui, pal, "Segmented", |ui| {
         let options = [
             Segment::new(0u8, "Pattern Editor").tip("Edit the selected pattern"),
             Segment::new(1u8, "Mixer"),
@@ -3799,7 +4194,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
             );
         });
     });
-    gallery_row(ui, pal, "SLIDERS · KNOB · METER", |ui| {
+    gallery_row(ui, pal, "Sliders · knob · meter", |ui| {
         slider(ui, pal, &mut state.amount, 0.0..=1.0, 140.0);
         slider_with(ui, pal, &mut state.steps, 1..=16, 120.0, pal.link, Some(8));
         ui.label(format!(
@@ -3826,7 +4221,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
         let (rect, _) = ui.allocate_exact_size(vec2(8.0, 60.0), Sense::hover());
         meter(ui.painter(), pal, rect, state.amount, true);
     });
-    gallery_row(ui, pal, "EGUI CONTROLS AT THE SAME HEIGHT", |ui| {
+    gallery_row(ui, pal, "egui controls at the same height", |ui| {
         const SNAPS: [&str; 3] = ["Bar", "Beat", "1/16"];
         combo("cadence.theme.gallery.combo", SNAPS[state.combo], 96.0).show_ui(ui, |ui| {
             for (i, name) in SNAPS.into_iter().enumerate() {
@@ -3845,7 +4240,7 @@ fn gallery_controls(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
 }
 
 fn gallery_layout(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
-    ui.label(kicker_text(pal, "TOOLBAR — DRAG THE SLIDER TO SQUEEZE IT"));
+    ui.label(kicker_text(pal, "Toolbar — drag the slider to squeeze it"));
     slider(ui, pal, &mut state.toolbar_width, 120.0..=820.0, 300.0);
     let toggles = &mut state.toggles;
     card(pal).show(ui, |ui| {
@@ -3913,7 +4308,7 @@ fn gallery_layout(ui: &mut Ui, pal: Palette, state: &mut GalleryState) {
         hint(ui, pal, "Hover the label above to read all of it.");
     });
     ui.add_space(GAP_M);
-    ui.label(kicker_text(pal, "EMPTY STATE"));
+    ui.label(kicker_text(pal, "Empty state"));
     card(pal).show(ui, |ui| {
         ui.set_width(360.0);
         empty_state(
@@ -3945,7 +4340,7 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
     let m = pal.mixer;
     let groups: [(&str, &[(&str, Color32)]); 5] = [
         (
-            "SURFACES",
+            "Surfaces",
             &[
                 ("bg", pal.bg),
                 ("bg_deep", pal.bg_deep),
@@ -3954,13 +4349,17 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
                 ("canvas", pal.canvas),
                 ("canvas_alt", pal.canvas_alt),
                 ("inset", pal.inset),
+                ("key_edge", pal.key_edge),
+                ("lcd", pal.lcd),
+                ("lcd_ink", pal.lcd_ink),
+                ("lcd_dim", pal.lcd_dim),
                 ("grid_faint", pal.grid_faint),
                 ("grid_beat", pal.grid_beat),
                 ("grid_bar", pal.grid_bar),
             ],
         ),
         (
-            "CONTROLS",
+            "Controls",
             &[
                 ("control", pal.control),
                 ("control_hover", pal.control_hover),
@@ -3971,7 +4370,7 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
             ],
         ),
         (
-            "TEXT & STATE",
+            "Text & state",
             &[
                 ("text", pal.text),
                 ("text_dim", pal.text_dim),
@@ -3985,7 +4384,7 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
             ],
         ),
         (
-            "MIXER",
+            "Mixer",
             &[
                 ("panel", m.panel),
                 ("strip", m.strip),
@@ -4006,7 +4405,7 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
             ],
         ),
         (
-            "MIXER METERS & CAPS",
+            "Mixer meters & caps",
             &[
                 ("meter_low", m.meter_low),
                 ("meter_mid", m.meter_mid),
@@ -4037,24 +4436,26 @@ fn gallery_colors(ui: &mut Ui, pal: Palette) {
         }
     });
     ui.add_space(GAP_M);
-    ui.label(kicker_text(pal, "TYPE"));
+    ui.label(kicker_text(pal, "Type"));
     ui.label(
-        RichText::new("Heading 18 — Song timeline")
+        RichText::new("Heading 20 — Song timeline")
             .heading()
             .color(pal.text),
     );
     ui.label(
-        strong_text("Title 14 — Pocket drums")
+        strong_text("Title 16 — Pocket drums")
             .size(TEXT_TITLE)
             .color(pal.text),
     );
-    ui.label(strong_text("Strong 13 — Add an instrument").color(pal.text));
-    ui.label(RichText::new("Body 13 — Warm, bell-like electric keys with tremolo").color(pal.text));
-    ui.label("Body dim 13 — Eight synthesized drum voices, from kick to ride");
-    ui.label(RichText::new("Small 11 — Round analog bass with a filter envelope").small());
-    ui.label(kicker_text(pal, "KICKER 10 — TEMPO · SWING · MASTER"));
-    ui.label(RichText::new("Mono 12.5 — 0:00.0 / 0:18.5").monospace());
-    ui.label(RichText::new("1.1.1").text_style(display()).color(pal.text));
+    ui.label(strong_text("Medium 14 — Add an instrument").color(pal.text));
+    ui.label(RichText::new("Body 14 — Warm, bell-like electric keys with tremolo").color(pal.text));
+    ui.label("Body dim 14 — Eight synthesized drum voices, from kick to ride");
+    ui.label(RichText::new("Small 12 — Round analog bass with a filter envelope").small());
+    ui.label(kicker_text(pal, "Caption 12 — Tempo · Swing · Master"));
+    ui.label(readout_text(
+        "Mono 13 — 0:00.0 / 0:18.5 · 120.0 bpm · -6.0 dB",
+    ));
+    lcd_readout(ui, pal, "001.1.01", "", TEXT_DISPLAY, 140.0, CONTROL_L);
     ui.label(
         RichText::new("Symbols — · … → – × ′ ▸ ✕ ± ▶ ° ▾ ♭ ♯ ● « − • » › ‹ ⏵ ⌘ ⇧")
             .color(pal.text_dim),
@@ -4167,13 +4568,17 @@ mod tests {
         // First pass: fonts requested, pass discarded and re-run with them.
         assert_eq!(ready, [false, true, true]);
         let style = ctx.style();
-        for text_style in [strong(), kicker(), TextStyle::Heading] {
+        for text_style in [strong(), TextStyle::Heading] {
             assert_eq!(style.text_styles[&text_style].family, strong_family());
         }
-        assert_eq!(
-            style.text_styles[&TextStyle::Body].family,
-            FontFamily::Proportional
-        );
+        for text_style in [TextStyle::Body, kicker()] {
+            assert_eq!(
+                style.text_styles[&text_style].family,
+                FontFamily::Proportional
+            );
+        }
+        assert_eq!(style.text_styles[&display()].family, mono_strong_family());
+        assert_eq!(style.text_styles[&readout()].family, FontFamily::Monospace);
     }
 
     #[test]
@@ -4202,7 +4607,7 @@ mod tests {
     }
 
     #[test]
-    fn inter_leads_and_the_default_fonts_stay_as_fallbacks() {
+    fn barlow_and_plex_lead_and_the_default_fonts_stay_as_fallbacks() {
         let defaults = FontDefinitions::default();
         let fonts = font_definitions();
         let with_last_resort = |family: &FontFamily| {
@@ -4211,18 +4616,20 @@ mod tests {
             names
         };
         let proportional = &fonts.families[&FontFamily::Proportional];
-        assert_eq!(proportional[0], "Inter");
+        assert_eq!(proportional[0], "Barlow");
         assert_eq!(
             proportional[1..],
             with_last_resort(&FontFamily::Proportional)[..]
         );
         let strong = &fonts.families[&strong_family()];
-        assert_eq!(strong[..2], ["Inter-SemiBold", "Inter"]);
+        assert_eq!(strong[..2], ["Barlow-Medium", "Barlow"]);
         assert_eq!(strong[2..], proportional[1..]);
-        assert_eq!(
-            fonts.families[&FontFamily::Monospace],
-            with_last_resort(&FontFamily::Monospace)
-        );
+        let monospace = &fonts.families[&FontFamily::Monospace];
+        assert_eq!(monospace[0], "PlexMono");
+        assert_eq!(monospace[1..], with_last_resort(&FontFamily::Monospace)[..]);
+        let mono_strong = &fonts.families[&mono_strong_family()];
+        assert_eq!(mono_strong[..2], ["PlexMono-Medium", "PlexMono"]);
+        assert_eq!(mono_strong[2..], monospace[1..]);
     }
 
     /// Non-ASCII characters inside Rust string and char literals (comments
@@ -4624,8 +5031,13 @@ mod tests {
                 check(&format!("ink on mixer.{name}"), ink_on(color), color, 4.5);
             }
         }
-        // Clip and note labels on the fixed track colors.
-        for color in TRACK_PALETTE.map(rgb) {
+        // Clip and note labels on the fixed track colors (the picker's and
+        // the built-in instruments' defaults).
+        for color in TRACK_PALETTE
+            .iter()
+            .chain(crate::model::TRACK_COLORS.iter())
+            .map(|c| rgb(*c))
+        {
             assert!(contrast_ratio(ink_on(color), color) >= 4.5, "{color:?}");
         }
     }
@@ -4674,8 +5086,10 @@ mod tests {
                     contrast_ratio(off.ink, off.fill) >= 4.5,
                     "{choice:?} {press:?}"
                 );
-                // The body is visible: fill or outline differs from the surface.
-                assert!(contrast_ratio(off.border, p.panel) >= 1.6);
+                // An unlit key is visible: its tonal body or its hard
+                // bottom edge stands apart from the panel.
+                let key = contrast_ratio(off.fill, p.panel).max(contrast_ratio(off.edge, p.panel));
+                assert!(key >= 1.15, "{choice:?} {press:?}: key body at {key:.2}:1");
                 for accent in [p.accent, p.link, p.danger, p.warn] {
                     let solid = button_colors(p, press, OnStyle::Solid(accent), false);
                     assert!(
@@ -4711,7 +5125,7 @@ mod tests {
                 );
                 for surface in [p.panel, p.raised] {
                     let body = contrast_ratio(colors.fill, surface)
-                        .max(contrast_ratio(colors.border, surface));
+                        .max(contrast_ratio(colors.edge, surface));
                     assert!(
                         body >= 1.1,
                         "{choice:?}: disabled body vanishes ({body:.2})"
@@ -4771,10 +5185,13 @@ mod tests {
     }
 
     /// Fill of the first rectangle painted inside `area`.
+    /// Fill of the topmost rect painted inside `area` (a key is its edge
+    /// strip with the body painted over it).
     fn painted_fill(output: &egui::FullOutput, area: Rect) -> Option<Color32> {
         output
             .shapes
             .iter()
+            .rev()
             .find_map(|clipped| match &clipped.shape {
                 Shape::Rect(r) if area.contains_rect(r.rect) && r.rect.width() > 4.0 => {
                     Some(r.fill)

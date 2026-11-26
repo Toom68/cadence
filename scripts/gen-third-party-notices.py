@@ -4,7 +4,8 @@
 Collects every crate in the locked dependency graph (cargo metadata), appends
 the license texts found in the local cargo registry sources (deduplicated —
 crates sharing an identical license text are grouped), then appends the
-licenses of the fonts bundled inside the binary (Inter, DejaVu, and egui's
+licenses of the fonts bundled inside the binary (Barlow Semi Condensed, IBM
+Plex Mono, DejaVu, and egui's
 embedded fallback fonts whose license texts live in assets/fonts/egui-licenses/)
 and of the SoundFonts the release packages ship (the General MIDI font and
 the sampled harmonium, packaging/soundfont/).
@@ -366,8 +367,10 @@ this license in Cadence's dependency graph (e.g. clipboard-win) are used
 unmodified as libraries; their Change Licenses are MIT or Apache-2.0.
 """
 
-OFL_TEXT = (ROOT / "assets/fonts/OFL.txt").read_text(encoding="utf-8") \
-    if (ROOT / "assets/fonts/OFL.txt").is_file() else ""
+# The generic OFL text for crates whose expression includes OFL-1.1
+# (epaint_default_fonts: egui's embedded Noto Emoji).
+OFL_TEXT = (ROOT / "assets/fonts/egui-licenses/OFL.txt").read_text(encoding="utf-8") \
+    if (ROOT / "assets/fonts/egui-licenses/OFL.txt").is_file() else ""
 UFL_TEXT = (ROOT / "assets/fonts/egui-licenses/UFL.txt").read_text(encoding="utf-8") \
     if (ROOT / "assets/fonts/egui-licenses/UFL.txt").is_file() else ""
 
@@ -430,7 +433,10 @@ MAX_LICENSE_FILE = 256 * 1024
 
 # Fonts embedded in the shipped binary and where their license texts live.
 BUNDLED_FONTS = [
-    ("Inter (UI font)", "SIL Open Font License 1.1", ROOT / "assets/fonts/OFL.txt"),
+    ("Barlow Semi Condensed (UI font)", "SIL Open Font License 1.1",
+     ROOT / "assets/fonts/Barlow-OFL.txt"),
+    ("IBM Plex Mono (readout font)", "SIL Open Font License 1.1",
+     ROOT / "assets/fonts/IBMPlexMono-OFL.txt"),
     ("DejaVu Sans (fallback font)", "DejaVu Fonts license (Bitstream Vera)",
      ROOT / "assets/fonts/DejaVu-LICENSE.txt"),
     ("Ubuntu-Light (egui fallback)", "Ubuntu Font Licence 1.0",

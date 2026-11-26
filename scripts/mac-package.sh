@@ -51,10 +51,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_SRC" "$APP/Contents/MacOS/$BIN_NAME"
 chmod 755 "$APP/Contents/MacOS/$BIN_NAME"
 cp assets/icon.icns "$APP/Contents/Resources/Cadence.icns"
-# Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans);
+# Font licenses (SIL OFL 1.1 for Barlow and IBM Plex Mono, Bitstream Vera /
+# DejaVu for DejaVu Sans);
 # they must be in the bundle before it is signed.
 mkdir -p "$APP/Contents/Resources/licenses"
-cp assets/fonts/OFL.txt "$APP/Contents/Resources/licenses/Inter-OFL.txt"
+cp assets/fonts/Barlow-OFL.txt "$APP/Contents/Resources/licenses/Barlow-OFL.txt"
+cp assets/fonts/IBMPlexMono-OFL.txt "$APP/Contents/Resources/licenses/IBMPlexMono-OFL.txt"
 cp assets/fonts/DejaVu-LICENSE.txt "$APP/Contents/Resources/licenses/DejaVu-LICENSE.txt"
 # Buyer-facing files live inside the bundle's Resources (the zip contains
 # only Cadence.app). EULA.txt ships when the owner provides one at repo root.

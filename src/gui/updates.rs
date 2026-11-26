@@ -392,8 +392,7 @@ impl CadenceApp {
         self.update_pill_label(short).map_or(0.0, |label| {
             theme::GAP_M
                 + theme::text_button_width(ui, &label, theme::CONTROL_S)
-                + 8.0
-                + 2.0 * ui.spacing().item_spacing.x
+                + ui.spacing().item_spacing.x
         })
     }
 
@@ -411,10 +410,10 @@ impl CadenceApp {
             Some(full) => format!("{full} · Open the update details"),
             None => "Open the update details".to_owned(),
         };
-        if theme::text_button(ui, pal, &label, theme::CONTROL_S, &tip).clicked() {
+        // A lit key rather than a dot: there is something to look at.
+        if theme::toggle_button(ui, pal, &label, true, theme::CONTROL_S, &tip).clicked() {
             self.dialog = Dialog::Update;
         }
-        theme::color_dot(ui, pal.accent, 8.0);
     }
 
     /// The Update dialog: state, the one sensible next step, and the

@@ -71,9 +71,10 @@ rm -rf "$STAGE" "$DIST/$BASE.zip"
 mkdir -p "$STAGE"
 cp "$SRC" "$STAGE/Cadence.exe"
 
-# Font licenses (SIL OFL 1.1 for Inter, Bitstream Vera / DejaVu for DejaVu Sans).
+# Font licenses (SIL OFL 1.1 for Barlow and IBM Plex Mono, Bitstream Vera / DejaVu for DejaVu Sans).
 mkdir -p "$STAGE/licenses"
-cp assets/fonts/OFL.txt "$STAGE/licenses/Inter-OFL.txt"
+cp assets/fonts/Barlow-OFL.txt "$STAGE/licenses/Barlow-OFL.txt"
+cp assets/fonts/IBMPlexMono-OFL.txt "$STAGE/licenses/IBMPlexMono-OFL.txt"
 cp assets/fonts/DejaVu-LICENSE.txt "$STAGE/licenses/DejaVu-LICENSE.txt"
 
 # Buyer-facing files: README, third-party notices, and the EULA when the
