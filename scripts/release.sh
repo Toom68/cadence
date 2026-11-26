@@ -10,7 +10,8 @@
 #                 commands
 #   --notes FILE  extra release notes (plain text / short markdown) for the
 #                 tag message; CI puts the tag message into latest.json as
-#                 the in-app "what's new" text (capped at 4 KB)
+#                 the in-app "what's new" text (capped at 4 KB). Defaults to
+#                 packaging/whats-new.md, which must start "New in X.Y.Z"
 #
 # Requirements: on the main branch, a clean tree, and up to date with
 # origin/main. Nothing is committed if a check fails; the version bump is
@@ -23,7 +24,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 CARGO="${CARGO:-cargo}"
 
 usage() {
-  sed -n '7,14p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '7,15p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 die() {
@@ -59,6 +60,16 @@ echo "$VERSION" | grep -Eq '^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][
 case "$MESSAGE" in
   *$'\n'*) die "the release message must be one line (use --notes FILE for more)" ;;
 esac
+# Without --notes, the feature list in packaging/whats-new.md is used; it
+# must be headed "New in X.Y.Z" for this version so stale notes never ship.
+if [ -z "$NOTES_FILE" ] && [ -f "$ROOT/packaging/whats-new.md" ]; then
+  NOTES_FILE="$ROOT/packaging/whats-new.md"
+  head_line="$(grep -m1 -v '^[[:space:]]*$' "$NOTES_FILE" || true)"
+  case "$head_line" in
+    *"New in $VERSION"*) ;;
+    *) die "packaging/whats-new.md is headed \"$head_line\"; write the feature list for $VERSION (\"New in $VERSION\") or pass --notes FILE" ;;
+  esac
+fi
 if [ -n "$NOTES_FILE" ]; then
   [ -f "$NOTES_FILE" ] || die "notes file $NOTES_FILE not found"
   NOTES_FILE="$(cd "$(dirname "$NOTES_FILE")" && pwd)/$(basename "$NOTES_FILE")"

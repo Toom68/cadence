@@ -515,22 +515,20 @@ impl CadenceApp {
                 ),
             }
             let notes = match &phase {
-                Phase::Available(r) | Phase::Downloading(r) | Phase::Ready(r) => r.notes.as_deref(),
+                Phase::Available(r) | Phase::Downloading(r) | Phase::Ready(r) => {
+                    r.notes.as_deref().map(|n| (n, r.version.as_str()))
+                }
                 _ => None,
             };
-            if let Some(notes) = notes {
+            if let Some((notes, version)) = notes {
                 ui.add_space(theme::GAP_S);
                 ui.label(RichText::new("What's new").strong());
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("cadence-update-notes")
-                        .max_height(160.0)
+                        .max_height(220.0)
                         .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(notes).color(pal.text_dim)).wrap(),
-                            );
-                        });
+                        .show(ui, |ui| feature_list(ui, pal, &note_lines(notes, version)));
                 });
             }
             ui.add_space(theme::GAP_M);
@@ -655,9 +653,112 @@ enum Action {
     Cancel,
 }
 
+/// One line of a release's "what's new" text as the Update dialog shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NoteLine<'a> {
+    Heading(&'a str),
+    Bullet(&'a str),
+    Text(&'a str),
+    Gap,
+}
+
+/// Splits release notes into a feature list: `- `, `* ` or `• ` lines are
+/// bullets, `#` lines and lines ending in `:` are headings, blank lines
+/// collapse into one gap. The "Cadence X.Y.Z" title line is dropped — the
+/// dialog already names the version.
+pub(super) fn note_lines<'a>(notes: &'a str, version: &str) -> Vec<NoteLine<'a>> {
+    let title = format!("Cadence {version}");
+    let mut out = Vec::new();
+    for raw in notes.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            if !matches!(out.last(), None | Some(NoteLine::Gap)) {
+                out.push(NoteLine::Gap);
+            }
+            continue;
+        }
+        if line == title {
+            continue;
+        }
+        let bullet = ["- ", "* ", "\u{2022} "]
+            .iter()
+            .find_map(|m| line.strip_prefix(m));
+        out.push(if let Some(text) = bullet {
+            NoteLine::Bullet(text.trim())
+        } else if line.starts_with('#') {
+            NoteLine::Heading(line.trim_start_matches('#').trim())
+        } else if let Some(text) = line.strip_suffix(':') {
+            NoteLine::Heading(text.trim())
+        } else if line.starts_with("New in ") {
+            NoteLine::Heading(line)
+        } else {
+            NoteLine::Text(line)
+        });
+    }
+    while matches!(out.last(), Some(NoteLine::Gap)) {
+        out.pop();
+    }
+    // A gap right before a heading reads as section spacing; one right
+    // after a heading is noise.
+    out.dedup_by(|b, a| matches!((a, b), (NoteLine::Heading(_), NoteLine::Gap)));
+    out
+}
+
+/// Paints [`note_lines`] output: headings in the body color, bullets with a
+/// small accent square, plain lines dimmed.
+fn feature_list(ui: &mut Ui, pal: Palette, lines: &[NoteLine<'_>]) {
+    for line in lines {
+        match *line {
+            NoteLine::Heading(text) => {
+                ui.label(RichText::new(text).strong().color(pal.text));
+            }
+            NoteLine::Bullet(text) => {
+                ui.horizontal_top(|ui| {
+                    let h = ui.text_style_height(&egui::TextStyle::Body);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, h), egui::Sense::hover());
+                    let dot = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 3.0, rect.center().y),
+                        egui::vec2(5.0, 5.0),
+                    );
+                    ui.painter().rect_filled(dot, 1.0, pal.accent);
+                    ui.add(egui::Label::new(RichText::new(text).color(pal.text)).wrap());
+                });
+            }
+            NoteLine::Text(text) => {
+                ui.add(egui::Label::new(RichText::new(text).color(pal.text_dim)).wrap());
+            }
+            NoteLine::Gap => ui.add_space(theme::GAP_S),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_notes_become_a_feature_list() {
+        let notes = "Cadence 9.9.9\n\nNew in 9.9.9\n- Added a harmonium\n* Major UI rework\n\n\n\
+                     Fixes:\n\u{2022} Dialogs fit the window\nThanks for testing.\n\n";
+        assert_eq!(
+            note_lines(notes, "9.9.9"),
+            [
+                NoteLine::Heading("New in 9.9.9"),
+                NoteLine::Bullet("Added a harmonium"),
+                NoteLine::Bullet("Major UI rework"),
+                NoteLine::Gap,
+                NoteLine::Heading("Fixes"),
+                NoteLine::Bullet("Dialogs fit the window"),
+                NoteLine::Text("Thanks for testing."),
+            ]
+        );
+        assert_eq!(note_lines("  \n\n", "1.0.0"), []);
+        assert_eq!(
+            note_lines("## Sound", "1.0.0"),
+            [NoteLine::Heading("Sound")]
+        );
+    }
     use crate::model::Project;
     use egui::RawInput;
 

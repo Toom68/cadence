@@ -41,7 +41,7 @@ Releases and updates: cut a release with `scripts/release.sh X.Y.Z "message" [--
 from a clean `main` that equals `origin/main`. It bumps `Cargo.toml` + `Cargo.lock`, runs fmt --check,
 clippy and the full tests (undoing the bump if any fail), commits `X.Y.Z: message`, and prints
 `git push origin HEAD:main && git tag -a vX.Y.Z -m ... && git push origin vX.Y.Z` (`--push` runs them).
-The annotated tag's message (message + notes file) becomes the in-app "what's new" text (`notes` in
+Write the release's feature list in `packaging/whats-new.md` first (headed `New in X.Y.Z`, one `- ` bullet per feature); release.sh uses it as the notes file by default and refuses a stale one. The annotated tag's message (message + notes file) becomes the in-app "what's new" text, shown as a bulleted list on the update screen (`notes` in
 `latest.json`, ≤ 4 KB). Pushing a `vX.Y.Z` tag (must equal `Cargo.toml`'s version) makes CI sign
 every download with minisign (secret `MINISIGN_SECRET_KEY`), verify it against
 `packaging/update-key.pub`, write `latest.json`, and publish the GitHub release. The app's
