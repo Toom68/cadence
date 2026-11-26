@@ -58,7 +58,7 @@ const SEARCH_FIELD: &str = "cadence.sidebar.search";
 /// Width of the collapsed sidebar rail.
 const RAIL_W: f32 = 40.0;
 /// Library card height (4 px grid).
-const CARD_H: f32 = 44.0;
+const CARD_H: f32 = 38.0;
 /// Quick-add row height.
 const QUICK_H: f32 = CONTROL_M;
 /// Bank section header height.
@@ -512,10 +512,8 @@ impl CadenceApp {
                 bottom: 8,
             }
         };
-        let frame = Frame::new()
-            .fill(pal.panel)
-            .inner_margin(margin)
-            .stroke(Stroke::new(1.0_f32, pal.border_soft));
+        // The panel's own separator line is the seam to the arranger.
+        let frame = Frame::new().fill(pal.panel).inner_margin(margin);
         let mut panel = egui::SidePanel::left("sidebar");
         if collapsed {
             panel = panel.exact_width(RAIL_W).resizable(false);
@@ -798,7 +796,8 @@ impl CadenceApp {
         // hit-tests; the font bank re-fills its rects.
         self.library_rects.first_font_row = Rect::NOTHING;
         self.library_rects.font_hint = Rect::NOTHING;
-        ui.spacing_mut().item_spacing.y = GAP_XS;
+        // A dense list: rows touch, the hover fill marks the one under the pointer.
+        ui.spacing_mut().item_spacing.y = 1.0;
         let mut font_name = String::new();
         if *bank == LibraryBank::Font {
             let fonts: Vec<FontInfo> = self.fonts.fonts.clone();
@@ -1036,7 +1035,7 @@ impl CadenceApp {
         if fonts.len() > 1 {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = GAP_S;
-                ui.label(theme::kicker_text(pal, "FONT"));
+                ui.label(theme::kicker_text(pal, "Font"));
                 let mut pick = None;
                 theme::combo(
                     "library-font",
@@ -1067,10 +1066,10 @@ impl CadenceApp {
     }
 
     fn packs_footer(&mut self, ui: &mut Ui, pal: Palette) {
-        theme::card(pal).show(ui, |ui| {
+        flat_block(ui, pal, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(theme::kicker_text(pal, "INSTRUMENT PACKS"));
+                ui.label(theme::strong_text("Instrument packs").color(pal.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     theme::ghost_icon_button(
                         ui,
@@ -1150,9 +1149,9 @@ impl CadenceApp {
     /// "Add a SoundFont…" button that opens (and creates) the user font
     /// folder; the path itself lives in the button's tooltip.
     fn fonts_hint_card(&mut self, ui: &mut Ui, pal: Palette) {
-        theme::card(pal).show(ui, |ui| {
+        flat_block(ui, pal, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(theme::kicker_text(pal, "SOUNDFONT"));
+            ui.label(theme::strong_text("SoundFont").color(pal.text));
             ui.label(
                 RichText::new(
                     "SoundFonts (.sf2) play real sampled General MIDI \
@@ -1386,7 +1385,7 @@ impl CadenceApp {
             quick_section(
                 ui,
                 pal,
-                "IN THIS SONG",
+                "In this song",
                 &picks.recent,
                 full,
                 &mut picked,
@@ -1395,13 +1394,13 @@ impl CadenceApp {
             quick_section(
                 ui,
                 pal,
-                "BUILT-IN",
+                "Built-in",
                 &picks.builtins,
                 full,
                 &mut picked,
                 None,
             );
-            quick_section(ui, pal, "PACKS", &picks.presets, full, &mut picked, None);
+            quick_section(ui, pal, "Packs", &picks.presets, full, &mut picked, None);
             if picked.is_none() {
                 if self.fonts.fonts.is_empty() {
                     // No .sf2 installed: a slim hint row that opens the folder.
@@ -1412,7 +1411,7 @@ impl CadenceApp {
                     quick_section(
                         ui,
                         pal,
-                        "SOUNDFONT",
+                        "SoundFont",
                         &picks.fonts,
                         full,
                         &mut picked,
@@ -1653,7 +1652,7 @@ impl CadenceApp {
         let color = theme::rgb(t.color);
 
         // ----- Track ---------------------------------------------------------
-        inspector_heading(ui, pal, "TRACK");
+        inspector_heading(ui, pal, "Track");
         let mut name = t.name.clone();
         let renamed = field_row(ui, pal, "Name", |ui, w| {
             ui.add(
@@ -1739,7 +1738,7 @@ impl CadenceApp {
 
         // ----- Mix -----------------------------------------------------------
         ui.add_space(GAP_M);
-        inspector_heading(ui, pal, "MIX");
+        inspector_heading(ui, pal, "Mix");
         let mut vol = t.volume;
         let vol_changed = field_row(ui, pal, "Volume", |ui, w| {
             let changed = theme::slider_with(
@@ -1817,7 +1816,7 @@ impl CadenceApp {
 
         // ----- Effects -------------------------------------------------------
         ui.add_space(GAP_M);
-        inspector_heading(ui, pal, "EFFECTS");
+        inspector_heading(ui, pal, "Effects");
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = knob_gap(ui.available_width());
             self.fx_knobs(ui, id, KNOB, color);
@@ -1826,13 +1825,13 @@ impl CadenceApp {
         // ----- Play (pitched sounds only) ------------------------------------
         if t.melodic {
             ui.add_space(GAP_M);
-            inspector_heading(ui, pal, "PLAY");
+            inspector_heading(ui, pal, "Play");
             self.play_section(ui, pal, &t, color);
         }
 
         // ----- Manage --------------------------------------------------------
         ui.add_space(GAP_M);
-        inspector_heading(ui, pal, "MANAGE");
+        inspector_heading(ui, pal, "Manage");
         self.manage_section(ui, pal, &t);
         ui.add_space(GAP_M);
     }
@@ -2188,7 +2187,7 @@ impl CadenceApp {
             .truncate()
             .height(360.0)
             .show_ui(ui, |ui| {
-                ui.label(theme::kicker_text(pal, "BUILT-IN"));
+                ui.label(theme::kicker_text(pal, "Built-in"));
                 for inst in Instrument::ALL {
                     // The check mark shows the *active* sound: while a font
                     // is assigned, built-ins are only the fallback.
@@ -2207,7 +2206,7 @@ impl CadenceApp {
                     let title = pack_title(&preset.id);
                     if title != pack {
                         ui.separator();
-                        ui.label(theme::kicker_text(pal, &title.to_uppercase()));
+                        ui.label(theme::kicker_text(pal, &title));
                         pack = title;
                     }
                     let on = sound.font.is_none()
@@ -2344,7 +2343,7 @@ impl CadenceApp {
     fn font_section(&self, ui: &mut Ui, track: &SoundCtx, pick: &mut Option<FontPick>) {
         let pal = self.palette();
         ui.separator();
-        ui.label(theme::kicker_text(pal, "SOUNDFONT"));
+        ui.label(theme::kicker_text(pal, "SoundFont"));
         let catalog_empty = self.fonts.fonts.is_empty();
         if catalog_empty {
             theme::hint(
@@ -2428,7 +2427,7 @@ impl CadenceApp {
                 .show_ui(ui, |ui| {
                     for (family, programs) in gm_program_catalog() {
                         ui.separator();
-                        ui.label(theme::kicker_text(pal, &family.to_uppercase()));
+                        ui.label(theme::kicker_text(pal, family));
                         for (program, label) in programs {
                             if ui
                                 .selectable_label(font.program == program, label)
@@ -2557,7 +2556,7 @@ fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64
         for (family, programs) in font_rows(query) {
             sections.push(Section {
                 key: format!("font:{family}"),
-                title: family.to_uppercase(),
+                title: family.to_owned(),
                 count: programs.len(),
                 items: programs
                     .into_iter()
@@ -2570,7 +2569,7 @@ fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64
         if !builtins.is_empty() {
             sections.push(Section {
                 key: "builtin".to_owned(),
-                title: "BUILT-IN".to_owned(),
+                title: "Built-in".to_owned(),
                 count: builtins.len(),
                 items: builtins.into_iter().map(LibItem::BuiltIn).collect(),
             });
@@ -2582,7 +2581,7 @@ fn build_view(catalog: &PackCatalog, bank: &LibraryBank, query: &str, stamp: u64
                 last_ns = Some(ns);
                 sections.push(Section {
                     key: format!("pack:{ns}"),
-                    title: format!("PACK · {}", pack_title(ns).to_uppercase()),
+                    title: format!("Pack · {}", pack_title(ns)),
                     count: 0,
                     items: Vec::new(),
                 });
@@ -2696,9 +2695,9 @@ fn library_header(ui: &mut Ui, pal: Palette, used: usize, full: bool) -> bool {
     );
     let right = format!("{used} / {} tracks", ops::MAX_TRACKS);
     let right_color = if full { pal.danger } else { pal.text_faint };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(right, theme::body_font(TEXT_SMALL), right_color);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(right, theme::mono_font(TEXT_SMALL - 1.0), right_color);
     let right_w = galley.size().x;
     ui.painter().galley(
         pos2(
@@ -2827,13 +2826,6 @@ fn paint_section_header(
     let p = ui.painter();
     if pinned {
         p.rect_filled(rect, 0.0, pal.panel);
-        p.hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            Stroke::new(1.0_f32, pal.border_soft),
-        );
-    } else if hot && !locked {
-        p.rect_filled(rect, theme::RADIUS_S, pal.raised);
     }
     let ink = if hot && !locked {
         pal.text
@@ -2842,7 +2834,7 @@ fn paint_section_header(
     };
     theme::paint_icon(
         p,
-        Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), Vec2::splat(12.0)),
+        Rect::from_center_size(pos2(rect.left() + 6.0, rect.center().y), Vec2::splat(10.0)),
         if open {
             Icon::ChevronDown
         } else {
@@ -2851,25 +2843,38 @@ fn paint_section_header(
         if locked { pal.text_faint } else { ink },
     );
     let count_text = count.to_string();
-    let count_galley = p.layout_no_wrap(count_text, theme::body_font(TEXT_SMALL), pal.text_faint);
+    let count_galley = p.layout_no_wrap(
+        count_text,
+        theme::mono_font(TEXT_SMALL - 1.0),
+        pal.text_faint,
+    );
     let count_w = count_galley.size().x;
     p.galley(
         pos2(
-            rect.right() - 6.0 - count_w,
+            rect.right() - 2.0 - count_w,
             rect.center().y - count_galley.size().y * 0.5,
         ),
         count_galley,
         pal.text_faint,
     );
-    theme::paint_elided(
+    // A plain divider: title, then a hairline running to the count.
+    let (title_rect, _) = theme::paint_elided(
         ui,
-        pos2(rect.left() + 24.0, rect.center().y),
+        pos2(rect.left() + 16.0, rect.center().y),
         Align2::LEFT_CENTER,
         title,
-        theme::strong_font(ui, 10.5),
+        theme::body_font(TEXT_SMALL),
         ink,
-        (rect.width() - 24.0 - count_w - 14.0).max(8.0),
+        (rect.width() - 16.0 - count_w - 14.0).max(8.0),
     );
+    let (from, to) = (title_rect.right() + 8.0, rect.right() - count_w - 8.0);
+    if to > from {
+        ui.painter().hline(
+            from..=to,
+            rect.center().y.round() + 0.5,
+            Stroke::new(1.0_f32, pal.border),
+        );
+    }
 }
 
 /// One in-flow section header. Returns its rect and whether it was clicked
@@ -3036,7 +3041,7 @@ fn card_buttons(rect: Rect) -> (Rect, Rect) {
     (preview, add)
 }
 
-/// One library entry: color bar, name, one-line description, optional badge,
+/// One library entry: color chip, name, one-line description, category text,
 /// preview and add buttons. `tip` builds the hover text (only when hovered),
 /// `payload` the drag-and-drop payload (only when dragged).
 ///
@@ -3073,12 +3078,20 @@ fn library_row(
         ui.label(tip());
     });
     let (preview_rect, add_rect) = card_buttons(rect);
+    // ▶ and + are only painted while the row is hovered (paint only: they
+    // stay registered, so clicks and focus work exactly as before).
+    let shown = if ui.rect_contains_pointer(rect) {
+        1.0
+    } else {
+        0.0
+    };
     let preview = {
         let mut c = ui.new_child(
             UiBuilder::new()
                 .id_salt(spec.id.with("preview"))
                 .max_rect(preview_rect),
         );
+        c.multiply_opacity(shown);
         theme::ghost_icon_button(&mut c, pal, Icon::Play, CONTROL_S, "Preview")
     };
     let add = {
@@ -3087,6 +3100,7 @@ fn library_row(
                 .id_salt(spec.id.with("add"))
                 .max_rect(add_rect),
         );
+        c.multiply_opacity(shown);
         c.add_enabled_ui(spec.can_add, |ui| {
             theme::ghost_icon_button(
                 ui,
@@ -3113,69 +3127,58 @@ fn library_row(
 }
 
 /// The painted body of [`library_row`] (split out so it can run inside
-/// [`dnd_source`]): card, color bar, text and badge. Hover is read from the
+/// [`dnd_source`]): hover fill, color chip, text and category. Hover is read from the
 /// pointer position, because the interacts live outside the body.
 fn library_row_body(ui: &mut Ui, pal: Palette, spec: &RowSpec) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_H), Sense::hover());
     let hover = ui.rect_contains_pointer(rect);
     let p = ui.painter();
-    p.rect(
-        rect,
-        theme::RADIUS_M,
-        if hover { pal.control } else { pal.raised },
-        Stroke::new(
-            1.0_f32,
-            if hover {
-                pal.control_border
-            } else {
-                pal.border_soft
-            },
-        ),
-        StrokeKind::Inside,
+    // A plain dense list: no card, no stripe — a flat fill on hover only.
+    if hover {
+        p.rect_filled(rect, theme::RADIUS_S, pal.raised);
+    }
+    // The sound's color as a small square chip beside the name.
+    p.rect_filled(
+        Rect::from_center_size(pos2(rect.left() + 9.0, rect.top() + 13.0), Vec2::splat(6.0)),
+        1.0,
+        spec.color,
     );
-    let bar = Rect::from_min_size(
-        rect.min + vec2(GAP_S, 10.0),
-        vec2(4.0, rect.height() - 20.0),
-    );
-    p.rect_filled(bar, 2.0, spec.color);
     let (preview_rect, _) = card_buttons(rect);
-    let text_left = rect.left() + 20.0;
-    let text_right = preview_rect.left() - GAP_XS;
+    let text_left = rect.left() + 18.0;
+    let text_right = if hover {
+        preview_rect.left() - GAP_XS
+    } else {
+        rect.right() - 6.0
+    };
     let mut name_w = text_right - text_left;
-    if let Some(badge) = spec.badge {
+    // The category ("kit", "pack", "font") as quiet text, not a pill; the
+    // hover buttons take its place.
+    if let (Some(badge), false) = (spec.badge, hover) {
         let galley = p.layout_no_wrap(
-            badge.to_owned(),
-            theme::strong_font(ui, 9.0),
+            badge.to_lowercase(),
+            theme::body_font(TEXT_SMALL),
             pal.text_faint,
         );
-        let pill = Rect::from_min_size(
-            pos2(text_right - galley.size().x - 10.0, rect.top() + 8.0),
-            vec2(galley.size().x + 10.0, 14.0),
-        );
-        p.rect_filled(pill, theme::RADIUS_S, pal.inset);
-        p.galley(
-            pos2(pill.left() + 5.0, pill.center().y - galley.size().y * 0.5),
-            galley,
-            pal.text_faint,
-        );
-        name_w = pill.left() - GAP_XS - text_left;
+        let pos = pos2(text_right - galley.size().x, rect.top() + 5.0);
+        name_w = pos.x - GAP_S - text_left;
+        p.galley(pos, galley, pal.text_faint);
     }
     theme::paint_elided(
         ui,
-        pos2(text_left, rect.top() + 7.0),
+        pos2(text_left, rect.top() + 4.0),
         Align2::LEFT_TOP,
         spec.name,
-        theme::strong_font(ui, TEXT_BODY),
+        theme::body_font(TEXT_BODY),
         pal.text,
         name_w,
     );
     theme::paint_elided(
         ui,
-        pos2(text_left, rect.top() + 25.0),
+        pos2(text_left, rect.top() + 21.0),
         Align2::LEFT_TOP,
         spec.description.lines().next().unwrap_or(""),
         theme::body_font(TEXT_SMALL),
-        pal.text_dim,
+        pal.text_faint,
         text_right - text_left,
     );
 }
@@ -3196,20 +3199,9 @@ fn add_track_button(ui: &mut Ui, pal: Palette, full: bool) -> bool {
         open = !open;
         ui.ctx().data_mut(|d| d.insert_temp(id, open));
     }
+    theme::paint_key_body(ui, pal, rect, &resp, open);
     let p = ui.painter();
-    p.rect(
-        rect,
-        theme::RADIUS_M,
-        if open {
-            pal.control_active
-        } else if resp.hovered() {
-            pal.control_hover
-        } else {
-            pal.control
-        },
-        Stroke::new(1.0_f32, pal.control_border),
-        StrokeKind::Inside,
-    );
+    let ink = if open { pal.accent } else { pal.text };
     theme::paint_icon(
         p,
         Rect::from_center_size(
@@ -3217,14 +3209,14 @@ fn add_track_button(ui: &mut Ui, pal: Palette, full: bool) -> bool {
             Vec2::splat(ICON_S),
         ),
         Icon::Plus,
-        pal.text,
+        ink,
     );
     p.text(
         pos2(rect.left() + 30.0, rect.center().y),
         Align2::LEFT_CENTER,
         "Add track",
         theme::strong_font(ui, TEXT_BODY),
-        pal.text,
+        ink,
     );
     theme::paint_icon(
         ui.painter(),
@@ -3344,25 +3336,16 @@ fn quick_add_font_hint_row(ui: &mut Ui, pal: Palette) -> bool {
         .clicked()
 }
 
+/// Body of a quick-add row: a flat list row, filled only while hot. The
+/// track color shows as a small square chip at the left, like a tape label.
 fn paint_quick_card(ui: &Ui, pal: Palette, rect: Rect, hot: bool, color: Color32) {
     let p = ui.painter();
-    p.rect(
-        rect,
-        theme::RADIUS_M,
-        if hot { pal.control } else { pal.raised },
-        Stroke::new(
-            1.0_f32,
-            if hot {
-                pal.control_border
-            } else {
-                pal.border_soft
-            },
-        ),
-        StrokeKind::Inside,
-    );
+    if hot {
+        p.rect_filled(rect, theme::RADIUS_S, pal.raised);
+    }
     p.rect_filled(
-        Rect::from_min_size(rect.min + vec2(7.0, 6.0), vec2(3.0, rect.height() - 12.0)),
-        1.5,
+        Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), Vec2::splat(6.0)),
+        1.0,
         color,
     );
 }
@@ -3379,21 +3362,16 @@ fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, can_add: bool) {
     let mut right = rect.right() - 30.0;
     if sound.is_kit() {
         let galley = ui.painter().layout_no_wrap(
-            "KIT".to_owned(),
-            theme::strong_font(ui, 9.0),
+            "kit".to_owned(),
+            theme::body_font(TEXT_SMALL),
             pal.text_faint,
         );
-        let pill = Rect::from_min_size(
-            pos2(right - galley.size().x - 10.0, rect.center().y - 7.0),
-            vec2(galley.size().x + 10.0, 14.0),
+        let pos = pos2(
+            right - galley.size().x,
+            rect.center().y - galley.size().y * 0.5,
         );
-        ui.painter().rect_filled(pill, theme::RADIUS_S, pal.inset);
-        ui.painter().galley(
-            pos2(pill.left() + 5.0, pill.center().y - galley.size().y * 0.5),
-            galley,
-            pal.text_faint,
-        );
-        right = pill.left() - GAP_XS;
+        ui.painter().galley(pos, galley, pal.text_faint);
+        right = pos.x - GAP_S;
     }
     theme::paint_elided(
         ui,
@@ -3411,16 +3389,33 @@ fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, can_add: bool) {
             Vec2::splat(ICON_S),
         ),
         Icon::Plus,
-        if can_add {
-            if hot {
-                pal.text
-            } else {
-                pal.text_dim
-            }
-        } else {
+        if can_add && hot {
+            pal.text
+        } else if hot {
             pal.text_disabled
+        } else {
+            // + appears on hover only.
+            egui::Color32::TRANSPARENT
         },
     );
+}
+
+/// A block inside the sidebar without a card of its own: a hairline seam
+/// above it and some air, so panels never nest boxes in boxes.
+fn flat_block<R>(ui: &mut Ui, pal: Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let top = ui.cursor().top();
+    let x = ui.max_rect().x_range();
+    ui.painter()
+        .hline(x, top.round() + 0.5, Stroke::new(1.0_f32, pal.border));
+    Frame::new()
+        .inner_margin(Margin {
+            left: 0,
+            right: 0,
+            top: 10,
+            bottom: 4,
+        })
+        .show(ui, add)
+        .inner
 }
 
 // ----- inspector widgets --------------------------------------------------------
@@ -3430,13 +3425,14 @@ fn quick_add_row(ui: &mut Ui, pal: Palette, sound: &QuickSound, can_add: bool) {
 fn inspector_heading(ui: &mut Ui, pal: Palette, text: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = GAP_S;
-        ui.label(theme::kicker_text(pal, text));
-        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-        ui.painter().hline(
-            r.x_range(),
-            r.center().y,
-            Stroke::new(1.0_f32, pal.border_soft),
+        ui.label(
+            theme::strong_text(text)
+                .size(TEXT_SMALL)
+                .color(pal.text_dim),
         );
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+        ui.painter()
+            .hline(r.x_range(), r.center().y, Stroke::new(1.0_f32, pal.border));
     });
     ui.add_space(GAP_XS);
 }
@@ -3479,7 +3475,7 @@ fn readout(ui: &mut Ui, pal: Palette, text: &str) {
         r.right_center(),
         Align2::RIGHT_CENTER,
         text,
-        theme::body_font(TEXT_BODY),
+        theme::mono_font(theme::TEXT_MONO - 1.0),
         pal.text_dim,
     );
 }
@@ -3503,12 +3499,17 @@ fn color_swatches(ui: &mut Ui, pal: Palette, current: [u8; 3], width: f32) -> Op
             vec2(cell, 24.0),
         );
         let resp = ui.interact(r, ui.id().with(("swatch", i)), Sense::click());
-        let radius = if resp.hovered() { 9.0 } else { 8.0 };
-        ui.painter()
-            .circle_filled(r.center(), radius, theme::rgb(*c));
+        // Square tape-label chips; the current one gets a hard cream frame.
+        let side = if resp.hovered() { 18.0 } else { 16.0 };
+        let chip = Rect::from_center_size(r.center(), Vec2::splat(side));
+        ui.painter().rect_filled(chip, 2.0, theme::rgb(*c));
         if *c == current {
-            ui.painter()
-                .circle_stroke(r.center(), 10.5, Stroke::new(2.0_f32, pal.text));
+            ui.painter().rect_stroke(
+                Rect::from_center_size(r.center(), Vec2::splat(20.0)),
+                2.0,
+                Stroke::new(2.0_f32, pal.text),
+                StrokeKind::Inside,
+            );
         }
         if resp
             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -3529,19 +3530,17 @@ fn danger_button(ui: &mut Ui, pal: Palette, icon: Icon, label: &str, tooltip: &s
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let hot = resp.hovered() || resp.is_pointer_button_down_on();
     let p = ui.painter();
-    p.rect(
+    theme::paint_key(
+        p,
         rect,
         theme::RADIUS_M,
         if hot {
-            theme::mix(pal.control, pal.danger, 0.22)
+            theme::mix(pal.control, pal.danger, 0.18)
         } else {
             pal.control
         },
-        Stroke::new(
-            1.0_f32,
-            pal.danger.gamma_multiply(if hot { 0.9 } else { 0.55 }),
-        ),
-        StrokeKind::Inside,
+        pal.key_edge,
+        1.0,
     );
     let galley = p.layout_no_wrap(
         label.to_owned(),
@@ -4013,7 +4012,7 @@ mod tests {
         // All: built-ins first, then one section per consecutive pack run.
         let v = build_view(&cat, &LibraryBank::All, "", catalog_stamp(&cat));
         let titles: Vec<&str> = v.sections.iter().map(|s| s.title.as_str()).collect();
-        assert_eq!(titles, ["BUILT-IN", "PACK · A", "PACK · B", "PACK · A"]);
+        assert_eq!(titles, ["Built-in", "Pack · A", "Pack · B", "Pack · A"]);
         let counts: Vec<usize> = v.sections.iter().map(|s| s.count).collect();
         assert_eq!(counts, [Instrument::ALL.len(), 2, 1, 1]);
         assert!(v
@@ -4085,7 +4084,7 @@ mod tests {
         assert!(sticky.is_none(), "nothing pinned at scroll 0");
         let builtin = headers
             .iter()
-            .find(|(_, t)| t == "BUILT-IN")
+            .find(|(_, t)| t == "Built-in")
             .expect("built-in header")
             .0;
 
@@ -4116,7 +4115,7 @@ mod tests {
         let (_, _, sticky) = rig.log();
         let pinned = sticky.expect("a header is pinned after scrolling");
         assert!(
-            pinned.starts_with("PACK") || pinned == "BUILT-IN",
+            pinned.starts_with("Pack") || pinned == "Built-in",
             "{pinned}"
         );
         assert!(rig.app.library_rects.scroll.y > 100.0);
