@@ -19,6 +19,7 @@ use egui::{
 };
 
 use super::arranger::snap_floor;
+use super::live::Holder;
 use super::theme::{self, Palette};
 use super::{ops, sidebar, CadenceApp, StatusKind};
 use crate::model::{
@@ -524,6 +525,8 @@ struct EditorRects {
     kb: Rect,
     /// Drum label column (drum editor only).
     labels: Rect,
+    /// Keyboard-tab piano (melodic tracks only).
+    piano: Rect,
 }
 
 impl Default for EditorRects {
@@ -535,6 +538,7 @@ impl Default for EditorRects {
             ruler: Rect::NOTHING,
             kb: Rect::NOTHING,
             labels: Rect::NOTHING,
+            piano: Rect::NOTHING,
         }
     }
 }
@@ -694,8 +698,8 @@ pub(super) struct EditorView {
     /// grids; see [`CadenceApp::scale_snap_key`].
     pub scale_snap: bool,
     /// Keys-tab mouse state: pitch under the pointer, whether the mouse
-    /// button is held on the keys (glow + glissando), and the last pitch
-    /// the mouse previewed so a drag retriggers only on change.
+    /// button is held on the keys (glow + glissando), and the pitch the
+    /// mouse is holding as a live note so a drag retriggers only on change.
     kb_pointer: Option<u8>,
     kb_down: bool,
     kb_last_preview: Option<u8>,
@@ -980,6 +984,12 @@ impl CadenceApp {
         let y = g.row_y(row) + g.row_h * 0.5;
         let p = pos2(x, y);
         g.grid.contains(p).then_some(p)
+    }
+
+    /// Keyboard-tab piano area from the last frame (tests).
+    #[cfg(test)]
+    pub(crate) fn keys_piano_rect(&self) -> Rect {
+        self.editor.rects.piano
     }
 
     #[cfg(test)]
@@ -1804,6 +1814,7 @@ impl CadenceApp {
             ruler,
             kb: Rect::NOTHING,
             labels: Rect::NOTHING,
+            piano: self.editor.rects.piano,
         };
         if std::mem::take(&mut self.editor.roll_home_pending) {
             // The first frame homed against a guessed height; re-centre now
@@ -3124,6 +3135,7 @@ impl CadenceApp {
         if area.width() < 240.0 || area.height() < 80.0 {
             return;
         }
+        self.editor.rects.piano = area;
 
         // Three octaves: kb_octave-1 ..= kb_octave+1. Whites are laid out
         // left to right; each black centres on the boundary after its white.
@@ -3195,17 +3207,15 @@ impl CadenceApp {
         });
         self.editor.kb_pointer = pointer_pitch;
         self.editor.kb_down = dragging;
-        if dragging {
-            match pointer_pitch {
-                Some(p) if self.editor.kb_last_preview != Some(p) => {
-                    self.editor.kb_last_preview = Some(p);
-                    self.preview(track_id, p, self.editor.velocity);
-                }
-                None => self.editor.kb_last_preview = None,
-                _ => {}
+        // The mouse key sounds while held: a new pitch under the pointer
+        // ends the previous one, releasing (or leaving the keys) ends it.
+        let want = if dragging { pointer_pitch } else { None };
+        if self.editor.kb_last_preview != want {
+            self.editor.kb_last_preview = want;
+            match want {
+                Some(p) => self.live_press(Holder::Screen, p, self.editor.velocity, track_id),
+                None => self.live_release(Holder::Screen),
             }
-        } else {
-            self.editor.kb_last_preview = None;
         }
         // MIDI recording: a mouse key is a note — press inserts it at the
         // playing transport step (or the step-record playhead), dragging
@@ -3435,8 +3445,8 @@ impl CadenceApp {
     /// `S D G H J` the black keys C# D# F# G# A#; `Q`/`W` shift the octave a
     /// full step and holding Shift raises it another octave. Drum tracks map
     /// the keys across the kit's piece pitches instead. Fires once per
-    /// physical press (key auto-repeat is ignored) at the editor's velocity;
-    /// release does nothing — previews are fixed-length. With record armed
+    /// physical press (key auto-repeat is ignored) at the editor's velocity
+    /// and sounds until the key is released. With record armed
     /// each press/release instead starts/ends a note in the selected track's
     /// pattern (live or step recording). Releases are always honoured — on
     /// any tab and under any modifier — and end the note their key started.
@@ -3476,6 +3486,7 @@ impl CadenceApp {
         let velocity = self.editor.velocity;
         for (key, pressed, shift) in events {
             if !pressed {
+                self.live_release(Holder::Computer(key));
                 if let Some(pitch) = self.editor.kb_held.remove(&key) {
                     self.record_note_off(pitch);
                 }
@@ -3500,7 +3511,7 @@ impl CadenceApp {
                 }
             }
             if let Some(pitch) = keyboard_pitch(key, shift, self.editor.kb_octave, drum_pitches) {
-                self.preview(*track_id, pitch, velocity);
+                self.live_press(Holder::Computer(key), pitch, velocity, *track_id);
                 self.record_note_on(pitch);
                 self.editor.kb_held.insert(key, pitch);
             }
@@ -3524,6 +3535,7 @@ impl CadenceApp {
                 .collect()
         });
         for key in released {
+            self.live_release(Holder::Computer(key));
             if let Some(pitch) = self.editor.kb_held.remove(&key) {
                 self.record_note_off(pitch);
             }
@@ -3533,12 +3545,13 @@ impl CadenceApp {
     // ----- MIDI controller input ---------------------------------------------
 
     /// Plays one hardware-controller action on the selected track. `Start`
-    /// auditions the pitch at the controller's velocity through the same
-    /// preview path as the computer keyboard — on any tab, transport running
-    /// or stopped — and, with record armed, starts a recorded note exactly
-    /// like a computer key (same quantize, take and step-record rules).
-    /// `End` finishes the note that controller pitch started; it never
-    /// touches a computer-key note on the same pitch.
+    /// sounds the pitch at the controller's velocity as a held live note —
+    /// on any tab, transport running or stopped — and, with record armed,
+    /// starts a recorded note exactly like a computer key (same quantize,
+    /// take and step-record rules). `End` (key up, or pedal up for a
+    /// sustained key) releases the sound and finishes the note that
+    /// controller pitch started; it never touches a computer-key note on
+    /// the same pitch.
     pub(super) fn midi_note(&mut self, action: crate::midi_in::NoteAction) {
         match action {
             crate::midi_in::NoteAction::Start { pitch, velocity } => {
@@ -3551,11 +3564,12 @@ impl CadenceApp {
                     return;
                 };
                 if !audio {
-                    self.preview(track_id, pitch, velocity);
+                    self.live_press(Holder::Midi(pitch), pitch, velocity, track_id);
                 }
                 self.record_note_on_with(NoteSource::Midi, pitch, velocity);
             }
             crate::midi_in::NoteAction::End { pitch } => {
+                self.live_release(Holder::Midi(pitch));
                 self.record_note_off_from(NoteSource::Midi, pitch);
             }
         }
@@ -4660,6 +4674,7 @@ impl CadenceApp {
             ruler,
             kb: Rect::NOTHING,
             labels,
+            piano: self.editor.rects.piano,
         };
 
         let resp = ui.interact(grid, ui.id().with("drum_grid"), Sense::click_and_drag());

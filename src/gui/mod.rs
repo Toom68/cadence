@@ -10,6 +10,9 @@ mod dialogs;
 mod editor;
 mod files;
 mod history;
+mod live;
+#[cfg(test)]
+mod live_tests;
 #[cfg(test)]
 mod midi_tests;
 mod mixer;
@@ -186,6 +189,9 @@ pub struct CadenceApp {
     midi_pref: MidiInputPref,
     /// Held controller notes and the sustain pedal.
     midi_notes: NoteTracker,
+    /// Live notes sounding while their key is held (computer keys, Keys
+    /// tab, controller).
+    live: live::LiveNotes,
     /// Connections reported closed: their callback can still deliver a
     /// late message after the `Disconnected` report, which must not start a
     /// note nothing will ever release. Ids are never reused.
@@ -355,6 +361,7 @@ impl CadenceApp {
             midi_in: None,
             midi_pref: MidiInputPref::default(),
             midi_notes: NoteTracker::new(),
+            live: live::LiveNotes::default(),
             midi_closed: BTreeSet::new(),
             transport: TransportState::default(),
             sel: Selection::default(),
@@ -512,6 +519,7 @@ impl CadenceApp {
     /// Replaces the whole project (new/open/import/recover).
     fn replace_project(&mut self, project: Project, path: Option<std::path::PathBuf>, clean: bool) {
         self.stop();
+        self.live_all_off();
         self.transport.position = 0.0;
         self.transport.start_marker = 0.0;
         // Held recorded notes reference the old song's patterns — dropping
@@ -1228,6 +1236,8 @@ impl CadenceApp {
         self.focus = Focus::Arranger;
     }
 
+    /// A short fixed-length audition (library ▶, chord strip, note clicks).
+    /// Played keys use [`Self::live_press`] instead and sound while held.
     fn preview(&self, track_id: u64, pitch: u8, velocity: f32) {
         if let (Some(engine), Some(track)) = (&self.engine, ops::track(&self.project, track_id)) {
             engine.preview(track, pitch, 0.45, velocity);
@@ -1453,6 +1463,7 @@ impl CadenceApp {
             self.arranger.end_gesture();
             self.editor.end_gesture();
         }
+        self.live_frame(ctx);
         self.sync_engine();
         self.autosave(ctx);
         self.update_title(ctx);
@@ -1561,6 +1572,7 @@ impl CadenceApp {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 return;
             }
+            self.live_all_off();
             // An autosave that is still waiting for a Restore/Discard decision
             // is kept for the next launch.
             if let (Some(dir), false) = (&self.recovery_dir, self.recovery_offered) {
