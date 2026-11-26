@@ -5031,8 +5031,13 @@ mod tests {
                 check(&format!("ink on mixer.{name}"), ink_on(color), color, 4.5);
             }
         }
-        // Clip and note labels on the fixed track colors.
-        for color in TRACK_PALETTE.map(rgb) {
+        // Clip and note labels on the fixed track colors (the picker's and
+        // the built-in instruments' defaults).
+        for color in TRACK_PALETTE
+            .iter()
+            .chain(crate::model::TRACK_COLORS.iter())
+            .map(|c| rgb(*c))
+        {
             assert!(contrast_ratio(ink_on(color), color) >= 4.5, "{color:?}");
         }
     }
