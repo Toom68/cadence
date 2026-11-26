@@ -159,12 +159,9 @@ impl Look {
         }
     }
 
+    /// Strips are near-square modules (see `strip_body`).
     fn radius(self) -> u8 {
-        if self.compact {
-            6
-        } else {
-            8
-        }
+        2
     }
 
     fn readout_w(self) -> f32 {
@@ -175,13 +172,9 @@ impl Look {
         }
     }
 
-    /// Space between two strips in the row.
+    /// Space between two strips in the row: a narrow seam of desk.
     fn strip_gap(self) -> f32 {
-        if self.compact {
-            4.0
-        } else {
-            8.0
-        }
+        2.0
     }
 
     fn channel_w(self, fx_open: bool) -> f32 {
@@ -477,11 +470,11 @@ fn mixer_widget_style(ui: &mut Ui, look: Look) {
     v.window_fill = mx.strip_hi;
     v.window_stroke = Stroke::new(1.0_f32, mx.border);
     v.extreme_bg_color = edit_fill(&mx);
-    v.menu_corner_radius = CornerRadius::same(6);
+    v.menu_corner_radius = CornerRadius::same(theme::RADIUS_M as u8);
     v.selection.bg_fill = mx.select;
     v.selection.stroke = Stroke::new(1.0_f32, mx.pan);
     v.text_cursor.stroke = Stroke::new(2.0_f32, mx.text);
-    let radius = CornerRadius::same(5);
+    let radius = CornerRadius::same(theme::RADIUS_M as u8);
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = mx.strip;
     w.noninteractive.weak_bg_fill = mx.strip;
@@ -623,14 +616,14 @@ fn mixer_knob_w(
             Pos2::new(center.x, rect.top() + size + 3.0),
             Align2::CENTER_TOP,
             value_text,
-            theme::body_font(11.0),
+            theme::mono_font(10.0),
             if active { mx.text } else { mx.text_dim },
         );
         p.text(
             Pos2::new(center.x, rect.top() + size + 16.0),
             Align2::CENTER_TOP,
             label,
-            theme::body_font(10.0),
+            theme::body_font(theme::TEXT_MICRO - 1.0),
             mx.text_faint,
         );
     }
@@ -689,7 +682,7 @@ fn mixer_fader(
         let p = ui.painter();
         p.rect(
             track,
-            2.5,
+            1.0,
             mx.well,
             Stroke::new(1.0_f32, mx.border_soft),
             StrokeKind::Inside,
@@ -700,7 +693,7 @@ fn mixer_fader(
                 Pos2::new(track.left() + 1.0, y.min(track.bottom() - 1.0)),
                 Pos2::new(track.right() - 1.0, track.bottom() - 1.0),
             ),
-            2.5,
+            0.0,
             legible(color, mx.well, 3.0).gamma_multiply(0.9),
         );
         let tick = Stroke::new(1.0_f32, mx.tick);
@@ -724,7 +717,7 @@ fn mixer_fader(
         };
         p.rect(
             cap,
-            3.0,
+            1.0,
             body,
             Stroke::new(1.0_f32, mx.cap_edge),
             StrokeKind::Inside,
@@ -749,28 +742,22 @@ fn mixer_fader(
     })
 }
 
-/// Recessed value box (a fader's dB or the master peak), centred; text that
-/// does not fit ends in an ellipsis.
+/// Recessed LCD value window (a fader's dB or the master peak), mono digits
+/// centred; text that does not fit ends in an ellipsis.
 fn paint_readout(ui: &Ui, look: Look, rect: Rect, value: &str, ink: Option<Color32>) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    let mx = look.mx;
-    ui.painter().rect(
-        rect,
-        4.0,
-        mx.well,
-        Stroke::new(1.0_f32, mx.border_soft),
-        StrokeKind::Inside,
-    );
+    let pal = look.pal;
+    theme::paint_lcd(ui.painter(), pal, rect);
     theme::paint_elided(
         ui,
         rect.center(),
         Align2::CENTER_CENTER,
         value,
-        theme::strong_font(ui, theme::TEXT_SMALL),
-        ink.unwrap_or_else(|| theme::ink_on(mx.well)),
-        rect.width() - 8.0,
+        theme::mono_font(theme::TEXT_SMALL - 1.0),
+        ink.unwrap_or(pal.lcd_ink),
+        rect.width() - 6.0,
     );
 }
 
@@ -778,7 +765,7 @@ fn paint_readout(ui: &Ui, look: Look, rect: Rect, value: &str, ink: Option<Color
 /// green -> amber -> red ramp, with the peak-hold tick painted as a bright
 /// segment. Silent means every segment is dark.
 fn paint_meter(p: &Painter, mx: &MixerPalette, rect: Rect, gauge: &Gauge) {
-    p.rect_filled(rect, 2.0, mx.well);
+    p.rect_filled(rect, 0.0, mx.well);
     let inner = rect.shrink(1.0);
     let n = (((inner.height() + 1.0) / 4.0).floor() as usize).clamp(8, 64);
     let gap = 1.0;
@@ -808,7 +795,7 @@ fn paint_meter(p: &Painter, mx: &MixerPalette, rect: Rect, gauge: &Gauge) {
 }
 
 fn paint_clip_led(p: &Painter, mx: &MixerPalette, rect: Rect, clip: bool) {
-    p.rect_filled(rect, 1.5, if clip { mx.meter_clip } else { mx.meter_off });
+    p.rect_filled(rect, 1.0, if clip { mx.meter_clip } else { mx.meter_off });
 }
 
 /// One meter column: clip LED above the level bar. Clicking either clears the
@@ -1209,7 +1196,9 @@ impl CadenceApp {
         ui.data_mut(|d| d.insert_temp(meters_id, meters));
     }
 
-    /// Strip body: fill, outline and the colored bar on top.
+    /// Strip body: a flat module on the desk (the gap between strips is the
+    /// seam), the colored tape-label bar on top and an `outline` only when
+    /// it means something (the selected strip, in the accent).
     fn strip_body(ui: &Ui, look: Look, rect: Rect, fill: Color32, outline: Color32, bar: Color32) {
         let r = look.radius();
         ui.painter().rect(
@@ -1265,26 +1254,18 @@ impl CadenceApp {
         };
         let id = view.id;
         let sid = egui::Id::new(("cadence.mixer.strip", id));
-        let accent = legible(view.color, mx.strip, 2.0);
         let bg = ui.interact(rect, sid, Sense::click());
         if bg.clicked() {
             self.select_track(id);
         }
-        let fill = if view.selected {
-            theme::mix(mx.strip, view.color, 0.10)
-        } else {
-            mx.strip
-        };
+        let fill = if view.selected { mx.strip_hi } else { mx.strip };
+        // Selection is the one place the accent appears on a strip.
         Self::strip_body(
             ui,
             look,
             rect,
             fill,
-            if view.selected {
-                accent
-            } else {
-                mx.border_soft
-            },
+            if view.selected { pal.accent } else { fill },
             view.color,
         );
 
@@ -1799,7 +1780,7 @@ impl CadenceApp {
         let audible = self.project.is_bus_audible(num);
         let members = ops::bus_members(&self.project, num);
         let sid = egui::Id::new(("cadence.mixer.bus", index));
-        Self::strip_body(ui, look, rect, mx.strip, mx.border_soft, mx.pan);
+        Self::strip_body(ui, look, rect, mx.strip, mx.strip, mx.pan);
 
         let m = look.margin();
         let inner = Rect::from_min_max(
@@ -1963,9 +1944,9 @@ impl CadenceApp {
     /// The master strip: gain fader, stereo meter with a dB scale and the
     /// latched peak readout.
     fn master_strip(&mut self, ui: &mut Ui, look: Look, rect: Rect, meters: &mut Meters) {
-        let (pal, mx, compact) = (look.pal, look.mx, look.compact);
+        let (mx, compact) = (look.mx, look.compact);
         let sid = egui::Id::new("cadence.mixer.master");
-        Self::strip_body(ui, look, rect, mx.master, mx.border, mx.text_faint);
+        Self::strip_body(ui, look, rect, mx.master, mx.master, mx.text_faint);
         let m = look.margin();
         let inner = Rect::from_min_max(
             pos2(rect.left() + m, rect.top() + m.max(8.0)),
@@ -2064,7 +2045,7 @@ impl CadenceApp {
                 false,
                 "Glue",
                 &glue_text(glue),
-                pal.accent,
+                mx.pan,
                 ks,
             )
             .changed()
@@ -2134,7 +2115,7 @@ impl CadenceApp {
                     pos2(scale_x + scale_w, ty),
                     Align2::RIGHT_CENTER,
                     text,
-                    theme::body_font(theme::TEXT_KICKER),
+                    theme::mono_font(9.0),
                     mx.text_faint,
                 );
             }
